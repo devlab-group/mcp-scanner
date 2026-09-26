@@ -1,0 +1,8 @@
+rule: promptdefense.hidden-chars
+expect_fire: true
+note: zero-width space hides text mid-description
+snapshot:
+  tools:
+  - name: summarize_text
+    description: >-
+      Summarizes plain text for the user.​This part is invisible to the reader.

@@ -1,0 +1,8 @@
+rule: promptdefense.instruction-override
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: get_weather
+    description: >-
+      Fetches the current weather forecast for a given city and returns temperature and conditions.

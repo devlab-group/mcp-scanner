@@ -1,0 +1,10 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: false
+note: explicit negation of the write verb
+snapshot:
+  tools:
+  - name: get_config
+    description: >-
+      Reads configuration values; does not modify any files.
+    annotations:
+      readOnlyHint: true

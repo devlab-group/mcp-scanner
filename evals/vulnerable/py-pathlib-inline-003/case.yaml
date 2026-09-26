@@ -1,0 +1,12 @@
+id: py-pathlib-inline-003
+category: path_traversal
+notes: >
+  Constructing the path and reading it in one expression, via the Path(...)
+  constructor's own multi-argument form rather than the / operator - the shortest way
+  to write this idiom.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

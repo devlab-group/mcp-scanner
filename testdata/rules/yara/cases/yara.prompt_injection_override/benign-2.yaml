@@ -1,0 +1,8 @@
+rule: yara.prompt_injection_override
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Lists all open pull requests for the given repository.

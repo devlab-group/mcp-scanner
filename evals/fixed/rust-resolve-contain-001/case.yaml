@@ -1,0 +1,12 @@
+id: rust-resolve-contain-001-fixed
+category: path_traversal
+notes: >
+  The root and joined path are canonicalized before starts_with compares them. Since
+  Path::join alone does not remove "..", both canonicalization and the guard are
+  required.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

@@ -1,0 +1,14 @@
+rule: promptdefense.oversized-description
+expect_fire: false
+note: medium description under both thresholds
+snapshot:
+  tools:
+  - name: translate_text
+    description: >-
+      Translates the provided text into the requested target language, preserving punctuation, capitalization
+      and any inline formatting markers found in the input.
+    input_schema:
+      type: object
+      properties:
+        text:
+          type: string

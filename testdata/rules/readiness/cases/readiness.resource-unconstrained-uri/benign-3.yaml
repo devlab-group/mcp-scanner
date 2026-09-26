@@ -1,0 +1,7 @@
+rule: readiness.resource-unconstrained-uri
+expect_fire: false
+note: template variable anchored under a fixed bucket name
+snapshot:
+  resource_templates:
+  - uri_template: s3://my-bucket/{key}
+    description: Reads an object from the bucket.

@@ -1,0 +1,11 @@
+id: py-conditional-sanitizer-001
+category: path_traversal
+notes: >
+  basename runs only on one branch. When flat is false, the unsanitized value reaches
+  the read, so a conditional sanitizer must not clear taint after the branch.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

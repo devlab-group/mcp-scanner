@@ -1,0 +1,8 @@
+rule: readiness.destructive-not-annotated
+expect_fire: false
+note: description explicitly says it does not delete
+snapshot:
+  tools:
+  - name: archive_file
+    description: >-
+      Archives the specified file; it does not delete the original.

@@ -1,0 +1,13 @@
+id: py-module-alias-sink-001
+category: command_injection
+notes: >
+  "import subprocess as sp" makes every later sp.run unrecognizable to a
+  catalogue that spells the sink subprocess.run. The alias is a prefix, not
+  a whole name, so it needs the module rewrite rather than the name binding
+  a renaming import gets.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

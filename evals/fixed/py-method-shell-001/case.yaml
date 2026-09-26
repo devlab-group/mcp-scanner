@@ -1,0 +1,12 @@
+id: py-method-shell-001-fixed
+category: command_injection
+notes: >
+  The same delegation with the argument quoted as a single shell token before
+  it is interpolated, which is the repair for a shell string that has to stay
+  a shell string.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

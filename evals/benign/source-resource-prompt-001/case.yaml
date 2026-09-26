@@ -1,0 +1,10 @@
+id: source-resource-prompt-001
+category: none
+notes: >
+  A safe source server declares a resource, prompt, and tool. Resource bodies and
+  rendered prompts are produced at runtime, so their absence from source must not
+  downgrade the scan as unfetched live content would.
+analyzers: []  # every applicable analyzer, so a regression on any of them is caught
+target: {kind: source, path: src}
+expected:
+  vulnerable: false

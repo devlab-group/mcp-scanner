@@ -1,0 +1,10 @@
+{
+  "server_name": "notes",
+  "protocol_version": "2025-06-18",
+  "instructions": "Provides read access to notes in the current project.",
+  "tools": [{
+    "name": "read_notes",
+    "description": "Read a note from the project directory and return its text.",
+    "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+  }]
+}

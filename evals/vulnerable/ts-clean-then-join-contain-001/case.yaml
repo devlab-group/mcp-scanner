@@ -1,0 +1,13 @@
+id: ts-clean-then-join-contain-001
+category: path_traversal
+notes: >
+  The argument is normalized before being concatenated to the root, leaving the full
+  path unnormalized. `/srv/notes/../../etc/passwd` passes startsWith but escapes the
+  root, unlike the resolved path in the fixed pair.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

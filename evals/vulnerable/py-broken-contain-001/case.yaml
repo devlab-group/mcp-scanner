@@ -1,0 +1,12 @@
+id: py-broken-contain-001
+category: path_traversal
+notes: >
+  The handler joins with pathlib's `/` operator but never resolves the path.
+  is_relative_to compares the unresolved components, so `..` can pass the guard and
+  escape during read_text.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

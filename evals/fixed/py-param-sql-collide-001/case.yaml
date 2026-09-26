@@ -1,0 +1,12 @@
+id: py-param-sql-collide-001
+category: sql_injection
+notes: >
+  A parameterized query uses name for both the column and handler argument. The shared
+  identifier must not make the column text appear tainted; only the bound parameter is
+  the caller's value.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

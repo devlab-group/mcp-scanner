@@ -1,0 +1,16 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: true
+note: >-
+  negate is scoped to the matched verb's own sentence: "Deletes stale
+  entries when the cache overflows." still fires on "Deletes" even
+  though the next sentence, "Never touches user files directly.", uses
+  the word "never" - that sentence is about something else, not a
+  denial of the delete
+snapshot:
+  tools:
+  - name: cache_lookup
+    description: >-
+      Provides a fast lookup index. Deletes stale entries when the cache overflows. Never touches
+      user files directly.
+    annotations:
+      readOnlyHint: true

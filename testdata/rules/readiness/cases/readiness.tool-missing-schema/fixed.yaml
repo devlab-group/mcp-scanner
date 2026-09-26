@@ -1,0 +1,13 @@
+rule: readiness.tool-missing-schema
+expect_fire: false
+note: same tool, input schema declared
+snapshot:
+  tools:
+  - name: run_report
+    description: >-
+      Runs the configured monthly report.
+    input_schema:
+      type: object
+      properties:
+        month:
+          type: string

@@ -1,0 +1,8 @@
+rule: readiness.no-instructions
+expect_fire: true
+note: server declares no instructions at all
+snapshot:
+  instructions: ''
+  tools:
+  - name: noop
+    description: Does nothing.

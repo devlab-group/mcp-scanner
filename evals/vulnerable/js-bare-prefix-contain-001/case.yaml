@@ -1,0 +1,12 @@
+id: js-bare-prefix-contain-001
+category: path_traversal
+notes: >
+  path.resolve normalizes the path, but ROOT lacks a trailing separator and startsWith
+  compares characters. A sibling path such as /srv/notes-secret therefore passes the
+  /srv/notes prefix check.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

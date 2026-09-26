@@ -1,0 +1,12 @@
+id: static-backticked-poisoning-001
+category: tool_poisoning
+notes: >
+  The tool-poisoning-001 concealment instruction is wrapped in backticks. Markdown
+  formatting may lower confidence but must not lower severity or let the payload
+  suppress its own detector.
+analyzers: [promptdefense]
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [promptdefense.tool-poisoning-call-other-tool]

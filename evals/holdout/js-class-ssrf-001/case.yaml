@@ -1,0 +1,11 @@
+id: js-class-ssrf-001
+category: ssrf
+notes: >
+  A JavaScript handler passes its argument to client.fetchPath. The class method
+  appends it to a fixed host and calls fetch, testing SSRF across a method boundary.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.ssrf]

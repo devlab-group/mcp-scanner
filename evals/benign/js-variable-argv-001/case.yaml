@@ -1,0 +1,12 @@
+id: js-variable-argv-001
+category: none
+notes: >
+  A variable holds an argv array built entirely from constants. Treating an unreadable
+  array as opaque must prevent false negatives without making unreadability itself a
+  finding.
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.argument_injection, taint.command_injection]
+analyzers: []

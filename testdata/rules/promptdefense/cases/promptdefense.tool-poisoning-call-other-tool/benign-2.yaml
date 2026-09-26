@@ -1,0 +1,8 @@
+rule: promptdefense.tool-poisoning-call-other-tool
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: create_calendar_event
+    description: >-
+      Creates a new calendar event with the given title, start time and duration.

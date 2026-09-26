@@ -1,0 +1,13 @@
+id: rust-command-injection-001
+category: command_injection
+notes: >
+  Held out of rule tuning. The Rust #[tool] idiom, with the argument
+  formatted into a shell command run through Command::new("sh").arg("-c").
+  The main corpus has a Rust case for path traversal but none for command
+  injection.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

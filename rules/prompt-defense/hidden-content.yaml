@@ -1,0 +1,52 @@
+rules:
+  - id: promptdefense.hidden-chars
+    title: Zero-width or bidi-override characters in declared text
+    category: hidden_content
+    severity: HIGH
+    evidence_level: STATIC
+    description: >
+      This text contains zero-width or bidirectional controls that hide or
+      reorder content without changing what the model reads.
+    remediation: >
+      Strip zero-width and bidi-control characters from server-declared
+      text before it is stored or served.
+    references:
+      - https://trojansource.codes/
+    type: hidden_chars
+
+  - id: promptdefense.confusable-script
+    title: Mixed-script word looks like a homoglyph substitution
+    category: hidden_content
+    severity: MEDIUM
+    evidence_level: STATIC
+    description: >
+      One word mixes letters from the Latin, Cyrillic, or Greek scripts.
+    remediation: >
+      Re-key the word in a single, consistent script.
+    type: confusable_script
+
+  - id: promptdefense.html-comment
+    title: HTML comment hidden inside declared text
+    category: hidden_content
+    severity: MEDIUM
+    evidence_level: STATIC
+    description: >
+      This text contains an HTML comment hidden from rendered output but
+      visible to a model reading the source.
+    remediation: >
+      Remove the HTML comment, or move its content into the visible text.
+    patterns:
+      - "<!--[\\s\\S]*?-->"
+    negate:
+      - "-->\\s*(arrow|means|indicates|result|output)"
+
+  - id: promptdefense.base64-blob
+    title: Base64-encoded blob embedded in declared text
+    category: hidden_content
+    severity: MEDIUM
+    evidence_level: STATIC
+    description: >
+      This declared text contains a long, valid base64 blob that needs review.
+    remediation: >
+      Decode it and move legitimate binary data to a suitable field.
+    type: base64_blob

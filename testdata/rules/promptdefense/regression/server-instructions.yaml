@@ -1,0 +1,7 @@
+rule: '*'
+expect_fire: false
+note: ordinary server instructions field, not a tool
+snapshot:
+  instructions: >-
+    This server exposes tools for managing a personal task list. All operations are local to the authenticated
+    user's account and require a valid session token.

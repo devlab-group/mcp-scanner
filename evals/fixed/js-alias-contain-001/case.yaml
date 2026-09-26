@@ -1,0 +1,11 @@
+id: js-alias-contain-001
+category: path_traversal
+notes: >
+  A resolved path is renamed before the containment guard without being rebuilt.
+  Renaming preserves normalization; concatenating after normalization does not.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

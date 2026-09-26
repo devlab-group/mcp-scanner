@@ -1,0 +1,8 @@
+rule: promptdefense.hidden-chars
+expect_fire: false
+note: legitimate non-Latin script content, no control characters
+snapshot:
+  tools:
+  - name: translate_to_arabic
+    description: >-
+      Translates text into Arabic (اللّه) and back to English.

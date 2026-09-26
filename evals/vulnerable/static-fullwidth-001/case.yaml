@@ -1,0 +1,12 @@
+id: static-fullwidth-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  Full-width Latin letters and a non-breaking space. Both render as the
+  control sentence and neither matched it; the non-breaking space is not
+  even an evasion, it is what a word processor inserts.
+

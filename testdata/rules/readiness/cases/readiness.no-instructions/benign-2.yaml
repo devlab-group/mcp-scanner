@@ -1,0 +1,5 @@
+rule: readiness.no-instructions
+expect_fire: false
+note: short but non-empty instructions
+snapshot:
+  instructions: Read-only server.

@@ -1,0 +1,12 @@
+id: ts-decorator-unrecognized-001
+category: command_injection
+notes: >
+  An unrecognized decorator registers a command injection and a poisoned description.
+  With no resolved capabilities, the scan must report PARTIAL rather than
+  COMPLETED/SAFE.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

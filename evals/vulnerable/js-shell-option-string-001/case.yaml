@@ -1,0 +1,13 @@
+id: js-shell-option-string-001
+category: command_injection
+notes: >
+  Node accepts either true or a shell path for spawn's shell option. A string such as
+  `/bin/bash` must therefore produce command injection, not only the lower-severity
+  argument-injection finding.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

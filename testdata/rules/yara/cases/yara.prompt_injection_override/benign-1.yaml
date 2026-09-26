@@ -1,0 +1,8 @@
+rule: yara.prompt_injection_override
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Fetches the current weather forecast for a given city.

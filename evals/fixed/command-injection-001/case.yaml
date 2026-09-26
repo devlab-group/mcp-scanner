@@ -1,0 +1,12 @@
+id: command-injection-001-fixed
+category: command_injection
+notes: >
+  The helper passes the value as a separate argv element instead of building a shell
+  string. The command-injection finding must disappear, though a lower-severity note
+  about passing the value to tar is valid.
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]
+analyzers: [source, taint]

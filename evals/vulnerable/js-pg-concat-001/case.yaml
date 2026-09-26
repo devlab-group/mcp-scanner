@@ -1,0 +1,11 @@
+id: js-pg-concat-001
+category: sql_injection
+notes: >
+  A tool argument is concatenated into SQL passed to pg's Pool.query. This tests the
+  Node Postgres sink rather than the Python, JDBC, and Go methods covered elsewhere.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.sql_injection]

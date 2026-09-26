@@ -1,0 +1,12 @@
+id: go-rawstring-continuation-001
+category: command_injection
+notes: >
+  A closed multiline Go raw string ends its content with a backslash. The masker
+  mistakes that backslash for an escape of the closing backtick, so it must leave
+  the literal unmasked and keep tainted variables visible.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

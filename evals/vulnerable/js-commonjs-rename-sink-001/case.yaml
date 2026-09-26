@@ -1,0 +1,13 @@
+id: js-commonjs-rename-sink-001
+category: command_injection
+notes: >
+  The CommonJS spelling of a renaming import. The original name only
+  appears as a destructuring key, which the import-specifier scan never
+  looked at, so the local name was bound to nothing.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

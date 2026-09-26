@@ -1,0 +1,12 @@
+id: java-resolve-contain-001-fixed
+category: path_traversal
+notes: >
+  The same handler with a containment check added before the read: the path is
+  resolved against the root and normalized first, then the normalized result is
+  rejected unless it still starts with the (also normalized) root.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

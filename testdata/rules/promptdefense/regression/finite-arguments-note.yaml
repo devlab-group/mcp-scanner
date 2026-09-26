@@ -1,0 +1,12 @@
+rule: '*'
+expect_fire: false
+note: >-
+  A precision case - "IMPORTANT:" written in plain prose
+  with a colon, not the <IMPORTANT> or [system note: ...] wrapper shape
+  the pseudo-tag rule looks for; must not be conflated with the attack
+  pattern just because the word matches
+snapshot:
+  tools:
+  - name: divide
+    description: >-
+      Divides the first argument by the second. IMPORTANT: both arguments must be finite.

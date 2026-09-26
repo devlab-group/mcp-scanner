@@ -1,0 +1,1 @@
+(decorated_definition) @decorated

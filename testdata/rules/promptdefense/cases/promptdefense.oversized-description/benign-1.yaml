@@ -1,0 +1,29 @@
+rule: promptdefense.oversized-description
+expect_fire: false
+note: long description, but justified by many real parameters
+snapshot:
+  tools:
+  - name: create_invoice
+    description: >-
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+    input_schema:
+      type: object
+      properties:
+        customer_id:
+          type: string
+        line_items:
+          type: array
+        currency:
+          type: string
+        due_date:
+          type: string
+        notes:
+          type: string

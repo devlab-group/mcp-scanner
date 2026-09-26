@@ -1,0 +1,12 @@
+id: js-sync-fs-sink-001
+category: path_traversal
+notes: >
+  A tainted path reaches synchronous node:fs mutators, including recursive rmSync.
+  Exact matching for promise API names must not omit their Sync variants.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

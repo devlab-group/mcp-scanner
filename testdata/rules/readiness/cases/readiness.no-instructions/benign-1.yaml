@@ -1,0 +1,6 @@
+rule: readiness.no-instructions
+expect_fire: false
+note: a different server with instructions declared
+snapshot:
+  instructions: >-
+    All tools operate on the currently authenticated user's own data only.

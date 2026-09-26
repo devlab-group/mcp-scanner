@@ -1,0 +1,9 @@
+rule: '*'
+expect_fire: false
+note: security tool that legitimately inspects SSH keys without exfiltrating them
+snapshot:
+  tools:
+  - name: ssh_key_audit
+    description: >-
+      Audits SSH key files under ~/.ssh for weak permissions and warns if any private key is world-readable,
+      without ever transmitting key contents anywhere.

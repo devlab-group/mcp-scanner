@@ -1,0 +1,12 @@
+id: js-namespace-helper-001
+category: none
+notes: >
+  search.query(term) resembles a database call but resolves to a local function that
+  searches an in-memory array. Sink matching must distinguish resolved local helpers
+  from driver methods instead of flagging every dotted query call.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.sql_injection]

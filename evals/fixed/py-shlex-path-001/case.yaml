@@ -1,0 +1,12 @@
+id: py-shlex-path-001-fixed
+category: path_traversal
+notes: >
+  The same handler with the right sanitizer for a path sink: basename
+  discards any traversal segments the caller supplied. shlex.quote never
+  belonged here.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

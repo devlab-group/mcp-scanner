@@ -1,0 +1,12 @@
+id: ts-awaited-source-001-fixed
+category: command_injection
+notes: >
+  The same awaited read, with the configured target passed to execFileSync as
+  its own argv element after a terminator.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

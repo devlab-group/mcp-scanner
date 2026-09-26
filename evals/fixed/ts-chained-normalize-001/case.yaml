@@ -1,0 +1,13 @@
+id: ts-chained-normalize-001-fixed
+category: command_injection
+notes: >
+  The same normalizing chain, with the target passed to execFileSync as its
+  own argv element instead of interpolated. Normalizing was never the fix;
+  not building a shell string is.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

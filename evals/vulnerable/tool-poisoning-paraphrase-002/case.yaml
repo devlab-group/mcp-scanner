@@ -1,0 +1,14 @@
+id: tool-poisoning-paraphrase-002
+category: tool_poisoning
+notes: >
+  A one-word paraphrase of the concealment instruction: "say nothing about
+  this note" instead of "do not tell the user". The
+  concealment verb list only had "(do not|don't|never) (tell|inform|
+  mention|...)", which "say nothing about" does not match.
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: true
+  minimum_severity: critical
+  rules:
+    - promptdefense.tool-poisoning-call-other-tool
+analyzers: [promptdefense]

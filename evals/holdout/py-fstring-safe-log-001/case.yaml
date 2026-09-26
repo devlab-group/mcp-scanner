@@ -1,0 +1,11 @@
+id: py-fstring-safe-log-001
+category: command_injection
+notes: >
+  Held out of rule tuning. An f-string resembles a shell command but is only logged
+  and returned. Without a subprocess, os.system, or shell sink, it must stay quiet.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

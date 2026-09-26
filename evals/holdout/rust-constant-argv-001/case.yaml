@@ -1,0 +1,12 @@
+id: rust-constant-argv-001
+category: command_injection
+notes: >
+  Held out of rule tuning. The tool argument labels fixed command output but never
+  reaches Command as a program or argument. The nearby fixed `df -h /srv/data` call
+  must not create a finding.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

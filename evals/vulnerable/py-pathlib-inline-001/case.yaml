@@ -1,0 +1,12 @@
+id: py-pathlib-inline-001
+category: path_traversal
+notes: >
+  The py-pathlib-001 flow appears in one expression, so the tainted Path receiver is
+  never assigned to a variable. Receiver analysis must inspect parenthesized and
+  chained call results.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

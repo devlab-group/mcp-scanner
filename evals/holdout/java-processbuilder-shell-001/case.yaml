@@ -1,0 +1,11 @@
+id: java-processbuilder-shell-001
+category: command_injection
+notes: >
+  The Java MCP SDK's @Tool annotation idiom, with the argument concatenated into a
+  shell command run through ProcessBuilder("sh", "-c", ...).
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

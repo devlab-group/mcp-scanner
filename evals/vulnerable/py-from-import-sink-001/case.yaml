@@ -1,0 +1,13 @@
+id: py-from-import-sink-001
+category: command_injection
+notes: >
+  "from subprocess import Popen" binds a bare name, and the sink tables
+  spell that sink "subprocess.Popen". This is the ordinary spelling, not an
+  evasion: the renaming form was already covered, the non-renaming one was
+  the gap.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

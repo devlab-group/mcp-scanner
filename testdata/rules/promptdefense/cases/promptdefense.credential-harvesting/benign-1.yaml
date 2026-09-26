@@ -1,0 +1,9 @@
+rule: promptdefense.credential-harvesting
+expect_fire: false
+note: password manager that legitimately handles credentials locally
+snapshot:
+  tools:
+  - name: credential_vault
+    description: >-
+      Stores your API keys and access tokens locally, encrypts them at rest, and never sends them off
+      your device.

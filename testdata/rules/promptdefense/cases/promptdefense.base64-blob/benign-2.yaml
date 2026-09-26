@@ -1,0 +1,8 @@
+rule: promptdefense.base64-blob
+expect_fire: false
+note: a SHA-256 hex digest, not base64 - excluded by the hex check
+snapshot:
+  tools:
+  - name: verify_checksum
+    description: >-
+      Verifies the downloaded file's SHA-256 checksum equals 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.

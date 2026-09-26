@@ -1,0 +1,11 @@
+id: ts-fetch-ssrf-001
+category: ssrf
+notes: >
+  A tool argument is appended to a fixed internal host and passed to global fetch.
+  This is the direct TypeScript SSRF sink.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.ssrf]

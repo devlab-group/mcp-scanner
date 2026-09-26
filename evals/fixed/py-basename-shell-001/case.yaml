@@ -1,0 +1,12 @@
+id: py-basename-shell-001-fixed
+category: command_injection
+notes: >
+  The same handler with the right sanitizer for a shell sink: shlex.quote
+  wraps the whole value as one shell token, escaping any metacharacter the
+  caller tried to smuggle in. basename never belonged here.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

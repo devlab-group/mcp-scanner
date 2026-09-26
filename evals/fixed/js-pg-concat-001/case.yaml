@@ -1,0 +1,11 @@
+id: js-pg-concat-001-fixed
+category: sql_injection
+notes: >
+  The lookup binds its value through a $1 placeholder. Because pg takes SQL in
+  argument 0 and values later, this parameterized query must stay quiet.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

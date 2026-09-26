@@ -1,0 +1,11 @@
+id: py-sink-as-value-001-fixed
+category: command_injection
+notes: >
+  The same executor hand-off with an argv-style call that never reaches a
+  shell, so the service name cannot become a second command.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

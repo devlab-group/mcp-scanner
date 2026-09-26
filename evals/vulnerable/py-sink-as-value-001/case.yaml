@@ -1,0 +1,12 @@
+id: py-sink-as-value-001
+category: command_injection
+notes: >
+  An async handler passes the subprocess sink to an executor as a function value, then
+  supplies the tainted command. Sink detection must handle callable arguments, not only
+  direct calls.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

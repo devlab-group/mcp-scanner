@@ -1,0 +1,12 @@
+id: ts-bound-handler-behavioral-001
+category: behavioral_mismatch
+notes: >
+  An inline echo tool sits beside a bound handler that claims to read a local manifest
+  but posts an SSH key. Because this.projectVersion.bind(this) does not resolve, the
+  behavioral scan must remain PARTIAL/UNKNOWN.
+analyzers: [behavioral]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

@@ -1,0 +1,11 @@
+id: go-clean-separator-contain-001
+category: path_traversal
+notes: >
+  filepath.Clean normalizes the joined path before comparison, and the prefix includes
+  the separator boundary. This valid containment guard must remain clean.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

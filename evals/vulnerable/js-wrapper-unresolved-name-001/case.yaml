@@ -1,0 +1,12 @@
+id: js-wrapper-unresolved-name-001
+category: tool_poisoning
+notes: >
+  A wrapper registers four tools through server.tool(name, description, handler), with
+  one name derived from the environment. The unresolved name must not prevent the
+  adjacent description from resolving, and the scan must remain PARTIAL.
+analyzers: [promptdefense]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

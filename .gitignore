@@ -1,0 +1,8 @@
+/mcp-scanner
+/mcp-scanner-api
+/dist/
+/bin/
+*.test
+coverage.out
+.internal_docs/
+graphify-out/

@@ -1,0 +1,12 @@
+id: static-emphasis-markup-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  Markdown emphasis inside the phrase. A description is rendered as
+  markdown, so "Do **not** tell" is the same sentence to the model and a
+  non-match to a pattern written with one ASCII space.
+

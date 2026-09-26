@@ -1,0 +1,9 @@
+rule: readiness.no-auth-declared
+expect_fire: false
+note: a declared capability names oauth
+snapshot:
+  instructions: Reporting server.
+  capabilities:
+    oauth:
+      scopes:
+      - read

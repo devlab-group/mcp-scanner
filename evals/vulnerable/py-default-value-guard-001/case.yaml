@@ -1,0 +1,11 @@
+id: py-default-value-guard-001
+category: path_traversal
+notes: >
+  A guard assigns a default only when the argument is empty. That conditional
+  assignment must not clear taint on the path where caller input reaches the sink.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

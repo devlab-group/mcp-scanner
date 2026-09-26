@@ -1,0 +1,8 @@
+rule: promptdefense.exfiltration
+expect_fire: false
+note: fetches from a URL, does not send data to one
+snapshot:
+  tools:
+  - name: fetch_page_title
+    description: >-
+      Fetches the homepage HTML for the given https://example.com URL and returns its title tag.

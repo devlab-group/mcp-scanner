@@ -1,0 +1,9 @@
+id: safe-exec-001
+category: none
+notes: >
+  A tool that runs a fixed command with no argument from the caller. It must
+  not be flagged because exec.Command appears in the file.
+analyzers: []  # every applicable analyzer, so a rule from any of them showing up here is a failure
+target: {kind: source, path: src}
+expected:
+  vulnerable: false

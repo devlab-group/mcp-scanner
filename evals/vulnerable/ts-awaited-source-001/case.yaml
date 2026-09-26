@@ -1,0 +1,12 @@
+id: ts-awaited-source-001
+category: command_injection
+notes: >
+  An async handler reads configuration through the promise API and interpolates it into
+  a shell string. Taint tracking must follow the awaited value.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

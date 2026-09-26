@@ -1,0 +1,10 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: false
+note: write verb present, but the tool is not annotated read-only
+snapshot:
+  tools:
+  - name: delete_file
+    description: >-
+      Deletes the specified file from the workspace.
+    annotations:
+      readOnlyHint: false

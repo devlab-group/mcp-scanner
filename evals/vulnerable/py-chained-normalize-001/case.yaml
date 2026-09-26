@@ -1,0 +1,12 @@
+id: py-chained-normalize-001
+category: command_injection
+notes: >
+  The Python spelling of ts-chained-normalize-001: strip().lower() ahead of a
+  shell string. The single-link form already fired; the pair is what pins
+  that the second link is what used to launder the value.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

@@ -1,0 +1,11 @@
+id: static-quoted-rule-citation-001
+category: none
+notes: >
+  A prompt-injection linter quotes the phrases it detects. A qualifier may produce a
+  LOW finding, but nothing may reach HIGH. The surrounding defensive context, not
+  quotation alone, must distinguish examples from payloads.
+analyzers: [promptdefense]
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+  minimum_severity: high

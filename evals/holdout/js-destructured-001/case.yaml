@@ -1,0 +1,10 @@
+id: js-destructured-001
+category: command_injection
+notes: >
+  Held out of rule tuning. A JavaScript MCP server uses a destructured handler with
+  execSync, testing whether TypeScript-focused detection generalizes to JavaScript.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

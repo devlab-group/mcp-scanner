@@ -1,0 +1,12 @@
+id: rust-broken-contain-001
+category: path_traversal
+notes: >
+  Path::join retains `..`, and starts_with compares the unresolved components.
+  Therefore a joined escaping path can pass the containment check and reach
+  read_to_string.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

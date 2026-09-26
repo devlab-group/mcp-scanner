@@ -1,0 +1,27 @@
+rules:
+  - id: promptdefense.exfiltration
+    title: Description instructs sending or encoding data to a URL
+    category: exfiltration
+    severity: CRITICAL
+    evidence_level: HEURISTIC
+    description: >
+      This text tells the model to send data to a URL or encode data into one.
+    remediation: >
+      Remove prose that directs data to an external URL.
+    patterns:
+      - "https?://\\S+"
+      # Match bare hosts from a closed TLD list. Accepting any dotted word would turn ordinary
+      # filenames such as package.json into exfiltration destinations.
+      - "\\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:com|net|org|io|dev|app|co|info|biz|xyz|me|ai|cloud|tech|site|online|link|gg|to)\\b(?:/[^\\s\"'<>)]*)?"
+      - "encode\\S* .{0,40}(into|in) (the )?url"
+      - "append\\S* .{0,40}(to|into) (the )?(url|query string)"
+    # A URL mention requires a nearby handover verb. A documentation link alone does not claim
+    # that data should be sent there.
+    context_is_premise: true
+    require_context:
+      - "\\b(send|sends|sending|post|posts|posting|upload|uploads|uploading|forward|forwards|forwarding|transmit|transmits|transmitting|leak|leaks|leaking|exfiltrate|exfiltrates|exfiltrating|encode|encodes|encoding|append|appends|appending)\\b"
+    # Documentation language must immediately precede a URL to lower severity. negate_before
+    # cannot let a later "for details" phrase qualify an earlier send instruction.
+    negate_before:
+      - "\\b(documentation|see also|reference|learn more|support|homepage|read more|for details|for more information)\\b[\\s:,-]*$"
+    promote_if_structural: valid_url

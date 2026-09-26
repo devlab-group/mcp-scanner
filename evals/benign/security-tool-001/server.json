@@ -1,0 +1,11 @@
+{
+  "server_name": "secret-scanner",
+  "protocol_version": "2025-06-18",
+  "instructions": "Scans a repository for committed credentials and reports their locations. Findings are stored locally and never transmitted.",
+  "tools": [{
+    "name": "scan_repo",
+    "description": "Scan the repository for committed API keys, access tokens and private keys, and report where each one appears. Results stay on this machine; the tool never sends a secret anywhere.",
+    "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    "annotations": {"readOnlyHint": true}
+  }]
+}

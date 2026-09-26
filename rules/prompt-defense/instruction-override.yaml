@@ -1,0 +1,43 @@
+rules:
+  - id: promptdefense.instruction-override
+    title: Declared text tries to override the model's instructions
+    category: instruction_override
+    severity: HIGH
+    evidence_level: HEURISTIC
+    description: >
+      This text tells the model to ignore prior instructions or adopt an
+      unrestricted persona.
+    remediation: >
+      Remove override language from fields rendered into model context.
+    references:
+      - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+      - https://atlas.mitre.org/techniques/AML.T0051
+    patterns:
+      # Allow determiners and either adjective order around the instruction noun. These are
+      # common grammatical variants of the same override, not broad semantic paraphrases.
+      - "(ignore|disregard|forget)\\s+(?:(?:all|any|every)\\s+)?(?:of\\s+)?(?:the|your|its|our|their|these|those|my)?\\s*(?:previous|prior|above|earlier|preceding|original|initial)\\s+(?:system\\s+)?(?:instructions?|prompts?|guidelines?|rules?|directives?|commands?|context)\\b"
+      - "(ignore|disregard|forget)\\s+(?:(?:all|any|every)\\s+)?(?:of\\s+)?(?:the|your|its|our|their|these|those|my)?\\s*(?:system\\s+)?(?:instructions?|prompts?|guidelines?|rules?|directives?|commands?)\\s+(?:above|before|so far|up to now|given (?:earlier|above|before))\\b"
+      - "(ignore|disregard|forget)\\s+(?:everything|all)\\s+(?:above|before|so far|you (?:were|have been) told)\\b"
+      - "you are now (in )?(developer mode|dan|jailbroken|an? unrestricted)"
+      - "no longer (bound|restricted|limited) by (your |the )?(previous |original )?(instructions|rules|guidelines)"
+      - "override your (system )?instructions"
+      - "new system prompt\\s*:"
+    negate:
+      - "\\b(detect|detects|detecting|block|blocks|blocking|prevent|prevents|preventing|defends? against|flag|flags|flagging|identif(y|ies|ying)|mitigat(e|es|ing)|recogni[sz]es?|warns? (about|against))\\b"
+    negate_before:
+      - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"
+
+  - id: promptdefense.fake-turn
+    title: Declared text fakes a system or assistant chat turn
+    category: instruction_override
+    severity: HIGH
+    evidence_level: HEURISTIC
+    description: >
+      This text imitates a trusted system or assistant chat turn.
+    remediation: >
+      Remove the fake role label or quote it as example dialogue.
+    patterns:
+      - "(?m)^\\s*(system|assistant)\\s*:\\s*\\S"
+    negate:
+      - "\\b(windows|linux|macos|android|ios|requirements?|architecture|design|prompt)\\b"
+    proximity: 20

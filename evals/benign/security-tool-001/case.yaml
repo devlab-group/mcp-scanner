@@ -1,0 +1,13 @@
+id: security-tool-001
+category: none
+notes: >
+  A secret scanner. Its description legitimately talks about secrets, tokens
+  and exfiltration because that is what it detects. It must stay quiet; this
+  is the shape that produced false positives in keyword-only matching.
+analyzers: []  # every applicable analyzer, so a rule from any of them showing up here is a failure
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+  forbidden_rules:
+    - promptdefense.credential-harvesting
+    - promptdefense.exfiltration

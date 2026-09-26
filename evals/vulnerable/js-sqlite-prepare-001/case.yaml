@@ -1,0 +1,12 @@
+id: js-sqlite-prepare-001
+category: sql_injection
+notes: >
+  better-sqlite3 receives interpolated SQL in prepare before all executes the returned
+  statement. Detection must treat prepare as the sink because all, get, and run are
+  too generic to match alone.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.sql_injection]

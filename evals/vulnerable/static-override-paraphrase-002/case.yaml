@@ -1,0 +1,13 @@
+id: static-override-paraphrase-002
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  "Ignore your previous instructions" - the base override phrase with one
+  possessive added, and one of the two most common spellings in published
+  jailbreak text. The pattern required the adjective immediately after an
+  optional all or any.
+

@@ -1,0 +1,11 @@
+rule: promptdefense.tool-poisoning-call-other-tool
+expect_fire: false
+note: >-
+  negate_before still has to clear the case it exists for: "such as"
+  directly prefacing the cited phrase, not merely present somewhere in
+  the description
+snapshot:
+  tools:
+  - name: poisoning_lint
+    description: >-
+      Warns about phrases such as do not tell the user found anywhere in a tool description.

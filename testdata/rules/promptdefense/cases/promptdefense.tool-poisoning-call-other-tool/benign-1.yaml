@@ -1,0 +1,9 @@
+rule: promptdefense.tool-poisoning-call-other-tool
+expect_fire: false
+note: security tool quoting the attack it defends against
+snapshot:
+  tools:
+  - name: poisoning_guard
+    description: >-
+      Scans tool descriptions for injected instructions such as phrases that tell the model to act without
+      telling the user, and blocks any tool exhibiting that pattern.

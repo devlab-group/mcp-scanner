@@ -1,0 +1,10 @@
+id: js-push-argv-001
+category: command_injection
+notes: >
+  A tool argument is pushed onto a variable argv array passed to bash. Taint tracking
+  must follow array mutation rather than requiring an array literal at the call site.
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+analyzers: [source, taint]

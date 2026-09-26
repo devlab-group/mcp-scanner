@@ -1,0 +1,13 @@
+id: ts-destructured-001-fixed
+category: command_injection
+notes: >
+  The same handler, with the argument passed as a separate argv element to
+  execFile instead of interpolated into a shell string. There is no shell to
+  inject into.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

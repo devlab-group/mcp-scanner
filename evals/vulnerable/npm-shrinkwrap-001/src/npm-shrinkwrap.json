@@ -1,0 +1,8 @@
+{
+  "name": "app",
+  "lockfileVersion": 3,
+  "packages": {
+    "": { "name": "app", "version": "1.0.0" },
+    "node_modules/lodash": { "version": "4.17.15" }
+  }
+}

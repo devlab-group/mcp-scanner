@@ -1,0 +1,10 @@
+id: js-unrelated-tool-method-001
+category: none
+notes: >
+  The MCP module also contains an unrelated inventory object with a tool()
+  method. That call must not become an MCP capability or finding because
+  the file imports an SDK.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false

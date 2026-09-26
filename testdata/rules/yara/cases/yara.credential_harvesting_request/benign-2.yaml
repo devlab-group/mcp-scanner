@@ -1,0 +1,8 @@
+rule: yara.credential_harvesting_request
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Counts how many words appear in the provided document.

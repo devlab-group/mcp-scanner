@@ -1,0 +1,11 @@
+id: sql-receiver-001
+category: sql_injection
+notes: >
+  A tool argument concatenated into a query executed through a connection the
+  developer happened to name cur rather than cursor. Whether a SQL injection
+  is found must not depend on the name of a local variable.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

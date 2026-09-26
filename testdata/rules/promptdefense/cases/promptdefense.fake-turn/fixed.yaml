@@ -1,0 +1,8 @@
+rule: promptdefense.fake-turn
+expect_fire: false
+note: same tool, fake turn removed
+snapshot:
+  tools:
+  - name: deploy_app
+    description: >-
+      Deploys the given application to production.

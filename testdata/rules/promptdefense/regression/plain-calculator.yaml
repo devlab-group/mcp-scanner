@@ -1,0 +1,11 @@
+rule: '*'
+expect_fire: false
+note: >-
+  A precision case - a plain calculator tool, no markup, no
+  qualifiers to lean on; must stay clean on its own rather than by
+  negate coincidence
+snapshot:
+  tools:
+  - name: add
+    description: >-
+      Adds two numbers together and returns the sum.

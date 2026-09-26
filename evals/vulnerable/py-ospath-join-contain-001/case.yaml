@@ -1,0 +1,11 @@
+id: py-ospath-join-contain-001
+category: path_traversal
+notes: >
+  os.path.join does not normalize `..`, and PurePath.is_relative_to compares components
+  without resolving them. Their combination can accept an escaping path despite
+  resembling a containment guard.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

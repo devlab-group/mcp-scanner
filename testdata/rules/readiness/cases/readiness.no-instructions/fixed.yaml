@@ -1,0 +1,9 @@
+rule: readiness.no-instructions
+expect_fire: false
+note: same server, instructions declared
+snapshot:
+  instructions: >-
+    This server exposes read-only reporting tools for the sales team.
+  tools:
+  - name: noop
+    description: Does nothing.

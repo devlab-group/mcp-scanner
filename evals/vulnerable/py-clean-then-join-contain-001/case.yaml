@@ -1,0 +1,12 @@
+id: py-clean-then-join-contain-001
+category: path_traversal
+notes: >
+  normpath runs before the argument is joined to the root, so it cannot resolve the
+  ".." components against that root. is_relative_to then accepts the unresolved path,
+  allowing the read to escape.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

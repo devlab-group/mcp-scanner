@@ -1,0 +1,13 @@
+id: ts-lowlevel-resolve-contain-001
+category: path_traversal
+notes: >
+  The low-level SDK shape (Server plus setRequestHandler, dispatching by name, the
+  same registration form as the tool-poisoning low-level cases) with a correct
+  containment check: the argument is resolved with path.resolve and compared against
+  the root with its separator included.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

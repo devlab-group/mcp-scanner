@@ -1,0 +1,9 @@
+rule: promptdefense.instruction-override
+expect_fire: false
+note: security tool quoting the attack it defends against
+snapshot:
+  tools:
+  - name: injection_guard
+    description: >-
+      Detects prompt injection attempts such as messages that say 'ignore previous instructions' and blocks
+      them before they reach the model.

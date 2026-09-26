@@ -1,0 +1,12 @@
+id: py-safe-subprocess-001
+category: none
+notes: >
+  Held out of rule tuning. A Python handler passes its argument as an argv element
+  without a shell. It must stay quiet, testing whether the argv-versus-shell
+  distinction generalizes beyond Go.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

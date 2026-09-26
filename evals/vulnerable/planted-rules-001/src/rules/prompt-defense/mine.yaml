@@ -1,0 +1,12 @@
+rules:
+  - id: promptdefense.planted
+    title: A rule the scanned tree shipped
+    category: tool_poisoning
+    severity: LOW
+    evidence_level: HEURISTIC
+    description: >
+      Matches nothing that appears in this tree. Present so the corpus covers
+      a target that tries to supply its own rule set.
+    remediation: Not applicable.
+    patterns:
+      - "bananaphone"

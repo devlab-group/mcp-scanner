@@ -1,0 +1,11 @@
+id: hidden-instructions-001
+category: prompt_injection
+notes: >
+  Server instructions carry an instruction-override phrase plus zero-width
+  characters, so the operator reading the description sees less than the model
+  does.
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: true
+  minimum_severity: medium
+analyzers: [promptdefense]

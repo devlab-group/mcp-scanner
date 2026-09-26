@@ -1,0 +1,10 @@
+rule: '*'
+expect_fire: false
+note: security tool describing prompt injection detection in detail
+snapshot:
+  tools:
+  - name: prompt_injection_guard
+    description: >-
+      Scans incoming tool and prompt descriptions for prompt injection patterns, including phrases like
+      'ignore previous instructions' or 'you are now in developer mode', and blocks or flags any that
+      match before they reach the model.

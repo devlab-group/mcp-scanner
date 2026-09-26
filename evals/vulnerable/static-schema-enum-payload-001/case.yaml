@@ -1,0 +1,12 @@
+id: static-schema-enum-payload-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  The payload moved one field over, into a property's enum. A client sends
+  inputSchema verbatim to the model, so enum is the same channel as a
+  property description - and the schema walk read exactly one key.
+

@@ -1,0 +1,17 @@
+rule: readiness.tool-missing-schema
+expect_fire: false
+note: normal tool with a schema
+snapshot:
+  tools:
+  - name: send_email
+    description: >-
+      Sends an email to the given recipient.
+    input_schema:
+      type: object
+      properties:
+        to:
+          type: string
+        subject:
+          type: string
+        body:
+          type: string

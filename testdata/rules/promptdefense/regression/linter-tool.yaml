@@ -1,0 +1,9 @@
+rule: '*'
+expect_fire: false
+note: linter tool description
+snapshot:
+  tools:
+  - name: lint_python
+    description: >-
+      Lints Python source files for style violations following PEP 8 and reports line numbers and rule
+      codes for each issue found.

@@ -1,0 +1,11 @@
+id: py-augmented-assign-001
+category: command_injection
+notes: >
+  A command is built with += before reaching a sink. Augmented assignment must preserve
+  taint just as the equivalent `cmd = cmd + ...` expression does.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

@@ -1,0 +1,12 @@
+id: subset-hides-limits-001
+category: command_injection
+notes: >
+  A command injection inside an excluded directory, scanned with only the dataflow
+  analyzer named. Shared walk coverage must retain the excluded-directory limit even
+  when source is not selected, so PARTIAL/UNKNOWN is expected.
+analyzers: [taint]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

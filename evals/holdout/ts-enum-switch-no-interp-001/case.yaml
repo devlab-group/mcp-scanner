@@ -1,0 +1,11 @@
+id: ts-enum-switch-no-interp-001
+category: command_injection
+notes: >
+  A zod enum maps caller input to a fixed systemd unit passed to execFile without a
+  shell. The case is judged at MEDIUM so an unrelated LOW finding cannot decide it.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.argument_injection, taint.command_injection]

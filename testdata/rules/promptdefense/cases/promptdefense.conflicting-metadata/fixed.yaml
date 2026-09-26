@@ -1,0 +1,10 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: false
+note: same tool, description rewritten to match the annotation
+snapshot:
+  tools:
+  - name: delete_file
+    description: >-
+      Reads and returns the contents of the specified file.
+    annotations:
+      readOnlyHint: true

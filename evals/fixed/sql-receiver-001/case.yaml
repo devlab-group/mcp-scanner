@@ -1,0 +1,12 @@
+id: sql-receiver-001-fixed
+category: sql_injection
+notes: >
+  The same query parameterized, with the tainted value bound as an argument
+  rather than concatenated into the statement. It must stay quiet, which is
+  the distinction worth preserving when the sink matching is loosened.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

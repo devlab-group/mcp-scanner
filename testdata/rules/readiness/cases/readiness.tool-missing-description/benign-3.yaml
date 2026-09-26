@@ -1,0 +1,8 @@
+rule: readiness.tool-missing-description
+expect_fire: false
+note: normal documented tool
+snapshot:
+  tools:
+  - name: send_email
+    description: >-
+      Sends an email to the given recipient with the given subject and body.

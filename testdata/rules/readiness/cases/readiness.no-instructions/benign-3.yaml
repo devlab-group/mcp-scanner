@@ -1,0 +1,9 @@
+rule: readiness.no-instructions
+expect_fire: false
+note: instructions plus tools, both present
+snapshot:
+  instructions: >-
+    This server manages calendar events for the signed-in user.
+  tools:
+  - name: list_events
+    description: Lists upcoming calendar events.

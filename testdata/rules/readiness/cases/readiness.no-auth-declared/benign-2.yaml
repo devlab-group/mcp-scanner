@@ -1,0 +1,7 @@
+rule: readiness.no-auth-declared
+expect_fire: false
+note: the header is present with different casing
+snapshot:
+  instructions: Reporting server.
+  response_headers:
+    www-authenticate: Basic

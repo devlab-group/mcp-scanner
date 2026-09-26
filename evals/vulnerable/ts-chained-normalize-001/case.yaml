@@ -1,0 +1,12 @@
+id: ts-chained-normalize-001
+category: command_injection
+notes: >
+  A tool argument passes through trim and toLowerCase before entering a shell string.
+  Neither removes shell metacharacters, so the chain must preserve taint.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

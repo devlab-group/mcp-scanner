@@ -1,0 +1,12 @@
+id: py-unknown-framework-001
+category: command_injection
+notes: >
+  FastMCP is present, but an in-house dispatch table registers the tool without
+  @app.tool() or app.add_tool(). Because registration discovery resolves no
+  capabilities, the scan must report PARTIAL rather than a clean result.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

@@ -1,0 +1,11 @@
+id: ts-pg-template-001
+category: sql_injection
+notes: >
+  A registerTool handler destructures typed input and interpolates it into a SQL
+  template literal. This complements the JavaScript concatenation case.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.sql_injection]

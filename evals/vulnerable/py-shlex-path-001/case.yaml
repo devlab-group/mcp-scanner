@@ -1,0 +1,10 @@
+id: py-shlex-path-001
+category: path_traversal
+notes: >
+  shlex.quote makes a safe shell token but does not remove `../` path segments. A
+  shell-sanitized value remains dangerous when passed to open.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

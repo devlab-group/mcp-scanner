@@ -1,0 +1,8 @@
+rule: yara.prompt_injection_override
+expect_fire: false
+note: same tool, rewritten to a normal description
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Summarizes the given text into three bullet points.

@@ -1,0 +1,11 @@
+id: go-request-accessor-001
+category: command_injection
+notes: >
+  A Go handler reads tool input through a request accessor. The request receiver is
+  tainted while the accessor argument is a constant key, so source detection must
+  inspect the receiver.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

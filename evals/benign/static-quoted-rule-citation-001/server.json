@@ -1,0 +1,19 @@
+{
+  "server_name": "injection-linter",
+  "protocol_version": "2025-06-18",
+  "instructions": "Lints MCP tool descriptions for prompt injection. Nothing it reads is ever executed.",
+  "tools": [
+    {
+      "name": "lint_description",
+      "description": "Detects concealment instructions such as `do not tell the user` in a tool description and blocks the tool that carries one.",
+      "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]},
+      "annotations": {"readOnlyHint": true}
+    },
+    {
+      "name": "lint_override",
+      "description": "Flags a description that tries to override the session, for example `ignore previous instructions`, and warns the operator about it.",
+      "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]},
+      "annotations": {"readOnlyHint": true}
+    }
+  ]
+}

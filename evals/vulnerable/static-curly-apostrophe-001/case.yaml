@@ -1,0 +1,10 @@
+id: static-curly-apostrophe-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  The payload replaces the apostrophe in `Don't` with U+2019. Normalization must treat
+  it like the straight-apostrophe control instead of reporting SAFE.

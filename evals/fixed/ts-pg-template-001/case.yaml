@@ -1,0 +1,12 @@
+id: ts-pg-template-001-fixed
+category: sql_injection
+notes: >
+  The same handler with the interpolation removed from the statement and the value
+  bound as $1. A template literal with nothing tainted left in it must read as clean,
+  so the fix is not punished for keeping the backticks.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

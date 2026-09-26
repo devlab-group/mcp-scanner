@@ -1,0 +1,10 @@
+rule: readiness.destructive-not-annotated
+expect_fire: false
+note: same tool, destructiveHint set
+snapshot:
+  tools:
+  - name: delete_file
+    description: >-
+      Deletes the specified file from the workspace.
+    annotations:
+      destructiveHint: true

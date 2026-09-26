@@ -1,0 +1,12 @@
+id: go-broken-contain-001
+category: path_traversal
+notes: >
+  A typed Go handler concatenates the argument to the root and prefix-checks the
+  unnormalized string. A `..` path retains the root prefix while the later read
+  escapes it.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

@@ -1,0 +1,11 @@
+id: lowlevel-arrow-001
+category: tool_poisoning
+notes: >
+  A concise arrow body returns a parenthesized tool declaration. Discovery must read
+  expression bodies as well as explicit return statements.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [promptdefense.tool-poisoning-call-other-tool, taint.command_injection]

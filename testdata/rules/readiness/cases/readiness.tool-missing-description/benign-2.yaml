@@ -1,0 +1,8 @@
+rule: readiness.tool-missing-description
+expect_fire: false
+note: normal documented tool
+snapshot:
+  tools:
+  - name: list_files
+    description: >-
+      Lists all files in the given directory.

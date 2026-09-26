@@ -1,0 +1,12 @@
+id: js-sqlite-prepare-001-fixed
+category: sql_injection
+notes: >
+  The same lookup with a ? placeholder in the prepared text and the value bound in
+  all(). The tainted value never reaches prepare's own argument, so the fix has to
+  read as clean.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

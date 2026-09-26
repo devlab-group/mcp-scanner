@@ -1,0 +1,8 @@
+rule: promptdefense.exfiltration
+expect_fire: false
+note: encodes data but not into a URL
+snapshot:
+  tools:
+  - name: base64_encode
+    description: >-
+      Encodes the given string using standard base64 encoding and returns it.

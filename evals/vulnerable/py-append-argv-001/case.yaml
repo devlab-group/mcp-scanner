@@ -1,0 +1,12 @@
+id: py-append-argv-001
+category: command_injection
+notes: >
+  A tainted argument is appended to a command list passed to subprocess.run. Taint
+  tracking must follow append mutations instead of requiring the value in the initial
+  list literal.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

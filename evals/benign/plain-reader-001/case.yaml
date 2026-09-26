@@ -1,0 +1,10 @@
+id: plain-reader-001
+category: none
+notes: >
+  An ordinary read-only file tool with a path argument. This permanent negative guards
+  against a prior read-only annotation false positive.
+analyzers: []  # every applicable analyzer, so a rule from any of them showing up here is a failure
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+  forbidden_rules: [protocol.annotation-conflict]

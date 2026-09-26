@@ -1,0 +1,80 @@
+rules:
+  - id: promptdefense.tool-poisoning-call-other-tool
+    title: Description instructs the model to act behind the user's back
+    category: tool_poisoning
+    severity: CRITICAL
+    evidence_level: HEURISTIC
+    description: >
+      This text tells the model to act or call another tool without the
+      user's knowledge or approval.
+    remediation: >
+      Describe what the tool does. Remove hidden actions and instructions
+      aimed at the model.
+    references:
+      - https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
+    patterns:
+      - "without (telling|informing|notifying|asking) the user"
+      # The alternatives include modal negations such as "must not". Adverbs may appear after the
+      # negative phrase, so "must not ever tell" matches like "do not tell."
+      - "(?:do not|don't|never|must not|mustn't|should not|shouldn't|cannot|can't|won't|not to)\\s+(?:(?:\\w+ly|ever|under any circumstances|at any point)\\s+)*(?:tell|inform|mention|show|notify|reveal|disclose|reference|say|report|indicate)\\b"
+      - "(?:do not|don't|never|must not|should not|shouldn't|not to)\\s+(?:let|allow)\\s+(?:the user|the human|them|anyone)\\s+(?:know|see|find out|notice|realis|realiz)"
+      - "keep (?:the user|the human|them|it) (?:unaware|in the dark|from knowing|from finding out)"
+      - "without (?:the user|the human|them|anyone)?\\s*(?:ever\\s+)?(?:noticing|realizing|realising|finding out|being aware)"
+      - "the user (?:does not|doesn't|should not|shouldn't|need not|needn't|does not need to|doesn't need to) (?:need to )?know"
+      - "hidden from the user"
+      - "silently (call|invoke|run|use|send|forward)"
+      - "(call|invoke|use|run) (the|any|another|any other) [\"'`]?[\\w.\\- ]{2,40}[\"'`]? tool (first|before|instead|silently|without)"
+      - "say nothing (about|regarding)"
+      - "without (the user('s)? )?(knowledge|awareness)"
+    require_context:
+      - "\\byou\\b"
+      - "\\bthis\\b"
+      - "\\bthe user\\b"
+    negate:
+      - "\\b(detect|detects|detecting|block|blocks|blocking|prevent|prevents|preventing|defends? against|flag|flags|flagging|identif(y|ies|ying)|mitigat(e|es|ing)|warns? (about|against))\\b"
+      - "\\bthird part(y|ies)\\b"
+    # An example marker suppresses only the phrase it directly introduces. A later example must
+    # not retroactively excuse an earlier concealment instruction.
+    negate_before:
+      - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"
+
+  - id: promptdefense.tool-poisoning-unrelated-file-access
+    title: Description reaches for credentials or files outside its stated job
+    category: tool_poisoning
+    severity: CRITICAL
+    evidence_level: HEURISTIC
+    description: >
+      This text asks for credentials or configuration files unrelated to
+      the tool's stated purpose, including other MCP clients' secrets.
+    remediation: >
+      Request only files required for the stated task. Make credential
+      auditing an explicit purpose when it is legitimate.
+    patterns:
+      - "read(s|ing)?\\b[^.]{0,60}(~/\\.ssh|\\.ssh/id_rsa|\\.env\\b|/etc/passwd|~/\\.aws/credentials|~/\\.netrc|~/\\.kube/config|~/\\.docker/config\\.json|~/\\.npmrc|~/\\.pypirc|~/\\.config/gh/hosts\\.yml|~/\\.gitconfig|~/\\.cursor/mcp\\.json|claude_desktop_config\\.json|~/\\.claude/\\w+|~/\\.vscode/mcp\\.json|\\bbrowser (cookies|history)|\\bcredential(s)? file|\\bprivate key)\\b"
+      - "access(es|ing)?\\b[^.]{0,60}(~/\\.ssh|\\.env\\b|/etc/passwd|~/\\.aws/credentials|~/\\.netrc|~/\\.kube/config|~/\\.docker/config\\.json|~/\\.npmrc|~/\\.pypirc|~/\\.config/gh/hosts\\.yml|~/\\.gitconfig|~/\\.cursor/mcp\\.json|claude_desktop_config\\.json|~/\\.claude/\\w+|~/\\.vscode/mcp\\.json|\\bkeychain|\\bcredential store)\\b"
+      # A credential path becomes suspicious when it appears near a handover verb. The paired
+      # proximity patterns avoid flagging tools that merely name the path.
+      - "(~/\\.ssh|\\.ssh/id_rsa|~/\\.aws/credentials|~/\\.netrc|~/\\.kube/config|~/\\.docker/config\\.json|~/\\.npmrc|~/\\.pypirc|~/\\.config/gh/hosts\\.yml|~/\\.gitconfig|~/\\.cursor/mcp\\.json|claude_desktop_config\\.json|~/\\.claude/\\w+|~/\\.vscode/mcp\\.json)[^.]{0,80}\\b(include(s|d|ing)?|send(s|ing)?|return(s|ing)?|attach(es|ing)?|pass(es|ing)?|upload(s|ing)?|paste(s|d|ing)?|report(s|ing)? (it|them|the contents))\\b"
+      - "\\b(include(s|d|ing)?|send(s|ing)?|return(s|ing)?|attach(es|ing)?|pass(es|ing)?|upload(s|ing)?|paste(s|d|ing)?|report(s|ing)? (it|them|the contents))\\b[^.]{0,80}(~/\\.ssh|\\.ssh/id_rsa|~/\\.aws/credentials|~/\\.netrc|~/\\.kube/config|~/\\.docker/config\\.json|~/\\.npmrc|~/\\.pypirc|~/\\.config/gh/hosts\\.yml|~/\\.gitconfig|~/\\.cursor/mcp\\.json|claude_desktop_config\\.json|~/\\.claude/\\w+|~/\\.vscode/mcp\\.json)"
+    negate:
+      - "\\b(scans?|audits?|checks?|detects?|lints?|analy[sz]es?|warns? (about|if)|never (reads?|accesses?)|does not (read|access))\\b"
+
+  - id: promptdefense.tool-poisoning-pseudo-tag
+    title: Description wraps text in a tag aimed at a model, not a reader
+    category: tool_poisoning
+    severity: MEDIUM
+    evidence_level: STATIC
+    description: >
+      This text uses a model-directed tag such as <SYSTEM> or [system note:]
+      that adds no user-facing meaning.
+    remediation: >
+      Remove model-directed markup and write visible instructions plainly.
+    references:
+      - https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
+    patterns:
+      - "<\\s*/?\\s*(important|system|secret|instructions?|admin|developer|internal|confidential|critical|attention)\\s*>"
+      - "\\[\\s*(system|admin|developer)[ _-]?note\\s*:"
+    negate:
+      - "\\b(detect|detects|detecting|block|blocks|blocking|prevent|prevents|preventing|defends? against|flag|flags|flagging|identif(y|ies|ying)|mitigat(e|es|ing)|warns? (about|against))\\b"
+    negate_before:
+      - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"

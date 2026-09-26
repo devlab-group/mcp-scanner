@@ -1,0 +1,12 @@
+id: sc-lockfile-longline-001
+category: known_vulnerable_dependency
+notes: >
+  A long first line exceeds bufio.Scanner's token limit before two vulnerable pins.
+  The parser must report the scanner error and return PARTIAL/UNKNOWN instead of
+  treating an unread dependency file as empty.
+analyzers: [supplychain]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

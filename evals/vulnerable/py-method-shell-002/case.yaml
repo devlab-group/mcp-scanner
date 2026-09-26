@@ -1,0 +1,12 @@
+id: py-method-shell-002
+category: command_injection
+notes: >
+  The same delegation with the service class in another module, so the
+  receiver-dropping binding has to hold across a file boundary as well as
+  within one.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

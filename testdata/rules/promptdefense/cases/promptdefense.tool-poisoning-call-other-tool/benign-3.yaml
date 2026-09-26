@@ -1,0 +1,8 @@
+rule: promptdefense.tool-poisoning-call-other-tool
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: merge_json
+    description: >-
+      Merges two JSON objects, with the second object's keys taking precedence on conflicts.

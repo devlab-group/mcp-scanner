@@ -1,0 +1,11 @@
+id: py-pathlib-inline-001-fixed
+category: path_traversal
+notes: >
+  Path(name).name reduces input to its final component before the inline read. The
+  receiver-constructor match must preserve the .name sanitizer.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

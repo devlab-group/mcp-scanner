@@ -1,0 +1,13 @@
+id: ts-promisify-exec-001-fixed
+category: command_injection
+notes: >
+  The same async handler promisifying execFile instead, with the directory
+  passed as its own argv element after a terminator, so no shell string is
+  built at all.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

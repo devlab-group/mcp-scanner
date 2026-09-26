@@ -1,0 +1,11 @@
+id: go-resolve-contain-001-fixed
+category: path_traversal
+notes: >
+  Before reading, filepath.Rel and a leading ".." check reject paths outside the
+  notes directory. The scanner must recognize this containment check as a valid fix.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

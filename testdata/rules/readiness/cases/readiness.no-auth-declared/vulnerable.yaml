@@ -1,0 +1,5 @@
+rule: readiness.no-auth-declared
+expect_fire: true
+note: no header or capability signals authentication
+snapshot:
+  instructions: Reporting server.

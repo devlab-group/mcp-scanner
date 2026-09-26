@@ -1,0 +1,12 @@
+id: js-param-sql-collide-001
+category: sql_injection
+notes: >
+  A $1 placeholder binds the value in the second argument while the column and handler
+  argument are both named name. The shared identifier must not turn this parameterized
+  Node query into a finding.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.sql_injection]

@@ -1,0 +1,11 @@
+rule: promptdefense.oversized-description
+expect_fire: false
+note: same tool, trimmed to a normal length
+snapshot:
+  tools:
+  - name: noop_tool
+    description: >-
+      Performs the configured no-op action and returns success.
+    input_schema:
+      type: object
+      properties: {}

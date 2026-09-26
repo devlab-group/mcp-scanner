@@ -1,0 +1,8 @@
+rule: promptdefense.tool-poisoning-unrelated-file-access
+expect_fire: false
+note: same tool, unrelated file access removed
+snapshot:
+  tools:
+  - name: csv_to_markdown
+    description: >-
+      Formats markdown tables from CSV input.

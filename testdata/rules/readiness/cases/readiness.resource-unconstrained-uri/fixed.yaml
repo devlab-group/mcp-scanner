@@ -1,0 +1,7 @@
+rule: readiness.resource-unconstrained-uri
+expect_fire: false
+note: same template, anchored to a fixed directory
+snapshot:
+  resource_templates:
+  - uri_template: file:///data/{filename}
+    description: Reads a file from the data directory.

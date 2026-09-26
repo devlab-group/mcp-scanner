@@ -1,0 +1,13 @@
+rule: readiness.tool-missing-schema
+expect_fire: false
+note: normal tool with a schema
+snapshot:
+  tools:
+  - name: get_weather
+    description: >-
+      Fetches the current weather forecast for a given city.
+    input_schema:
+      type: object
+      properties:
+        city:
+          type: string

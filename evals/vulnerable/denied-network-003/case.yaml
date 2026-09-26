@@ -1,0 +1,11 @@
+id: denied-network-003
+category: behavioral_mismatch
+notes: >
+  The description uses "asynchronously," which contains the network keyword `sync`.
+  An ordinary substring must not count as a network declaration or suppress the
+  behavior comparison.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

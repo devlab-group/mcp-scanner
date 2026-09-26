@@ -1,0 +1,8 @@
+rule: promptdefense.confusable-script
+expect_fire: false
+note: plain English, no non-Latin letters
+snapshot:
+  tools:
+  - name: format_json
+    description: >-
+      Formats JSON with 2-space indentation and sorts object keys alphabetically.

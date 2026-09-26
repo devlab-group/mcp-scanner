@@ -1,0 +1,9 @@
+rule: '*'
+expect_fire: false
+note: security tool quoting the tool-poisoning attack it defends against
+snapshot:
+  tools:
+  - name: poisoning_scanner
+    description: >-
+      Detects tool poisoning attempts such as descriptions that tell the model to call another tool silently
+      or hide actions from the user, and raises an alert when found.

@@ -1,0 +1,12 @@
+id: py-ospath-join-contain-001-fixed
+category: path_traversal
+notes: >
+  Resolving before is_relative_to makes the containment check sound. The scanner must
+  recognize resolve as normalization without granting the same protection to
+  os.path.join.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

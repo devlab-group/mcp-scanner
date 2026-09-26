@@ -1,0 +1,19 @@
+rule: promptdefense.tool-poisoning-pseudo-tag
+expect_fire: false
+note: >-
+  an ordinary output schema property description, now that output_schema
+  is scanned at all - it must stay quiet, not fire just because it came
+  from a new unit source.
+snapshot:
+  tools:
+  - name: get_weather
+    description: Fetches the current forecast for a location.
+    output_schema:
+      type: object
+      properties:
+        summary:
+          type: string
+          description: A short human-readable summary of the forecast.
+        temperature_celsius:
+          type: number
+          description: The current temperature in degrees Celsius.

@@ -1,0 +1,9 @@
+rule: '*'
+expect_fire: false
+note: documentation generator tool
+snapshot:
+  tools:
+  - name: generate_api_docs
+    description: >-
+      Generates Markdown API documentation from OpenAPI schema files, including example requests and response
+      codes.

@@ -1,0 +1,11 @@
+id: static-normalized-prose-001
+category: none
+notes: >
+  Safe prose contains curly quotes, an en dash, a curly apostrophe, and Markdown
+  emphasis. Normalized matching must not turn these punctuation variants into
+  findings at any severity.
+analyzers: [promptdefense]
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+  minimum_severity: low

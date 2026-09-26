@@ -1,0 +1,13 @@
+id: credential-path-mentions-001
+category: none
+notes: >
+  Four tools mention credential paths for legitimate permission checks,
+  documentation, backups, or key rotation without transferring their contents. Three
+  lack defensive qualifiers, so the handover-verb anchor must prevent false positives.
+analyzers: []  # every applicable analyzer, so a rule from any of them showing up here is a failure
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules:
+    - promptdefense.tool-poisoning-unrelated-file-access

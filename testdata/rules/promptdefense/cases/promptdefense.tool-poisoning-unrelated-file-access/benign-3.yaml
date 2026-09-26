@@ -1,0 +1,8 @@
+rule: promptdefense.tool-poisoning-unrelated-file-access
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: resize_image
+    description: >-
+      Resizes and compresses uploaded images to the specified maximum dimensions.

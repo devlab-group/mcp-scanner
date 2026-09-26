@@ -1,0 +1,19 @@
+rule: promptdefense.tool-poisoning-pseudo-tag
+expect_fire: false
+note: >-
+  an ordinary parameter description inside input_schema, now that the
+  schema is scanned at all - it must stay quiet, not fire just because it
+  came from a new unit source.
+snapshot:
+  tools:
+  - name: search_files
+    description: Searches files under a given directory for a text pattern.
+    input_schema:
+      type: object
+      properties:
+        directory:
+          type: string
+          description: The directory to search. Relative paths are resolved against the workspace root.
+        pattern:
+          type: string
+          description: The text pattern to search for. Case-insensitive by default.

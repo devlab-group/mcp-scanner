@@ -1,0 +1,11 @@
+id: py-method-shell-001
+category: command_injection
+notes: >
+  A tool handler passes tainted input to a service method. Binding must skip self and
+  map the caller's first argument to the method's second parameter.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

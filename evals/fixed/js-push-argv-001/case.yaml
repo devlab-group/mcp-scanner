@@ -1,0 +1,10 @@
+id: js-push-argv-001-fixed
+category: command_injection
+notes: >
+  The repair drops the shell and writes the argv out at the call site behind
+  a literal terminator, so the value cannot be read as a flag and nothing
+  interprets it as a command.
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+analyzers: [source, taint]

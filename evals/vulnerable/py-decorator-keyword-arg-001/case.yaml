@@ -1,0 +1,12 @@
+id: py-decorator-keyword-arg-001
+category: tool_poisoning
+notes: >
+  Two files use an unrecognized @expose decorator; one argument contains "tooling" and
+  the other contains a poisoning payload. Substring matching must not treat either as
+  MCP registration. With no discovered capabilities, the scan must be PARTIAL/UNKNOWN.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

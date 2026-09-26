@@ -1,0 +1,13 @@
+id: ts-basename-shell-001-fixed
+category: command_injection
+notes: >
+  The handler passes the argument as a separate execFile argv element instead of
+  interpolating it into a shell string. basename is not a shell sanitizer; avoiding
+  the shell is the fix.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

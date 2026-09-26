@@ -1,0 +1,11 @@
+id: denied-network-001
+category: behavioral_mismatch
+notes: >
+  A handler calls an external host while its description promises no network access.
+  A denied capability must count as a contradiction, not suppress the analyzer that
+  checks it.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

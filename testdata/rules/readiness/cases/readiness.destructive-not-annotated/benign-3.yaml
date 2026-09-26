@@ -1,0 +1,10 @@
+rule: readiness.destructive-not-annotated
+expect_fire: false
+note: a different destructive tool, correctly annotated
+snapshot:
+  tools:
+  - name: drop_table
+    description: >-
+      Drops the specified database table permanently.
+    annotations:
+      destructiveHint: true

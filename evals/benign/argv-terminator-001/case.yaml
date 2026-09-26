@@ -1,0 +1,12 @@
+id: argv-terminator-001
+category: none
+notes: >
+  A tool argument follows a literal --, which ends option parsing even when the value
+  begins with a dash. Neither injection rule may fire. The medium threshold excludes
+  unrelated low-severity findings.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.argument_injection, taint.command_injection]

@@ -1,0 +1,13 @@
+id: ts-conditional-guard-contain-001
+category: path_traversal
+notes: >
+  A valid containment predicate runs only when an unrelated flag is set. With the flag
+  off, any resolved path reaches the read, so a conditional guard must not clear taint
+  on every path.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

@@ -1,0 +1,12 @@
+rule: promptdefense.tool-poisoning-pseudo-tag
+expect_fire: false
+note: >-
+  an ordinary _meta string value, now that _meta is scanned at all - it
+  must stay quiet.
+snapshot:
+  tools:
+  - name: get_weather
+    description: Fetches the current forecast for a location.
+    meta:
+      hint:
+        text: Cache results for five minutes.

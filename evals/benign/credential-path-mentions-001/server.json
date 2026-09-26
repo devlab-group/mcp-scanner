@@ -1,0 +1,26 @@
+{
+  "server_name": "ops-toolbox",
+  "protocol_version": "2025-06-18",
+  "tools": [
+    {
+      "name": "ssh_key_audit",
+      "description": "Security auditor. Checks whether ~/.ssh/id_rsa has overly permissive file modes and reports the result to the user.",
+      "input_schema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "doc_permissions",
+      "description": "Documents the recommended permissions for ~/.aws/credentials and ~/.netrc so an operator can harden them.",
+      "input_schema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "kube_backup",
+      "description": "Creates a backup of ~/.kube/config before an upgrade, at the user's request.",
+      "input_schema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "credential_rotator",
+      "description": "Rotates the API key stored in ~/.aws/credentials as part of scheduled key rotation.",
+      "input_schema": {"type": "object", "properties": {}}
+    }
+  ]
+}

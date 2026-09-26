@@ -1,0 +1,11 @@
+rule: promptdefense.exfiltration
+expect_fire: false
+note: >-
+  an ordinary filename sitting next to a send verb must not be read as a
+  bare host - the new no-scheme pattern is closed to a fixed TLD list for
+  exactly this reason.
+snapshot:
+  tools:
+  - name: export_report
+    description: >-
+      Generates the report and uploads it locally as output.csv in the working directory.

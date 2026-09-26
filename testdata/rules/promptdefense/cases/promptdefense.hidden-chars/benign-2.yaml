@@ -1,0 +1,8 @@
+rule: promptdefense.hidden-chars
+expect_fire: false
+note: plain description, no special characters
+snapshot:
+  tools:
+  - name: convert_currency
+    description: >-
+      Converts currency amounts between ISO 4217 codes using the latest exchange rate.

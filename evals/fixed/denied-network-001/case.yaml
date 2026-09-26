@@ -1,0 +1,11 @@
+id: denied-network-001-fixed
+category: behavioral_mismatch
+notes: >
+  The same tool, with the network call removed so the description is true.
+  It must stay quiet.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [behavioral.undeclared_network, behavioral.contradicted_network]

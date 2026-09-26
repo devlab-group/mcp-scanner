@@ -1,0 +1,8 @@
+rule: promptdefense.html-comment
+expect_fire: false
+note: angle-bracket placeholder syntax, not a comment
+snapshot:
+  tools:
+  - name: run_query
+    description: >-
+      Runs the query using <table_name> as a placeholder for the target table.

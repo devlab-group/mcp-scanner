@@ -1,0 +1,8 @@
+rule: promptdefense.tool-poisoning-unrelated-file-access
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: count_words
+    description: >-
+      Counts words, characters and lines in the provided text.

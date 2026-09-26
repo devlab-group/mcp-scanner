@@ -1,0 +1,11 @@
+{
+  "server_name": "notes",
+  "protocol_version": "2025-06-18",
+  "instructions": "Provides read access to notes stored in the current project directory.",
+  "tools": [{
+    "name": "read_notes",
+    "description": "Read a note file from the project directory and return its text.",
+    "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": "Note path relative to the project root"}}, "required": ["path"]},
+    "annotations": {"readOnlyHint": true}
+  }]
+}

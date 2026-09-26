@@ -1,0 +1,12 @@
+id: go-bare-prefix-contain-001
+category: path_traversal
+notes: >
+  filepath.Join normalizes the path, but strings.HasPrefix compares bytes and the root
+  lacks a trailing separator. `../notes-secret/x` resolves to a sibling whose name
+  still starts with `/srv/notes`, so the containment check can be bypassed.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

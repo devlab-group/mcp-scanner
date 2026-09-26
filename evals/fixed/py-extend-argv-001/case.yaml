@@ -1,0 +1,11 @@
+id: py-extend-argv-001-fixed
+category: command_injection
+notes: >
+  The same list-extend call, with the name quoted as a single shell token
+  before it is folded into the string handed to bash -c.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

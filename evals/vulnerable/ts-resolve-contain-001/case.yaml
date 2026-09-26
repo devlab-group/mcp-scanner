@@ -1,0 +1,13 @@
+id: ts-resolve-contain-001
+category: path_traversal
+notes: >
+  The argument is resolved against a base directory but nothing checks the
+  result stays under it - the negative space the resolve-and-contain fixed
+  case below fills in.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

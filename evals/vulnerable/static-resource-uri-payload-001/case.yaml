@@ -1,0 +1,12 @@
+id: static-resource-uri-payload-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  The payload in a resource URI. resources/list hands the model the URI
+  alongside the name, so a payload there is read exactly like one in the
+  name, which was already CRITICAL.
+

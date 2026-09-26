@@ -1,0 +1,13 @@
+id: ts-alias-in-repo-helper-001
+category: none
+notes: >
+  Two local names resemble process API aliases but refer to a string and an in-repo
+  helper. Alias resolution must record only real sinks and prefer a resolved local
+  function.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.command_injection, taint.argument_injection]

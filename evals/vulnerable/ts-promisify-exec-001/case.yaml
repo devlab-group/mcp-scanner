@@ -1,0 +1,12 @@
+id: ts-promisify-exec-001
+category: command_injection
+notes: >
+  An async handler invokes the function returned by promisify(exec). Sink resolution
+  must follow the returned alias even though the call site does not name exec.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

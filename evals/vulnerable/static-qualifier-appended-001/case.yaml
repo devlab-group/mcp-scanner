@@ -1,0 +1,10 @@
+id: static-qualifier-appended-001
+category: tool_poisoning
+target: {kind: static, path: server.json}
+analyzers: [promptdefense]
+expected:
+  vulnerable: true
+  minimum_severity: high
+notes: >
+  The control payload adds "to a third party." An author-controlled qualifier must not
+  lower a CRITICAL instruction below the default severity gate.

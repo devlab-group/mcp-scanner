@@ -1,0 +1,7 @@
+rule: readiness.tool-missing-description
+expect_fire: true
+note: tool with an empty description
+snapshot:
+  tools:
+  - name: mystery_tool
+    description: ''

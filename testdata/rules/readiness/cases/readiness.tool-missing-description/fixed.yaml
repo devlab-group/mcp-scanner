@@ -1,0 +1,7 @@
+rule: readiness.tool-missing-description
+expect_fire: false
+note: same tool, description added
+snapshot:
+  tools:
+  - name: mystery_tool
+    description: Purges expired cache entries older than the configured TTL.

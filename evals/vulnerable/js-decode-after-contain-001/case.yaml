@@ -1,0 +1,11 @@
+id: js-decode-after-contain-001
+category: path_traversal
+notes: >
+  A valid containment check runs before decoding. Decoding `%2e%2e%2f` into `../`
+  changes the value after validation, so an unchecked path reaches the read.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

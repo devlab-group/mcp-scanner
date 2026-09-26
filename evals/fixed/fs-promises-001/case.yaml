@@ -1,0 +1,12 @@
+id: fs-promises-001-fixed
+category: path_traversal
+notes: >
+  The same handler with the argument reduced to its base name first, which
+  discards any traversal segments. It must stay quiet, and it must not be
+  reported as undescribed: its description is a key in an object literal.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal, source.capability_no_description]

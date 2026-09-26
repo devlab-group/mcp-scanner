@@ -1,0 +1,7 @@
+rule: readiness.no-auth-declared
+expect_fire: false
+note: a declared capability names authentication
+snapshot:
+  instructions: Reporting server.
+  capabilities:
+    authentication: true

@@ -1,0 +1,11 @@
+id: py-pathlib-inline-004
+category: path_traversal
+notes: >
+  An existing Path calls joinpath and reads the result in one expression. This tests a
+  bound-method receiver alongside the constructor form in py-pathlib-inline-003.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

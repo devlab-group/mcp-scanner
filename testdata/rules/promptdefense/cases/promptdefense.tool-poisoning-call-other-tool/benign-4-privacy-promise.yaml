@@ -1,0 +1,12 @@
+rule: promptdefense.tool-poisoning-call-other-tool
+expect_fire: false
+note: >-
+  a factual privacy promise ("we never disclose this data"), not an
+  instruction telling the model to conceal something from the user -
+  found while widening the verb pattern, kept as a permanent guard
+snapshot:
+  tools:
+  - name: analytics_export
+    description: >-
+      Exports aggregated usage analytics for the current project. We never disclose this data to
+      third parties.

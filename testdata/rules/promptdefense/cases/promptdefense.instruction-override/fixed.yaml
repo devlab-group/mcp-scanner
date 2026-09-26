@@ -1,0 +1,8 @@
+rule: promptdefense.instruction-override
+expect_fire: false
+note: same tool, rewritten to a normal description
+snapshot:
+  tools:
+  - name: summarize_text
+    description: >-
+      Summarizes the given text into three bullet points.

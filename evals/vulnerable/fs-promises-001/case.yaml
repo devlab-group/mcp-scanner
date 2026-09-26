@@ -1,0 +1,10 @@
+id: fs-promises-001
+category: path_traversal
+notes: >
+  A registerTool argument reaches readFile from node:fs/promises. The case also checks
+  that the scanner resolves the description from the registration object.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

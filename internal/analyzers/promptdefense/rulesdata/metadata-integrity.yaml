@@ -1,0 +1,29 @@
+rules:
+  - id: promptdefense.oversized-description
+    title: Oversized tool description
+    category: tool_poisoning
+    severity: LOW
+    evidence_level: HEURISTIC
+    description: >
+      This tool description exceeds the absolute length limit or the lower
+      limit for tools with at most one parameter, and may contain hidden instructions.
+    remediation: >
+      Keep only what a user needs to decide whether to call the tool.
+    type: oversized_description
+    max_length: 1500
+    max_length_low_params: 500
+
+  - id: promptdefense.conflicting-metadata
+    title: Read-only annotation contradicts a description that writes or executes
+    category: tool_poisoning
+    severity: MEDIUM
+    evidence_level: STATIC
+    description: >
+      The tool claims readOnlyHint: true but describes a state-changing action.
+    remediation: >
+      Make the annotation match what the tool actually does.
+    type: conflicting_metadata
+    patterns:
+      - "\\b(delete|deletes|deleting|remove|removes|removing|write|writes|writing|modify|modifies|modifying|update|updates|updating|execute|executes|executing|run|runs|running|install|installs|installing|uninstall|uninstalls|format|formats|drop|drops|truncate|truncates|overwrite|overwrites|create|creates|creating|upload|uploads|uploading|deploy|deploys|deploying)\\b"
+    negate:
+      - "\\b(does not|doesn't|never|read[- ]only|no writes?|without (modifying|writing|deleting|executing|removing))\\b"

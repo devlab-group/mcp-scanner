@@ -1,0 +1,13 @@
+rule: promptdefense.tool-poisoning-unrelated-file-access
+expect_fire: false
+note: >-
+  The same shape in the other common form: a tool whose job is to write
+  about credential files rather than to read them. It has no negate word
+  either, so it only clears because the path sits nowhere near a verb that
+  moves its contents.
+snapshot:
+  tools:
+  - name: document_permissions
+    description: >-
+      Documents the recommended permissions for ~/.aws/credentials and
+      ~/.netrc so an operator can harden them.

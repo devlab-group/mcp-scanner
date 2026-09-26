@@ -1,0 +1,7 @@
+rule: promptdefense.hidden-chars
+expect_fire: false
+note: a leading BOM is a document artifact, not an attack
+snapshot:
+  tools:
+  - name: summarize_text
+    description: "\uFEFFSummarizes the given text."

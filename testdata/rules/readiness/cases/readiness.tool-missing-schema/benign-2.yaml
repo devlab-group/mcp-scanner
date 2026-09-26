@@ -1,0 +1,13 @@
+rule: readiness.tool-missing-schema
+expect_fire: false
+note: normal tool with a schema
+snapshot:
+  tools:
+  - name: list_files
+    description: >-
+      Lists all files in the given directory.
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string

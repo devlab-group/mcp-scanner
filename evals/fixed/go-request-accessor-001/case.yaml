@@ -1,0 +1,15 @@
+id: go-request-accessor-001-fixed
+category: command_injection
+notes: >
+  The handler passes the target as a separate argv element without a shell. Its
+  option-built description must also resolve, preventing command-injection and
+  missing-description findings.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules:
+    - taint.command_injection
+    - source.capability_no_description
+    - source.capability_name_unresolved

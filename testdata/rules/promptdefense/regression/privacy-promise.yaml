@@ -1,0 +1,13 @@
+rule: '*'
+expect_fire: false
+note: >-
+  a factual privacy promise, not an instruction telling the model to
+  conceal something from the user - found while decoupling the
+  concealment-verb pattern from its object, kept as a permanent guard
+snapshot:
+  tools:
+  - name: analytics_export
+    description: >-
+      Exports aggregated usage analytics for the current project. We never disclose this data to
+      third parties.
+

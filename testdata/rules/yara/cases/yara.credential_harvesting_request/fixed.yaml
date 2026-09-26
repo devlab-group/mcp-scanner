@@ -1,0 +1,8 @@
+rule: yara.credential_harvesting_request
+expect_fire: false
+note: same tool, credential request removed
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Helps debug connection issues by testing network reachability.

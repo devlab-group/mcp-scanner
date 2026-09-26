@@ -1,0 +1,12 @@
+id: js-decode-before-contain-001
+category: path_traversal
+notes: >
+  The input is decoded before joining and checking containment, so the guard examines
+  the same value that reaches the read. Decoder safety depends on this ordering, not
+  whether a decoder appears in the handler.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

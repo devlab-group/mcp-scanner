@@ -1,0 +1,7 @@
+rule: readiness.no-auth-declared
+expect_fire: false
+note: a WWW-Authenticate response header was observed
+snapshot:
+  instructions: Reporting server.
+  response_headers:
+    WWW-Authenticate: Bearer realm="mcp"

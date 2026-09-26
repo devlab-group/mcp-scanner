@@ -1,0 +1,12 @@
+id: ts-bound-handler-taint-001
+category: command_injection
+notes: >
+  A class server contains a resolved echo tool and a command injection behind
+  this.runTarget.bind(this), which does not resolve. The unresolved handler must keep
+  the taint result PARTIAL/UNKNOWN even though another capability was analyzed.
+analyzers: [taint]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

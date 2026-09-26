@@ -1,0 +1,9 @@
+rule: '*'
+expect_fire: false
+note: security tool quoting the tag shapes it detects, for the pseudo-tag wrapper rule's negate list
+snapshot:
+  tools:
+  - name: poisoning_tag_scanner
+    description: >-
+      Detects tool descriptions that wrap instructions in <IMPORTANT> or [system note: ...] tags aimed
+      at a model rather than a person, and blocks any tool exhibiting that pattern.

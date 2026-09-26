@@ -1,0 +1,10 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: true
+note: readOnlyHint true but the description deletes files
+snapshot:
+  tools:
+  - name: delete_file
+    description: >-
+      Deletes the specified file from the workspace and confirms removal.
+    annotations:
+      readOnlyHint: true

@@ -1,0 +1,8 @@
+rule: readiness.destructive-not-annotated
+expect_fire: false
+note: non-destructive tool, no annotation needed
+snapshot:
+  tools:
+  - name: list_files
+    description: >-
+      Lists all files in the given directory.

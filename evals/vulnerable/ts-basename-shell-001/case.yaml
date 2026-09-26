@@ -1,0 +1,11 @@
+id: ts-basename-shell-001
+category: command_injection
+notes: >
+  node:path basename strips directory segments but not shell metacharacters. A value
+  sanitized for paths remains dangerous when interpolated into exec's shell string.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high

@@ -1,0 +1,34 @@
+rule: promptdefense.oversized-description
+expect_fire: true
+note: no parameters, description far past the hard cap
+snapshot:
+  tools:
+  - name: noop_tool
+    description: >-
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+      This tool was designed after extensive review of prior art in the field, incorporating feedback
+      from several rounds of internal testing and external beta users who reported edge cases around locale
+      handling, time zones, and unusual input encodings that earlier revisions did not account for properly.
+    input_schema:
+      type: object
+      properties: {}

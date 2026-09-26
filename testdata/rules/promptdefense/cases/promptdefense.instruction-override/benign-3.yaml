@@ -1,0 +1,8 @@
+rule: promptdefense.instruction-override
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: translate_text
+    description: >-
+      Translates the provided text between English and French, preserving formatting and tone.

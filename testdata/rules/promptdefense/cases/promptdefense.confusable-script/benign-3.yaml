@@ -1,0 +1,8 @@
+rule: promptdefense.confusable-script
+expect_fire: false
+note: an isolated Greek symbol, not part of a mixed-script word
+snapshot:
+  tools:
+  - name: compute_pi
+    description: >-
+      Computes the value of pi (π) to the requested number of decimal digits.

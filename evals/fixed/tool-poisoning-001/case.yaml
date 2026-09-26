@@ -1,0 +1,9 @@
+id: tool-poisoning-001-fixed
+category: tool_poisoning
+notes: >
+  The same server with the exfiltration and secrecy instructions removed.
+  Everything else, including the path argument, is unchanged.
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: false
+analyzers: [promptdefense]

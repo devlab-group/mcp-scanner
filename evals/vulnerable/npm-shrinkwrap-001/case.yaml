@@ -1,0 +1,11 @@
+id: npm-shrinkwrap-001
+category: vulnerable_dependency
+notes: >
+  npm-shrinkwrap.json uses the package-lock format and may ship in published tarballs.
+  The scanner must parse it instead of leaving the dependency tree unread and reporting
+  SKIPPED.
+analyzers: [supplychain]
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

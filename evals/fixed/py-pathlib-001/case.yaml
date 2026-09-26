@@ -1,0 +1,11 @@
+id: py-pathlib-001-fixed
+category: path_traversal
+notes: >
+  The same handler with the name reduced to its base component first, which
+  discards any traversal segments.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

@@ -1,0 +1,12 @@
+id: java-clean-then-join-contain-001
+category: path_traversal
+notes: >
+  The argument is normalized before the root is prepended, so the combined path is
+  never normalized. The resulting `/srv/notes/../../etc/passwd` passes startsWith but
+  escapes the root.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

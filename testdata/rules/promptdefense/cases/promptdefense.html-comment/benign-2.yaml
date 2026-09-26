@@ -1,0 +1,8 @@
+rule: promptdefense.html-comment
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: list_pull_requests
+    description: >-
+      Lists all open pull requests for the given repository.

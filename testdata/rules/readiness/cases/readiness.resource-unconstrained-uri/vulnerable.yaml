@@ -1,0 +1,7 @@
+rule: readiness.resource-unconstrained-uri
+expect_fire: true
+note: template is one variable with no literal prefix
+snapshot:
+  resource_templates:
+  - uri_template: file:///{path}
+    description: Reads an arbitrary file.

@@ -1,0 +1,13 @@
+id: ts-import-alias-exec-001
+category: command_injection
+notes: >
+  Two tools that each reach a process API under a different local name: one
+  renamed by the import, one rebound by an assignment. Neither call site
+  writes the sink's own name, and both are ordinary spellings.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

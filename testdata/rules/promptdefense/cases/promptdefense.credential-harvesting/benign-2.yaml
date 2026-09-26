@@ -1,0 +1,8 @@
+rule: promptdefense.credential-harvesting
+expect_fire: false
+note: unrelated normal tool
+snapshot:
+  tools:
+  - name: count_words
+    description: >-
+      Counts how many words appear in the provided document.

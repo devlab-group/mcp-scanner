@@ -1,0 +1,8 @@
+rule: promptdefense.base64-blob
+expect_fire: false
+note: same tool, blob removed
+snapshot:
+  tools:
+  - name: send_notification
+    description: >-
+      Sends a status update notification to the configured webhook.

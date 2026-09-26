@@ -1,0 +1,8 @@
+rule: promptdefense.confusable-script
+expect_fire: false
+note: same tool, plain Latin spelling
+snapshot:
+  tools:
+  - name: process_refund
+    description: >-
+      Connects to the official payment gateway to process refunds.

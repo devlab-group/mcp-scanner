@@ -1,0 +1,11 @@
+id: requirements-continuation-001
+category: vulnerable_dependency
+notes: >
+  pip joins a backslash-terminated line with the next line before parsing. The scanner
+  must do the same so a continued, pinned dependency cannot become zero coordinates and
+  a SKIPPED result.
+analyzers: [supplychain]
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

@@ -1,0 +1,12 @@
+id: js-local-query-helper-001
+category: none
+notes: >
+  An in-memory notes server defines local query and prepare helpers. Although a tool
+  argument reaches each helper in a SQL-statement position, local functions with these
+  common names are not database sinks.
+analyzers: []  # every applicable analyzer, so a rule from any of them showing up here is a failure
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.sql_injection]

@@ -1,0 +1,11 @@
+id: py-basename-shell-002
+category: command_injection
+notes: >
+  The basename result is assigned to safe_path before reaching os.popen. The
+  intermediate variable does not make basename a shell sanitizer, so command
+  injection remains possible.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

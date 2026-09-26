@@ -1,0 +1,10 @@
+rule: promptdefense.conflicting-metadata
+expect_fire: false
+note: read-only annotation matches a read-only description
+snapshot:
+  tools:
+  - name: list_files
+    description: >-
+      Lists all files in the given directory.
+    annotations:
+      readOnlyHint: true

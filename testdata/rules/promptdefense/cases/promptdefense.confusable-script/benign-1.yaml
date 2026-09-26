@@ -1,0 +1,8 @@
+rule: promptdefense.confusable-script
+expect_fire: false
+note: whole words in one script each, not mixed within a word
+snapshot:
+  tools:
+  - name: translate_ru_names
+    description: >-
+      русский текст: converts Russian product names to English.

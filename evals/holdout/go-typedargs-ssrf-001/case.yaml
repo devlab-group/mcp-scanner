@@ -1,0 +1,11 @@
+id: go-typedargs-ssrf-001
+category: ssrf
+notes: >
+  Held out of rule tuning. A typed Go tool appends its argument to an internal host
+  and passes the URL to http.Get, testing SSRF through Go's standard HTTP client.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.ssrf]

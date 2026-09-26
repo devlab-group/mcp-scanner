@@ -1,0 +1,14 @@
+id: tool-poisoning-paraphrase-001
+category: tool_poisoning
+notes: >
+  The payload says "using any other tool" and separates "Read" from the SSH key path
+  with a sentence boundary. The unrelated-file rule must connect the path to a nearby
+  handover verb; the call-other-tool rule intentionally does not match the ambiguous
+  gerund "using."
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: true
+  minimum_severity: critical
+  rules:
+    - promptdefense.tool-poisoning-unrelated-file-access
+analyzers: [promptdefense]

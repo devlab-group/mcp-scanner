@@ -1,0 +1,12 @@
+id: excluded-dir-001
+category: command_injection
+notes: >
+  A command-injection sink sits under node_modules, which source analysis does not
+  walk. Because the excluded file remains unread, the scan must report
+  PARTIAL/UNKNOWN rather than COMPLETED/SAFE.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

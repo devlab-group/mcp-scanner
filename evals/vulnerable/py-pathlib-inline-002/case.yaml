@@ -1,0 +1,12 @@
+id: py-pathlib-inline-002
+category: path_traversal
+notes: >
+  The same inline-receiver idiom as py-pathlib-inline-001, through .open()
+  instead of .read_text() - a second call shape sharing the identical
+  receiver bug, to catch a fix that only special-cased one method name.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

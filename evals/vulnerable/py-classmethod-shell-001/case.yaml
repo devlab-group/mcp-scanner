@@ -1,0 +1,12 @@
+id: py-classmethod-shell-001
+category: command_injection
+notes: >
+  A classmethod uses cls as an implicit receiver, so the caller's first argument maps
+  to the second parameter. The staticmethod control must instead bind from parameter
+  zero.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

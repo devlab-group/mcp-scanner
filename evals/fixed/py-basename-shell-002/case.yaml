@@ -1,0 +1,12 @@
+id: py-basename-shell-002-fixed
+category: command_injection
+notes: >
+  shlex.quote protects safe_path before it reaches the shell string, while basename
+  protects the path boundary. Both sanitizers are required because they address
+  different sinks.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

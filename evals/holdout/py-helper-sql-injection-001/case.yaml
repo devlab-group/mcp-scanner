@@ -1,0 +1,12 @@
+id: py-helper-sql-injection-001
+category: sql_injection
+notes: >
+  server.py passes the argument to a helper in db.py, where str.format builds the SQL
+  query. This tests injection across files and a formatting style absent from the main
+  corpus.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.sql_injection]

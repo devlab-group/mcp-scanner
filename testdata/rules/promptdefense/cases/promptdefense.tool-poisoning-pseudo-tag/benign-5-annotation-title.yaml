@@ -1,0 +1,11 @@
+rule: promptdefense.tool-poisoning-pseudo-tag
+expect_fire: false
+note: >-
+  an ordinary annotations.title, now that it is scanned at all - it must
+  stay quiet.
+snapshot:
+  tools:
+  - name: get_weather
+    description: Fetches the current forecast for a location.
+    annotations:
+      title: Get weather forecast

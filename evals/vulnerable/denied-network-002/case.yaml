@@ -1,0 +1,11 @@
+id: denied-network-002
+category: behavioral_mismatch
+notes: >
+  A handler POSTs to an external host without declaring network access. Substring
+  matches in "Rapidly" and "author" must not treat "api" and "auth" as declared
+  capabilities and suppress behavioral findings.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high

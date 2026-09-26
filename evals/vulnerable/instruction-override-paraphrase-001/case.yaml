@@ -1,0 +1,14 @@
+id: instruction-override-paraphrase-001
+category: prompt_injection
+notes: >
+  A one-word paraphrase of the override phrase: "disregard any prior
+  instructions" instead of "disregard your/the prior instructions". The
+  disregard pattern's optional determiner group held
+  "your " and "the " but not "any ".
+target: {kind: static, path: server.json}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules:
+    - promptdefense.instruction-override
+analyzers: [promptdefense]

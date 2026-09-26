@@ -1,0 +1,13 @@
+id: ts-resolve-contain-001-fixed
+category: path_traversal
+notes: >
+  The handler resolves the path and rejects it unless it remains under the notes
+  directory. The scanner must recognize this node:path containment check as a valid
+  fix.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.path_traversal]

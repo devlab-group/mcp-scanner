@@ -1,0 +1,7 @@
+rule: readiness.resource-unconstrained-uri
+expect_fire: false
+note: a plain fixed-path resource with no template variable
+snapshot:
+  resources:
+  - uri: file:///data/readme.txt
+    description: The project readme.

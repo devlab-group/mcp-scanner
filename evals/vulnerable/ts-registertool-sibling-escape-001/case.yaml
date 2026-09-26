@@ -1,0 +1,13 @@
+id: ts-registertool-sibling-escape-001
+category: path_traversal
+notes: >
+  A registerTool handler normalizes the path but compares it with a root that lacks a
+  trailing separator. Since startsWith compares characters, a sibling such as
+  /srv/notes-secret passes the check.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

@@ -1,0 +1,12 @@
+id: py-chained-receiver-contain-001
+category: path_traversal
+notes: >
+  The pathlib containment check uses an inline receiver that the analyzer does not
+  recognize as a guard. This case pins the conservative finding without treating
+  the guard as understood.
+analyzers: [taint]
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

@@ -1,0 +1,7 @@
+rule: readiness.resource-unconstrained-uri
+expect_fire: false
+note: template variable anchored under a long literal path
+snapshot:
+  resource_templates:
+  - uri_template: https://api.example.com/v1/users/{id}
+    description: Looks up a user by id.

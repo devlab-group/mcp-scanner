@@ -1,0 +1,12 @@
+id: js-chained-literal-normalize-001
+category: none
+notes: >
+  A two-call normalization chain processes a configuration literal, not a tool
+  argument. Looking through the chain must not create taint.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: PARTIAL
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.command_injection, taint.argument_injection]

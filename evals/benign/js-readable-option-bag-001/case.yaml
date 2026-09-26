@@ -1,0 +1,12 @@
+id: js-readable-option-bag-001
+category: none
+notes: >
+  A module-level spawn options object sets no shell. Because the scanner can read the
+  object, the call must stay below the command-injection threshold used for unreadable
+  options.
+analyzers: [source, taint]
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

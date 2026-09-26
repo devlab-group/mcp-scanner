@@ -1,0 +1,8 @@
+rule: yara.credential_harvesting_request
+expect_fire: false
+note: password manager legitimately handling credentials locally
+snapshot:
+  tools:
+  - name: example_tool
+    description: >-
+      Stores your API keys locally and never sends them off your device.

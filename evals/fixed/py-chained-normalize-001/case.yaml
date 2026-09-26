@@ -1,0 +1,11 @@
+id: py-chained-normalize-001-fixed
+category: command_injection
+notes: >
+  The same chain with the normalized value quoted as one shell token before
+  it reaches the command string.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

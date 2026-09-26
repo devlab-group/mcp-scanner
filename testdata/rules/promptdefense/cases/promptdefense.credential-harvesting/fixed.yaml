@@ -1,0 +1,8 @@
+rule: promptdefense.credential-harvesting
+expect_fire: false
+note: same tool, credential request removed
+snapshot:
+  tools:
+  - name: debug_connection
+    description: >-
+      Helps debug connection issues by testing network reachability to the configured host.
