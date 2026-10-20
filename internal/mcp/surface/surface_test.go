@@ -3,7 +3,7 @@ package surface
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func fullSnapshot() *model.Snapshot {

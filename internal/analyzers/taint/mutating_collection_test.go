@@ -3,7 +3,7 @@ package taint
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
 )
 
 func TestTaint_ListAppendCarriesTaint(t *testing.T) {

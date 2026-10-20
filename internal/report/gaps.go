@@ -1,6 +1,6 @@
 package report
 
-import "github.com/revinand/mcp-scanner/pkg/model"
+import "github.com/devlab-group/mcp-scanner/pkg/model"
 
 // AnalyzerGaps returns deduplicated gaps for completed or partial analyzers. Failed, skipped,
 // and unavailable analyzers are omitted; their status conveys the missing analysis instead.

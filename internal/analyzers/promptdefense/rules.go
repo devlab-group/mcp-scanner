@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Rule is one detection declared in a rules/prompt-defense/*.yaml file. The

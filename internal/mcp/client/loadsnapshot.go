@@ -7,8 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/discovery"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/discovery"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // LoadSnapshotBytes parses a snapshot the caller has already read. Bounding that read is

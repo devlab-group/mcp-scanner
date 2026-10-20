@@ -3,7 +3,7 @@ package report
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestCoverageOverstatesCapabilities(t *testing.T) {

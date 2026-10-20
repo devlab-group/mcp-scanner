@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Caps on any one list method's pagination. A server is untrusted input: without a bound,

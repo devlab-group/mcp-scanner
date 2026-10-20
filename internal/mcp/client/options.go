@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // Options configures how the client connects and how much of a server's

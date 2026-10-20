@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func TestFileFor_CapsReadAtGraphMaxBytes(t *testing.T) {

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 type fakeAnalyzer struct {

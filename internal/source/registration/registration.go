@@ -9,8 +9,8 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
 // argRoles is which argument plays which part in a registration call, found

@@ -3,8 +3,8 @@ package report
 import (
 	"fmt"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // GateNote explains an UNSAFE verdict's exit code, or an incomplete scan that policy allowed

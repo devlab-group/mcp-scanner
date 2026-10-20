@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Options configures one scan

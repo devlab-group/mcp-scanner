@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/source"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 func TestSourceScanNeverReturnsTheBaseDirectory(t *testing.T) {

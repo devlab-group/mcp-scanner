@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Canonical returns JSON with tools, prompts, resources, templates, warnings, and map keys sorted.

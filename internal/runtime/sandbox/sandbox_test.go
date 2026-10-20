@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/runtime/canary"
-	"github.com/revinand/mcp-scanner/internal/testutil"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/canary"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestBuildArgsExact(t *testing.T) {

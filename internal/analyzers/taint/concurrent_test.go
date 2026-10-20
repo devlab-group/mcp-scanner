@@ -5,11 +5,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/analyzers/behavioral"
-	"github.com/revinand/mcp-scanner/internal/analyzers/taint"
-	"github.com/revinand/mcp-scanner/internal/source"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/analyzers/behavioral"
+	"github.com/devlab-group/mcp-scanner/internal/analyzers/taint"
+	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestConcurrentAnalyzers_SharedArtifactsUnderRace(t *testing.T) {

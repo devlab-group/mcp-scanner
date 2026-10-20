@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
 )
 
 // exitCode is set by RunE and read by main after Execute returns

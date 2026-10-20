@@ -3,7 +3,7 @@ package taint
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 var operationParity = map[string]map[language.ID]string{

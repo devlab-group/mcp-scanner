@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
 )
 
 // Coordinate identifies one package version to check. Ecosystem follows

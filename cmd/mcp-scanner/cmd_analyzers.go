@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // knownAnalyzerNames lists public analyzers, including optional build-tagged ones.

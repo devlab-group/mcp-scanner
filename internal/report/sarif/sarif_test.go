@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func finding(rule string, sev model.Severity, file string, line int) model.Finding {

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source"
-	"github.com/revinand/mcp-scanner/internal/testutil"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestTaint_MissingWalkCoverageDowngrades(t *testing.T) {

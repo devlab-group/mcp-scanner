@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 type named string

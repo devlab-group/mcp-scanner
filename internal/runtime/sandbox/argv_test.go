@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/runtime/canary"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/canary"
 )
 
 func TestSawToolCallResponse(t *testing.T) {

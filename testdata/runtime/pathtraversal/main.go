@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/testdata/runtime/fixtureutil"
+	"github.com/devlab-group/mcp-scanner/testdata/runtime/fixtureutil"
 )
 
 const base = "/sandbox/home/public"

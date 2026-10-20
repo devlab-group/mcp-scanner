@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/revinand/mcp-scanner/internal/report"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/report"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Write serializes and sanitizes one result. Target headers and environment

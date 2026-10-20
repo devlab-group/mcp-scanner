@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"github.com/revinand/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 )
 
 // Resolve matches a call's final identifier without receiver-type information. A unique candidate

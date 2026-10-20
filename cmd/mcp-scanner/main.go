@@ -6,7 +6,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
 )
 
 func main() {

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/testutil"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func staticCommand(t *testing.T, base string) string {

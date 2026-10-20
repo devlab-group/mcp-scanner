@@ -8,8 +8,8 @@ package registration
 import (
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
 // requestHandlerRole is which capability kind a setRequestHandler /

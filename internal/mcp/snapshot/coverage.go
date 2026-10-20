@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/discovery"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/discovery"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // CapabilityCoverage converts snapshot truncation into coverage. Known missing

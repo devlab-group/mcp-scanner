@@ -1,8 +1,8 @@
 package source
 
 import (
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // SynthesizeCoverageKey lets snapshot consumers include unresolved source

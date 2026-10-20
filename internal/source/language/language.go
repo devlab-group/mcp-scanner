@@ -10,7 +10,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
-	"github.com/revinand/mcp-scanner/internal/source/queries"
+	"github.com/devlab-group/mcp-scanner/internal/source/queries"
 )
 
 // ID names one of the supported languages. It is also the query directory

@@ -1,6 +1,6 @@
 package protocol
 
-import "github.com/revinand/mcp-scanner/pkg/model"
+import "github.com/devlab-group/mcp-scanner/pkg/model"
 
 // newFinding sets the fields shared by protocol findings. Callers must provide
 // evidence because model.Finding.Validate rejects an empty list.

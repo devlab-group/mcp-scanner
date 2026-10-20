@@ -7,7 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/revinand/mcp-scanner/testdata/protocol/fixtures"
+	"github.com/devlab-group/mcp-scanner/testdata/protocol/fixtures"
 )
 
 const stdioFixtureEnv = "MCP_SCANNER_STDIO_FIXTURE"

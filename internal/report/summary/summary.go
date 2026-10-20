@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/report"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/report"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // maxTopFindings caps how many findings the summary lists individually;

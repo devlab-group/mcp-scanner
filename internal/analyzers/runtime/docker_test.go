@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/runtime/sandbox"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/sandbox"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // fixtureDeadline gives normal fixture runs enough time on a loaded host. Timeout tests use

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Preparation must never treat a non-empty, possibly caller-owned directory as disposable

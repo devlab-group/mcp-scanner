@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/llm"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/llm"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 const (

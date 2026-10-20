@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/supplychain"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // parsePackageArg accepts positional and ecosystem:name@version forms.

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/testdata/protocol/fixtures"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/testdata/protocol/fixtures"
 )
 
 func TestPreparerRefusesAStaticTarget(t *testing.T) {

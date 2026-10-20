@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
 )
 
 // Snapshot and compare must reject inherited flags they cannot honor

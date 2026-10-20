@@ -20,7 +20,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // Kind values, mirrored on analyzer.Canary.Kind

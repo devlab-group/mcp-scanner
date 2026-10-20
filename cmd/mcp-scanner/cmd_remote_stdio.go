@@ -1,16 +1,16 @@
 package main
 
 import (
-	"github.com/revinand/mcp-scanner/internal/app"
+	"github.com/devlab-group/mcp-scanner/internal/app"
 	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/client"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/client"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 func newLogger() *slog.Logger {

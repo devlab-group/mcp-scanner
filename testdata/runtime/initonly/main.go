@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/revinand/mcp-scanner/testdata/runtime/fixtureutil"
+	"github.com/devlab-group/mcp-scanner/testdata/runtime/fixtureutil"
 )
 
 func main() {

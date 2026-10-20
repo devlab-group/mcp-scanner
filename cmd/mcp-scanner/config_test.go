@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
 )
 
 // Reject empty baseline reasons while loading the operator's file

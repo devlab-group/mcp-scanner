@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/client"
-	"github.com/revinand/mcp-scanner/internal/policy"
-	reportjson "github.com/revinand/mcp-scanner/internal/report/json"
-	"github.com/revinand/mcp-scanner/internal/supplychain"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/client"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	reportjson "github.com/devlab-group/mcp-scanner/internal/report/json"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 // submitRequest is the POST /v1/scans body. It intentionally mirrors only

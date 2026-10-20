@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // probeTimeout bounds every individual probe: a hung server must not hang

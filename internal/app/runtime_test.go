@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/runtime/sandbox"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/sandbox"
 )
 
 // The executor supplies runtime.timeout when a request has no override

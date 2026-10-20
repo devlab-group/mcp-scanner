@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/revinand/mcp-scanner/testdata/protocol/fixtures"
+	"github.com/devlab-group/mcp-scanner/testdata/protocol/fixtures"
 )
 
 func TestDiscoverWellBehaved(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // Pin the public analyzer names exposed by the default build. cisco and virustotal compile but

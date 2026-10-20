@@ -7,7 +7,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func assignTargetsOf(t *testing.T, id language.ID, src string) []string {

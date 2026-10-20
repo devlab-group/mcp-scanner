@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func unsafeResult() *model.ScanResult {

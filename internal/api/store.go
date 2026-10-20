@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // recordStatus is the lifecycle of one submitted scan

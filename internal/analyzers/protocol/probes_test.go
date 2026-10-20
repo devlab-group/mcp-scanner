@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	mcpclient "github.com/revinand/mcp-scanner/internal/mcp/client"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/testdata/protocol/fixtures"
+	mcpclient "github.com/devlab-group/mcp-scanner/internal/mcp/client"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/testdata/protocol/fixtures"
 )
 
 type fakeSession struct {

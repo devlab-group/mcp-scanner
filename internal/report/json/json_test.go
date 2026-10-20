@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func sampleResult() *model.ScanResult {

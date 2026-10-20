@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/llm"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/internal/llm"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 const testKeyEnv = "ANTHROPIC_TEST_KEY"

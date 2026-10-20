@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/app"
-	"github.com/revinand/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/app"
+	"github.com/devlab-group/mcp-scanner/internal/config"
 )
 
 // newHTTPServer must apply every configured limit

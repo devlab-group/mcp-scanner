@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	internalsnapshot "github.com/revinand/mcp-scanner/internal/mcp/snapshot"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	internalsnapshot "github.com/devlab-group/mcp-scanner/internal/mcp/snapshot"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestLoadSnapshotOwnFormat(t *testing.T) {

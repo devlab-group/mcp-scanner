@@ -7,9 +7,9 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/report"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/report"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // maxCellWidth bounds a single table cell. This is a display limit, not a

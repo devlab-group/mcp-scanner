@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // MaxCapture bounds how much of stdout/stderr is retained for evidence.

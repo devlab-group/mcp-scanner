@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
 )
 
 // Exercise otherwise uncovered sink catalog entries in each language's source syntax

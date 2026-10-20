@@ -22,10 +22,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/runtime/canary"
-	"github.com/revinand/mcp-scanner/internal/runtime/observer"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/canary"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/observer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // nonRootUser is the fixed numeric uid:gid every container runs as. Numeric,

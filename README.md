@@ -21,7 +21,7 @@ for all skipped files, so some incomplete file scans can still be `SAFE`.
 ## Install
 
 ```sh
-go install github.com/revinand/mcp-scanner/cmd/mcp-scanner@latest
+go install github.com/devlab-group/mcp-scanner/cmd/mcp-scanner@latest
 ```
 
 Signature matching requires libyara and a tagged build:

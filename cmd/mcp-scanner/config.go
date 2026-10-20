@@ -8,11 +8,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/revinand/mcp-scanner/internal/app"
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/app"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 // scanVersion is set at build time with -ldflags and written to every report

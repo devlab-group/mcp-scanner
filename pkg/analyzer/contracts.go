@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Session is a live MCP connection, reduced to what analyzers need. It exists

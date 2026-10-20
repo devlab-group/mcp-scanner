@@ -3,8 +3,8 @@ package registration
 import (
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
 func normalize(s string) string {

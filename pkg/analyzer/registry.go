@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Registry holds analyzers registered by imported packages in this build

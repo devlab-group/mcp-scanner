@@ -21,12 +21,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/httpx"
-	"github.com/revinand/mcp-scanner/internal/llm"
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/llm"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func init() { analyzer.Register(&Analyzer{}) }

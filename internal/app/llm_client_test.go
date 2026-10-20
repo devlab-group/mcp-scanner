@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // An environment key alone must not opt the scanner into third-party calls

@@ -16,8 +16,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Resolved transport kinds, recorded in model.Snapshot.Transport.Kind

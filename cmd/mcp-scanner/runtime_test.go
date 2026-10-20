@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
 )
 
 // The runtime subcommand always requires the runtime analyzer

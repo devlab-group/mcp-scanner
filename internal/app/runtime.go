@@ -3,9 +3,9 @@ package app
 import (
 	"fmt"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/runtime/sandbox"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/runtime/sandbox"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 // NewRuntimeExecutor builds the configured sandbox or reports why it is unavailable

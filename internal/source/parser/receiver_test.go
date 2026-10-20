@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func symbolNamed(t *testing.T, id language.ID, src, name string) []string {

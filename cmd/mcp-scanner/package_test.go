@@ -4,8 +4,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
 )
 
 func TestParsePackageArgPositionalForm(t *testing.T) {

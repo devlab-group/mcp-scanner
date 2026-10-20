@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/transport"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/transport"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestTransportInfoRedactsTheEndpointCredential(t *testing.T) {

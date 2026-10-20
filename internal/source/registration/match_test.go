@@ -3,7 +3,7 @@ package registration
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 )
 
 func TestClassifyDecorator_CalleeOnly(t *testing.T) {

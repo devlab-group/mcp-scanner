@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/revinand/mcp-scanner/internal/report"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/report"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 const schemaURI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
@@ -165,7 +165,7 @@ func buildRun(res *model.ScanResult) run {
 	rn := run{
 		Tool: tool{Driver: driver{
 			Name:           toolName,
-			InformationURI: "https://github.com/revinand/mcp-scanner",
+			InformationURI: "https://github.com/devlab-group/mcp-scanner",
 			Version:        res.ScannerVersion,
 			Rules:          []rule{},
 		}},

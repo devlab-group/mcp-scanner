@@ -1,4 +1,4 @@
-module github.com/revinand/mcp-scanner
+module github.com/devlab-group/mcp-scanner
 
 go 1.26.6
 

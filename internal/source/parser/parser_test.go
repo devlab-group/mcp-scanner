@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func TestParseFile_Go(t *testing.T) {

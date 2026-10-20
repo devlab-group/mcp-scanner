@@ -8,8 +8,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // ProposedSessionIDHeader distinguishes session resumption from proposing an

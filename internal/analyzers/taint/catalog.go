@@ -4,10 +4,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Most pattern tables use whole-identifier matching anywhere in callee text, so a dotted entry can

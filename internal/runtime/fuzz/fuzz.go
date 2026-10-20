@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Class identifies a payload family

@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Formatters renders one capability of each kind as a surface entry. Every

@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/llm"
-	"github.com/revinand/mcp-scanner/internal/llm/anthropic"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/llm"
+	"github.com/devlab-group/mcp-scanner/internal/llm/anthropic"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 const (

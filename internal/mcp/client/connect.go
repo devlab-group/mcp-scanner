@@ -11,9 +11,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/discovery"
-	"github.com/revinand/mcp-scanner/internal/mcp/transport"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/discovery"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/transport"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 var scannerImpl = &mcp.Implementation{Name: "mcp-scanner", Version: "dev"}

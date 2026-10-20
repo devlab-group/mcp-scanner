@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func TestContainmentRootValues(t *testing.T) {

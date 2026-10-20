@@ -16,8 +16,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Entry is one file worth parsing

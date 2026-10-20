@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/config"
-	"github.com/revinand/mcp-scanner/internal/httpx"
-	"github.com/revinand/mcp-scanner/internal/mcp/client"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/config"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/client"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 const name = "auth"

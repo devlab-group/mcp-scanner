@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 )
 
 func TestObserveProcessExec(t *testing.T) {

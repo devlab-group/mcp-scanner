@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/supplychain"
-	"github.com/revinand/mcp-scanner/internal/supplychain/osv"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain/osv"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 type fakeQuerier struct {

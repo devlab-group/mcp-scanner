@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
 func buildGraph(t *testing.T, files map[language.ID]map[string]string) *graph.Graph {

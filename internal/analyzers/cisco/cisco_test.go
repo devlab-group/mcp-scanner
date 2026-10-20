@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 const testKeyEnv = "CISCO_TEST_KEY"

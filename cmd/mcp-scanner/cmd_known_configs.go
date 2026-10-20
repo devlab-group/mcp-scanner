@@ -12,13 +12,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/revinand/mcp-scanner/internal/app"
-	"github.com/revinand/mcp-scanner/internal/policy"
-	"github.com/revinand/mcp-scanner/internal/report"
-	reportjson "github.com/revinand/mcp-scanner/internal/report/json"
-	"github.com/revinand/mcp-scanner/internal/report/sarif"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/app"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	"github.com/devlab-group/mcp-scanner/internal/report"
+	reportjson "github.com/devlab-group/mcp-scanner/internal/report/json"
+	"github.com/devlab-group/mcp-scanner/internal/report/sarif"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 // discoveredServer is an MCP server found in a client config

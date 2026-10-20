@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // classifyArgv distinguishes tainted program names, shell execution, and

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	reportjson "github.com/revinand/mcp-scanner/internal/report/json"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	reportjson "github.com/devlab-group/mcp-scanner/internal/report/json"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Write encodes s as indented JSON, escaping the same target-controlled characters

@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func result(status model.ScanStatus, fs ...model.Finding) *model.ScanResult {

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
-	"github.com/revinand/mcp-scanner/internal/supplychain/archive"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain/archive"
 )
 
 const defaultIndex = "https://pypi.org/pypi"

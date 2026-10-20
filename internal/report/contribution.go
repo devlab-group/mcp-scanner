@@ -3,7 +3,7 @@ package report
 import (
 	"fmt"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // ContributionNote summarizes how many of the analyzers listed for this scan actually

@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // LimitationsNote names the analyzers behind this verdict that have declared limitations,

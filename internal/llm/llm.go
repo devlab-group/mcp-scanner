@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
 )
 
 // Config configures a provider client. BaseURL overrides the provider's

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // WriteWarnings prints res.Warnings directly under the verdict line, not at the end of the

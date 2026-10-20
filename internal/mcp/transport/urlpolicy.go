@@ -2,7 +2,7 @@
 // scanner's own SSRF guard before any of them connect
 package transport
 
-import "github.com/revinand/mcp-scanner/internal/httpx"
+import "github.com/devlab-group/mcp-scanner/internal/httpx"
 
 // Policy decides which remote endpoints the scanner may connect to. Check handles obvious URL
 // violations, while the guarded dialer remains the real SSRF boundary because it inspects the

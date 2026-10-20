@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
 )
 
 func newFetcher(srv *httptest.Server) *Fetcher {

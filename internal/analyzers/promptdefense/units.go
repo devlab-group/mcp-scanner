@@ -5,8 +5,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/surface"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/surface"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // unit is one piece of declared text pulled from a snapshot, scoped to the

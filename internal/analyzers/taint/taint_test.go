@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/internal/testutil"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestMatchArgvSink_RustArgFallbackIsGatedToRust(t *testing.T) {

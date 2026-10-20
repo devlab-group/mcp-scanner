@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Exit codes. These are part of the CLI contract; existing values must not be

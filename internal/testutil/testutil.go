@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/supplychain"
+	"github.com/devlab-group/mcp-scanner/internal/supplychain"
 )
 
 // DynamicSystemBinary returns a dynamically linked system binary, which the scratch sandbox image

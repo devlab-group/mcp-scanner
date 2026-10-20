@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/testutil"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
 )
 
 // ---- Python: os.execl and its l-variant siblings (argv) ----

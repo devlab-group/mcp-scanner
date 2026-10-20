@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/snapshot"
-	"github.com/revinand/mcp-scanner/internal/source"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/snapshot"
+	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestHiddenChars_TagBlockAndOtherInvisibles(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestRegisterTool_ConfigObjectDescriptionResolves(t *testing.T) {

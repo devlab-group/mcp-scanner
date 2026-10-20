@@ -6,8 +6,8 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
-	"github.com/revinand/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
 // ifStatementKinds is the if-statement node kind this package recognizes

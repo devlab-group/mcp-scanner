@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	tauth "github.com/revinand/mcp-scanner/testdata/auth"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	tauth "github.com/devlab-group/mcp-scanner/testdata/auth"
 )
 
 type statusErr struct {

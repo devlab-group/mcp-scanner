@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	tauth "github.com/revinand/mcp-scanner/testdata/auth"
+	tauth "github.com/devlab-group/mcp-scanner/testdata/auth"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/client"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/testdata/protocol/fixtures"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/client"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/testdata/protocol/fixtures"
 )
 
 type refusedToolCallDialer struct{ d analyzer.Dialer }

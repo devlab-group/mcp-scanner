@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/revinand/mcp-scanner/internal/mcp/discovery"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/mcp/discovery"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // Passive checks look only at a model.Snapshot, so they run for a live

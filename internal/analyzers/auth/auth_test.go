@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	tauth "github.com/revinand/mcp-scanner/testdata/auth"
+	tauth "github.com/devlab-group/mcp-scanner/testdata/auth"
 
-	"github.com/revinand/mcp-scanner/internal/httpx"
-	"github.com/revinand/mcp-scanner/pkg/analyzer"
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/internal/httpx"
+	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 // newTestAnalyzer permits loopback only in this test client. Production keeps the private-network

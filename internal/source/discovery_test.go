@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 )
 
 func TestDiscovery(t *testing.T) {

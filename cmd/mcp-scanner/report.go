@@ -6,13 +6,13 @@ import (
 	"io"
 	"os"
 
-	"github.com/revinand/mcp-scanner/internal/policy"
-	reportjson "github.com/revinand/mcp-scanner/internal/report/json"
-	"github.com/revinand/mcp-scanner/internal/report/sarif"
-	"github.com/revinand/mcp-scanner/internal/report/summary"
-	"github.com/revinand/mcp-scanner/internal/report/table"
-	"github.com/revinand/mcp-scanner/pkg/model"
-	"github.com/revinand/mcp-scanner/pkg/scanner"
+	"github.com/devlab-group/mcp-scanner/internal/policy"
+	reportjson "github.com/devlab-group/mcp-scanner/internal/report/json"
+	"github.com/devlab-group/mcp-scanner/internal/report/sarif"
+	"github.com/devlab-group/mcp-scanner/internal/report/summary"
+	"github.com/devlab-group/mcp-scanner/internal/report/table"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/scanner"
 )
 
 // writeReport uses the validated format. Human formats also explain the policy decision

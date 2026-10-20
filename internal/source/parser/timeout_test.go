@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/revinand/mcp-scanner/internal/source/language"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
 func TestParseFile_PathologicalCommentRunStaysBounded(t *testing.T) {

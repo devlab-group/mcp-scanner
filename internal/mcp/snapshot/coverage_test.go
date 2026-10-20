@@ -3,7 +3,7 @@ package snapshot
 import (
 	"testing"
 
-	"github.com/revinand/mcp-scanner/pkg/model"
+	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
 func TestCapabilityCoverageReportsABodyCutAtThePerItemCap(t *testing.T) {

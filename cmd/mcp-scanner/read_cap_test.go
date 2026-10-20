@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/revinand/mcp-scanner/internal/app"
+	"github.com/devlab-group/mcp-scanner/internal/app"
 )
 
 // Cap whole-file reads of untrusted snapshots, baselines, and client configs
