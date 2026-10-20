@@ -1,6 +1,6 @@
 module github.com/devlab-group/mcp-scanner
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/hillu/go-yara/v4 v4.3.4
