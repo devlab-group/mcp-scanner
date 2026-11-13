@@ -3,7 +3,7 @@ API_BIN := mcp-scanner-api
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.scanVersion=$(VERSION)
 
-.PHONY: all build build-yara check-version test test-yara race vet fmt fmt-check lint vuln fuzz cover check clean dist sync-rules
+.PHONY: all build build-yara check-version test test-yara race vet fmt fmt-check lint vuln vuln-dist fuzz cover check clean dist sync-rules
 
 all: check build
 
@@ -58,9 +58,18 @@ lint:
 	@command -v staticcheck >/dev/null || { echo "staticcheck not installed: go install honnef.co/go/tools/cmd/staticcheck@latest"; exit 1; }
 	staticcheck ./...
 
+# Use the same govulncheck release locally and in CI; go run caches the build
+GOVULNCHECK_VERSION := v1.9.0
+GOVULNCHECK         := go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
 vuln:
-	@command -v govulncheck >/dev/null || { echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
-	govulncheck ./...
+	$(GOVULNCHECK) ./...
+
+# Scan the Go and module versions embedded in each dist/ binary, covering the release's
+# GOOS/GOARCH and build tags. A source scan covers only the host configuration.
+# With no matching binaries, the unexpanded glob causes the scan to fail.
+vuln-dist:
+	@set -e; for f in dist/$(BIN)_*; do echo "govulncheck -mode=binary $$f"; $(GOVULNCHECK) -mode=binary "$$f"; done
 
 # A short CI run. Crashes fail the target; longer campaigns are manual
 fuzz:
@@ -88,23 +97,28 @@ check: fmt-check vet vuln test race check-version
 # C, so the build needs cgo and a C compiler for the target. To build for another platform, name
 # a cross compiler:
 #
-#   make dist GOARCH=arm64 CC=aarch64-linux-gnu-gcc
 #   make dist GOOS=windows CC=x86_64-w64-mingw32-gcc
 #   make dist GOARCH=amd64 CC="clang -arch x86_64"     # on an arm64 Mac
 #
-# A macOS binary needs a macOS host. Linux binaries are linked statically so they run on any
-# distribution; netgo and osusergo keep DNS and user lookups in Go, which static glibc cannot
-# serve. Windows binaries link the MinGW runtime statically, so they need no extra DLLs.
-DIST_OS      := $(or $(GOOS),$(shell go env GOOS))
-DIST_ARCH    := $(or $(GOARCH),$(shell go env GOARCH))
-DIST_EXT     := $(if $(filter windows,$(DIST_OS)),.exe)
-DIST_TAGS    := $(if $(filter linux,$(DIST_OS)),netgo osusergo)
-DIST_LDFLAGS := $(if $(filter linux,$(DIST_OS)),-linkmode external) $(if $(filter linux windows,$(DIST_OS)),-extldflags -static)
+# A macOS binary needs a macOS host. Linux builds use musl-gcc (musl-tools) on a host matching
+# the target architecture. Static musl linking avoids a dependency on the distribution's libc
+# and requires its license notice; static glibc linking would require relinkable objects.
+# musl defaults to a 128 KiB thread stack, below the 8 MiB used by glibc on the release runners.
+# -z stack-size requests 8 MiB for tree-sitter's C code when parsing hostile input.
+# netgo and osusergo keep DNS and user lookups in Go. Windows builds link the MinGW runtime
+# statically, so they need no extra runtime DLLs.
+DIST_OS       := $(or $(GOOS),$(shell go env GOOS))
+DIST_ARCH     := $(or $(GOARCH),$(shell go env GOARCH))
+DIST_EXT      := $(if $(filter windows,$(DIST_OS)),.exe)
+DIST_TAGS     := $(if $(filter linux,$(DIST_OS)),netgo osusergo)
+DIST_CC       := $(if $(filter linux,$(DIST_OS)),CC=musl-gcc)
+LINUX_LDFLAGS := -linkmode external -extldflags "-static -Wl,-z,stack-size=8388608"
+DIST_LDFLAGS  := $(if $(filter linux,$(DIST_OS)),$(LINUX_LDFLAGS))$(if $(filter windows,$(DIST_OS)),-extldflags -static)
 SHA256       := $(if $(shell command -v sha256sum 2>/dev/null),sha256sum,shasum -a 256)
 
 dist:
 	@mkdir -p dist
-	GOOS=$(DIST_OS) GOARCH=$(DIST_ARCH) CGO_ENABLED=1 go build -tags '$(DIST_TAGS)' \
+	$(DIST_CC) GOOS=$(DIST_OS) GOARCH=$(DIST_ARCH) CGO_ENABLED=1 go build -tags '$(DIST_TAGS)' \
 		-ldflags '$(LDFLAGS) $(DIST_LDFLAGS)' -o dist/$(BIN)_$(DIST_OS)_$(DIST_ARCH)$(DIST_EXT) ./cmd/mcp-scanner
 	cp -f LICENSE THIRD_PARTY_NOTICES dist/
 	cd dist && $(SHA256) $(BIN)_* > SHA256SUMS
