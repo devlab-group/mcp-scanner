@@ -368,3 +368,61 @@ func TestWalk_SymlinkedFileIsRecordedByItsResolvedPath(t *testing.T) {
 		t.Fatalf("want the symlinked file in the inventory, got %+v", res.Files)
 	}
 }
+
+// Refused symlinks that may hide source create coverage gaps. Links with non-source
+// extensions to files, and duplicate paths into the walked tree, do not.
+func TestWalk_RefusedSymlinkGapOnlyWhereSourceCanHide(t *testing.T) {
+	outside := t.TempDir()
+	for name, body := range map[string]string{"shared/util.py": "X = 1\n", "lib.py": "Y = 2\n", "NOTES.md": "notes\n"} {
+		p := filepath.Join(outside, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name, link, target string
+		wantGap            bool
+	}{
+		{"directory outside the root", "shared", filepath.Join(outside, "shared"), true},
+		{"directory with a dotted name outside the root", "plugins.d", filepath.Join(outside, "shared"), true},
+		{"source file outside the root", "lib.py", filepath.Join(outside, "lib.py"), true},
+		{"source file behind a neutral name", "lib", filepath.Join(outside, "lib.py"), true},
+		{"dangling source name", "gone.py", filepath.Join(outside, "missing.py"), true},
+		{"dangling name without extension", "gone", filepath.Join(outside, "missing"), true},
+		{"non-source file outside the root", "NOTES.md", filepath.Join(outside, "NOTES.md"), false},
+		{"dangling non-source name", "gone.md", filepath.Join(outside, "missing.md"), false},
+		{"second path to a walked directory", "again", "pkg", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "pkg", "main.py"), []byte("print(1)\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(tc.target, filepath.Join(root, tc.link)); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Walk(t.Context(), root, DefaultLimits())
+			if err != nil {
+				t.Fatalf("Walk: %v", err)
+			}
+			// Either "again" or "pkg" may supply the canonical directory's contents
+			if len(res.Files) != 1 || !strings.HasSuffix(res.Files[0].Path, "/main.py") {
+				t.Fatalf("files = %+v, want main.py read once", res.Files)
+			}
+			if res.Coverage.FilesSkipped != 1 || len(res.Coverage.SkipReasons) != 1 {
+				t.Fatalf("coverage = %+v, want the link counted as one reasoned skip", res.Coverage)
+			}
+			// Check limits directly: Coverage.Gaps also reports that inventory alone parses no files
+			if got := len(res.Coverage.LimitsHit) > 0; got != tc.wantGap {
+				t.Fatalf("limits = %v, want a limit recorded: %v", res.Coverage.LimitsHit, tc.wantGap)
+			}
+		})
+	}
+}

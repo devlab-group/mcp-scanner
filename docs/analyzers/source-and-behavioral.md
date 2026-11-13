@@ -136,8 +136,13 @@ Known blind spots include:
 The source inventory treats the scan root as a hard boundary. It does not
 follow escaping symlinks and reads each canonical directory once. It enforces
 limits on file size, total bytes, file count, directory depth, and walk time.
-Reaching one of these limits creates a coverage gap. Refused symlinks, including
-chains past the symlink-depth limit, are recorded only as skips with reasons.
+Reaching one of these limits creates a coverage gap. Refused symlinks count
+as skips with reasons. A refused link also records a limit if it points to a
+directory or has a source extension or no extension. When its target cannot
+be examined, the link's extension determines whether it could hide source.
+These limits create gaps because the server may load source the scanner did
+not read. A link with a non-source extension to a non-directory target, or a
+second path to a directory already walked, does not create a gap.
 
 Oversized files are parsed up to the byte cap instead of being dropped.
 Tree-sitter parsing uses a scanner-enforced progress-callback deadline for
@@ -156,9 +161,8 @@ tree so the report shows how much was omitted.
 A reasoned capability skip does not create a gap unless every discovered
 capability was skipped. The zero-analyzed-capability floor then blocks `SAFE`.
 
-File coverage treats a reasoned skip as accounted for. An escaping or
-too-deep symlink can therefore be omitted without downgrading the verdict; this
-known implementation gap conflicts with the repository's fail-closed policy.
+File coverage accounts for skips with recorded reasons. Skips that could hide
+source also record a limit, which creates a coverage gap.
 
 Source and package targets use the same pipeline. Package extraction supplies
 the scan root directly, while source targets resolve the requested path within

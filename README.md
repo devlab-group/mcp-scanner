@@ -15,8 +15,9 @@ SKIPPED   + UNKNOWN   no analyzer produced usable analysis
 
 Timeouts, crashes, unexplained files, and missing statuses downgrade the scan.
 An analyzer error is never self-excusing; only an explicit best-effort policy
-can exempt it. A known limitation is that any recorded file-skip reason accounts
-for all skipped files, so some incomplete file scans can still be `SAFE`.
+can exempt it. Skips that could hide source, such as a symlink to a source
+directory outside the scan root, also record a limit. Every limit downgrades
+the scan.
 
 ## Install
 
