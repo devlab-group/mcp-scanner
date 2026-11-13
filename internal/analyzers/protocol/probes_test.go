@@ -369,3 +369,36 @@ func TestRunActiveProbesDoesNotBlameTheTargetForTheScannersOwnDeadline(t *testin
 		t.Fatal("expected a warning recording that the analyzer or scan deadline cut the probes short")
 	}
 }
+
+// Silence on the malformed envelope is a conformance note. Valid requests and
+// other malformed-probe outcomes retain their severity.
+func TestProbeMalformedRequest_SilenceIsInfoOtherOutcomesKeepSeverity(t *testing.T) {
+	respond := func(raw json.RawMessage, err error) *fakeSession {
+		return &fakeSession{callFn: func(context.Context, string, any) (json.RawMessage, error) { return raw, err }}
+	}
+	cases := []struct {
+		name     string
+		probe    func(context.Context, analyzer.Session) []model.Finding
+		sess     *fakeSession
+		rule     string
+		severity model.Severity
+	}{
+		{"malformed timeout", probeMalformedRequest, respond(nil, context.DeadlineExceeded), RuleProbeAcceptedUnanswered, model.SeverityInfo},
+		{"malformed 202 without body", probeMalformedRequest, respond(nil, &fakeStatusError{status: 202, msg: "no body"}), RuleProbeAcceptedUnanswered, model.SeverityInfo},
+		{"malformed connection closed", probeMalformedRequest, respond(nil, analyzer.ErrConnectionClosed), RuleProbeConnectionDied, model.SeverityHigh},
+		{"malformed answered", probeMalformedRequest, respond(json.RawMessage(`{}`), nil), RuleProbeUnexpectedAnswer, model.SeverityMedium},
+		{"unknown method timeout", probeUnknownMethod, respond(nil, context.DeadlineExceeded), RuleProbeAcceptedUnanswered, model.SeverityMedium},
+		{"invalid params timeout", probeInvalidParams, respond(nil, context.DeadlineExceeded), RuleProbeAcceptedUnanswered, model.SeverityMedium},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := tc.probe(context.Background(), tc.sess)
+			if len(fs) != 1 || fs[0].RuleID != tc.rule || fs[0].Severity != tc.severity {
+				t.Fatalf("want one %s finding at %s, got %+v", tc.rule, tc.severity, fs)
+			}
+			if err := fs[0].Validate(); err != nil {
+				t.Fatalf("finding does not validate: %v", err)
+			}
+		})
+	}
+}

@@ -53,17 +53,22 @@ paths, goroutine dumps, panic text, and address-like values in probe errors.
 The patterns are heuristic and can match legitimate path or hexadecimal text.
 
 `protocol.probe-accepted-unanswered` (`MEDIUM`) means a probe timed out or an
-HTTP server returned 2xx for the probe request without sending a reply.
+HTTP server returned 2xx without a reply. Over stdio, "accepted" means only
+that the request was written. Silence on the malformed request probe is
+`INFO`: JSON-RPC 2.0 requires an Invalid Request error, but Go and Python MCP
+SDK transports can discard malformed envelopes before dispatch. A server
+handler cannot answer a request discarded by the SDK, leaving the caller
+waiting.
 `protocol.probe-connection-died` (`HIGH`) means the server closed the
 connection or exited instead of answering a probe, or the following ping
 failed. Each probe reports it at most once. Heavy load can trigger either
 finding without a crash.
 
 The invalid resource URI probe triggers `probe-connection-died` over stdio in
-servers built on Go MCP SDK v1.7.0. The SDK puts the URI into its not-found
-error with Go string escaping, producing invalid JSON. It then fails to write
-the reply and ends the session. Any client can trigger this failure with one
-request.
+servers built on Go MCP SDK v1.7.0 and v1.8.0. The SDK puts the URI into its
+not-found error with Go string escaping, producing invalid JSON. It then fails
+to write the reply and ends the session. Any client can trigger this failure
+with one request.
 
 These probes do not invoke declared tools. The tool-shaped probes use invalid
 or nonexistent names that a conforming server rejects before dispatch.

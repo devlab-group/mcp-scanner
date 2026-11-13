@@ -138,7 +138,7 @@ func evaluateRejectionProbe(label, method string, params any, err error) []model
 		return []model.Finding{newFinding(
 			RuleProbeAcceptedUnanswered, "protocol_conformance", "Server accepted a request without ever answering it",
 			model.SeverityMedium, model.EvidenceProtocol, 0.6, "",
-			fmt.Sprintf("The %s probe sent a request that should have been rejected; the server accepted it (%s) and never sent a response.", label, detail),
+			fmt.Sprintf("The %s probe sent a request that should have been rejected; it reached the server (%s) and no response came back.", label, detail),
 			protocolEvidence(label, detail, req),
 		)}
 	}
@@ -175,7 +175,23 @@ func probeInvalidParams(ctx context.Context, sess analyzer.Session) []model.Find
 // a bare-value params, which the spec requires to be an object or array
 func probeMalformedRequest(ctx context.Context, sess analyzer.Session) []model.Finding {
 	_, err := sess.Call(ctx, "", 42)
-	return evaluateRejectionProbe("malformed request", "", 42, err)
+	fs := evaluateRejectionProbe("malformed request", "", 42, err)
+	for i := range fs {
+		if fs[i].RuleID != RuleProbeAcceptedUnanswered {
+			continue
+		}
+		// JSON-RPC 2.0 requires an Invalid Request error, but Go and Python SDK transports
+		// can discard this envelope before dispatch. Silence is a conformance note because
+		// the request may never reach the server's handler.
+		fs[i].Severity = model.SeverityInfo
+		fs[i].Title = "Server sent no error for a malformed JSON-RPC request"
+		fs[i].Description = fmt.Sprintf(
+			"The malformed request probe sent an envelope with an empty method and a non-object params; the server sent no response (%s). "+
+				"JSON-RPC 2.0 requires an Invalid Request error (-32600). MCP SDKs commonly discard such an envelope before server code sees it, "+
+				"which is a conformance gap rather than a security weakness.",
+			fs[i].Evidence[0].Description)
+	}
+	return fs
 }
 
 // probeInvalidResourceURI asks to read a resource whose URI is not one
