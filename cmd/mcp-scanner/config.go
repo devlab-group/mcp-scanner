@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/devlab-group/mcp-scanner/internal/app"
 	"github.com/devlab-group/mcp-scanner/internal/config"

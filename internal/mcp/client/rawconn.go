@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -23,6 +24,10 @@ type rawConn struct {
 	// guessed at from error text. Always non-nil; reads zero/empty for
 	// stdio, which has no HTTP response to observe.
 	status *responseSniff
+	// resumed marks a channel using a caller-supplied session ID header. The SDK's
+	// 404-to-ErrSessionMissing mapping requires an ID it negotiated, so this channel
+	// must classify the rejection itself.
+	resumed bool
 
 	mu       sync.Mutex
 	nextID   int64
@@ -163,6 +168,9 @@ func (rc *rawConn) failed(ctx context.Context, err error, responsesBefore int64,
 	}
 	if (readClosed || !answered) && ctx.Err() == nil {
 		err = fmt.Errorf("%w: %w", analyzer.ErrConnectionClosed, err)
+	}
+	if rc.resumed && status == http.StatusNotFound && !errors.Is(err, mcp.ErrSessionMissing) {
+		err = fmt.Errorf("%w: %w", analyzer.ErrSessionRejected, err)
 	}
 	return classifyDialErr(err, status)
 }

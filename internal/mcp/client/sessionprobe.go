@@ -66,6 +66,7 @@ func (d dialer) resume(ctx context.Context, target model.Target, id string) (ana
 			lastErr = cerr
 			continue
 		}
+		rc.resumed = true
 		return &session{
 			target:           t,
 			kind:             k,
