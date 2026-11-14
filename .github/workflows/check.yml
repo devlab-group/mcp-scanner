@@ -1,18 +1,25 @@
 name: check
 
 on:
+  # dist.yml calls this workflow for tags and waits for it before releasing
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # make check uses GOVULNCHECK_VERSION from the Makefile
       - run: make check
-      # dist needs cgo; this catches a change that stops the release build from linking
+      # Build with cgo and musl to catch release linking failures
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: make dist

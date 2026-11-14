@@ -1,0 +1,12 @@
+id: py-httpx-client-ssrf-001
+category: ssrf
+notes: >
+  A FastMCP tool passes its url argument to an httpx.AsyncClient opened with async with,
+  the form the httpx documentation uses. The caller chooses the host, including internal
+  and metadata addresses.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.ssrf]

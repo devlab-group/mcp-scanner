@@ -82,7 +82,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 	}
 	cov := inv.Coverage
 
-	var timedOut, syntaxErrs int
+	var timedOut, overText, tooDeep, syntaxErrs int
 	for i, f := range inv.Files {
 		if ctx.Err() != nil {
 			// The scanner deadline leaves files unread, so record a limit rather than explaining
@@ -105,8 +105,13 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 			// shape drives the grammar quadratic still shows up as a gap
 			// instead of a clean scan over code nobody actually read
 			cov.FilesFailed++
-			if errors.Is(err, parser.ErrParseTimeout) {
+			switch {
+			case errors.Is(err, parser.ErrParseTimeout):
 				timedOut++
+			case errors.Is(err, parser.ErrTextLimit):
+				overText++
+			case errors.Is(err, parser.ErrDepthLimit):
+				tooDeep++
 			}
 			continue
 		}
@@ -122,12 +127,20 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 			}
 			g.Symbols[s.ID] = s
 		}
-		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes}
+		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants}
 		g.Calls = append(g.Calls, res.Calls...)
 	}
 	if timedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
 			"%d file(s) exceeded the %s per-file parse deadline and were aborted", timedOut, parser.ParseTimeout))
+	}
+	if overText > 0 {
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"%d file(s) produced call text past %d times their size and were aborted", overText, parser.CopiedTextFactor))
+	}
+	if tooDeep > 0 {
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"%d file(s) nest deeper than %d syntax levels and were not analyzed", tooDeep, parser.MaxTreeDepth))
 	}
 	if syntaxErrs > 0 {
 		// FilesParsed already counts these - the grammar produced a tree, and everything outside

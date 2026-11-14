@@ -30,6 +30,10 @@ type Symbol struct {
 	Params     []string   `json:"params,omitempty"`
 	Doc        string     `json:"doc,omitempty"`        // docstring or leading comment, best-effort
 	Decorators []string   `json:"decorators,omitempty"` // raw decorator/annotation source text
+	// DecoratorArgs holds parsed decorator, annotation or attribute arguments,
+	// aligned with Decorators and nil when absent. Registration uses these arguments
+	// to avoid mistaking text inside a string for an argument key.
+	DecoratorArgs [][]Arg `json:"decorator_args,omitempty"`
 	// ReturnLiteral holds the keyed fields of a composite/object/dict literal
 	// returned by this function, when its body is simply `return <literal>`.
 	// It is how a factory function's static shape (`return &mcp.Tool{Name:
@@ -119,6 +123,9 @@ type File struct {
 	// MaxBytes is nonzero when the walk that produced this file found it over the per-file size
 	// limit: only the first MaxBytes bytes were read and parsed
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// Constants maps unambiguous same-file string constants to their values:
+	// Python module assignments, Java string fields and Rust const or static items
+	Constants map[string]string `json:"constants,omitempty"`
 }
 
 // Graph is the whole-tree symbol table, call graph and MCP capability list

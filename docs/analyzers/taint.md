@@ -74,8 +74,35 @@ because later values cannot be parsed as options.
 Taint can flow through a receiver, as in `Path(user).read_text()` or chained
 builder calls. Module-qualified sinks and generic method names use separate
 matching rules. Generic methods are ignored when they resolve to an in-repo
-helper. The receiver-blind `get` and `post` SSRF sinks also require the file to
-import `axios`, `httpx`, `aiohttp`, or `requests`.
+helper.
+
+A bare `get` or `post` method counts as an SSRF sink when its receiver is
+recognized as an HTTP client from `axios`, `httpx`, `aiohttp`, or `requests`.
+The scanner recognizes the module itself (`httpx.get`), a client constructed
+at the call site (`httpx.AsyncClient().get`), and clients assigned in the same
+file. Assignments include `client = httpx.AsyncClient()`, `async with
+aiohttp.ClientSession() as session`, `const api = axios.create()`, and class
+fields. Importing an HTTP client alone does not make a dict, `Map`, or
+response object's `get` method a sink.
+
+## SSRF
+
+The analyzer checks tainted URL arguments for SSRF and clears the taint when
+it can identify a fixed destination host. The URL is the first positional
+argument or Python's `url=` keyword, the second argument of Go's `http.NewRequest`, or the third
+argument of `http.NewRequestWithContext`. Taint in headers, a request body, or
+the client receiver does not count. Query parameters and paths after a fixed
+host do not give control over the host.
+
+A fixed URL prefix clears SSRF taint when it supplies the scheme and ends the
+host with `/`, `?`, or `#` before computed text begins. Recognized forms include
+`f"https://api.example.com/items/{item}"`, `"https://api.example.com/" + item`,
+`"https://api.example.com/{}".format(item)`, and Go's
+`fmt.Sprintf("https://api.example.com/%s", item)`. The analyzer still reports
+`"https://api.example.com" + item`: appending `@evil.example` or `.evil.example`
+can change the host. A Python module constant can supply the fixed prefix,
+and assigning a URL with a fixed host to a variable preserves its SSRF
+clearance.
 
 Receiver-blind method matching still creates limits. Callback-style `sqlite3`
 methods such as `db.get` and `db.run` are deliberately excluded because the
@@ -146,8 +173,11 @@ Known limitations include:
 - recognized decoders undo a clearance because they can reintroduce path
   syntax; unrecognized decoders, such as Java's `URLDecoder.decode`, may leave
   the clearance in place;
-- incomplete catalogs for uncommon or receiver-ambiguous APIs, including the
-  file-level HTTP import gate for `get` and `post`;
+- incomplete catalogs for uncommon or receiver-ambiguous APIs;
+- clients supplied by another file, a parameter, a factory function, or a
+  lifespan context are not recognized as receivers for `get` and `post` sinks;
+- recognizing a fixed host requires a literal or a Python module constant at
+  the call site or in the assignment that builds the URL;
 - fixed sanitizer names and the limited containment shapes above;
 - an in-repository helper named `basename` may be mistaken for a path sanitizer;
 - conservative propagation through unknown calls;

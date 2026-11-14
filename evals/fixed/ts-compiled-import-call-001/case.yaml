@@ -1,0 +1,12 @@
+id: ts-compiled-import-call-001-fixed
+category: command_injection
+notes: >
+  The same compiled handler, with the target passed as its own argv element to
+  execFileSync instead of interpolated into a shell string. There is no shell
+  to inject into.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  forbidden_rules: [taint.command_injection]

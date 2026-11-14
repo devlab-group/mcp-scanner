@@ -56,8 +56,41 @@ The scanner recognizes these forms:
 - low-level list and dispatch request handlers;
 - cross-file definitions and aliased imports.
 
-Literal names and descriptions are preserved. If a value cannot be resolved,
-the capability is still counted and the gap is reported.
+Literal names and descriptions are preserved. Supported string forms include
+plain and triple-quoted strings, Python implicit concatenation in parentheses,
+Java text blocks, and Rust raw strings. The scanner also resolves string
+constants within the same file:
+
+- Python: a module-level `NAME = "..."` assignment with no other binding of
+  that name anywhere in the file. A star import or a reference to `globals`,
+  `vars`, `setattr`, `exec`, `eval`, `__dict__` or `__import__` leaves constants
+  unresolved.
+- Java: a `static final String` field or an interface string constant,
+  initialized with a literal or a `+` concatenation of literals. No other
+  field in the file may declare the same name.
+- Rust: a `const` or `static` of type `&str`, with no other `const` or `static`
+  in the file declaring the same name.
+
+Constants are not resolved across files.
+
+Decorator and annotation arguments supply the name and description. If a name
+argument is absent, empty or `None`, the scanner uses the function's name. The
+same rule applies to a description argument and the function's docstring. An
+unresolved argument, such as a conditional, call or f-string, leaves that field
+unresolved rather than using the fallback.
+
+For Python `tool` and `prompt` decorators, the first positional argument is
+the name and the third is the description. For `resource`, the first is the
+URI. A function without a docstring has a known empty description; a comment
+does not count as a docstring. For Java, LangChain4j's `@Tool("...")` value is
+the description; an array of strings supplies its lines.
+
+Rust and Java tools without a description argument remain unresolved. The
+scanner does not read rmcp's doc comment fallback or Spring AI's description
+derived from the method name.
+
+An unresolved value still counts as a discovered capability and creates a
+coverage gap.
 
 Finding zero registrations is also a coverage gap. It may mean the directory
 is not an MCP server or that the scanner does not understand its registration
@@ -136,12 +169,21 @@ Known blind spots include:
 The source inventory treats the scan root as a hard boundary. It does not
 follow escaping symlinks and reads each canonical directory once. It enforces
 limits on file size, total bytes, file count, directory depth, and walk time.
-Reaching one of these limits creates a coverage gap. Refused symlinks, including
-chains past the symlink-depth limit, are recorded only as skips with reasons.
+Reaching one of these limits creates a coverage gap. Refused symlinks count
+as skips with reasons. A refused link also records a limit if it points to a
+directory or has a source extension or no extension. When its target cannot
+be examined, the link's extension determines whether it could hide source.
+These limits create gaps because the server may load source the scanner did
+not read. A link with a non-source extension to a non-directory target, or a
+second path to a directory already walked, does not create a gap.
 
-Oversized files are parsed up to the byte cap instead of being dropped.
-Tree-sitter parsing uses a scanner-enforced progress-callback deadline for
-every language. Taint reparsing uses the same byte and time limits.
+Oversized files are parsed up to the byte cap. Parsing and extraction share a
+5 second deadline per file. Syntax trees deeper than 32,768 levels are rejected
+before queries run because tree-sitter's 16-bit query depth can silently lose
+matches beyond 65,535 levels. Call text that cannot share the source buffer is
+capped at four times the file size plus 16 KiB. Exceeding the time, depth or
+text budget creates a coverage gap. Taint reparsing uses the same byte, depth
+and time limits.
 
 The scanner never excludes a file because its name or contents claim it is
 generated. It also scans arbitrary dot-directories and build directories such
@@ -156,9 +198,8 @@ tree so the report shows how much was omitted.
 A reasoned capability skip does not create a gap unless every discovered
 capability was skipped. The zero-analyzed-capability floor then blocks `SAFE`.
 
-File coverage treats a reasoned skip as accounted for. An escaping or
-too-deep symlink can therefore be omitted without downgrading the verdict; this
-known implementation gap conflicts with the repository's fail-closed policy.
+File coverage accounts for skips with recorded reasons. Skips that could hide
+source also record a limit, which creates a coverage gap.
 
 Source and package targets use the same pipeline. Package extraction supplies
 the scan root directly, while source targets resolve the requested path within

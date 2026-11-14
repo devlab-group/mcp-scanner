@@ -178,17 +178,27 @@ func (w *walker) skip(reason string) {
 	w.skipCounts[reason]++
 }
 
-// skipSymlink counts a refused entry as both discovered and skipped so coverage
-// accounting remains balanced
-func (w *walker) skipSymlink(reason string) {
+// skipSymlink counts a refused entry as both discovered and skipped. Links that
+// may hide source also record a limit because the server could load unread code.
+func (w *walker) skipSymlink(reason string, mayLeadToSource bool) {
 	w.res.Coverage.FilesDiscovered++
 	w.skip(reason)
+	if mayLeadToSource {
+		w.recordLimit(fmt.Sprintf("a symlink that can lead to source was refused (%s); what it points to was not read", reason))
+	}
+}
+
+// linkMayBeSource checks whether an unexamined link has a source extension or no
+// extension; an extensionless link may point to a directory or script
+func linkMayBeSource(full string) bool {
+	ext := strings.ToLower(filepath.Ext(full))
+	return ext == "" || language.ForExt(ext) != nil || language.IsUnsupportedSource(ext)
 }
 
 // skipDuplicateDir counts the duplicate entry without recounting content already
 // reached through its canonical path. This is not a coverage limit.
 func (w *walker) skipDuplicateDir(first string) {
-	w.skipSymlink(fmt.Sprintf("directory already walked as %q; a second path to the same directory was not walked again", first))
+	w.skipSymlink(fmt.Sprintf("directory already walked as %q; a second path to the same directory was not walked again", first), false)
 }
 
 // recordLimit notes that a hard resource limit stopped the walk from
@@ -339,29 +349,35 @@ func (w *walker) walkDir(ctx context.Context, dir, canonicalDir string, symlinkD
 
 func (w *walker) handleSymlink(ctx context.Context, full string, symlinkDepth, dirDepth int) {
 	if symlinkDepth >= w.limits.MaxSymlinkDepth {
-		w.skipSymlink("symlink chain too deep")
+		w.skipSymlink("symlink chain too deep", linkMayBeSource(full))
 		return
 	}
 	target, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		w.skipSymlink("dangling or unresolvable symlink")
+		w.skipSymlink("dangling or unresolvable symlink", linkMayBeSource(full))
 		return
 	}
 	rel, err := filepath.Rel(w.canonical, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		w.skipSymlink("symlink escapes scan root")
+		// Check the target's metadata without reading it. A directory may hold source
+		// regardless of its name; files are classified by the link's extension.
+		escaped := linkMayBeSource(full)
+		if info, serr := os.Stat(target); serr == nil && info.IsDir() {
+			escaped = true
+		}
+		w.skipSymlink("symlink escapes scan root", escaped)
 		return
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		w.skipSymlink("symlink target unreadable")
+		w.skipSymlink("symlink target unreadable", linkMayBeSource(full))
 		return
 	}
 	if info.IsDir() {
 		// walkDir keys w.seenDirs by canonical target. A symlink to an already visited directory
 		// is rejected there instead of being read and traversed again.
 		if err := w.walkDir(ctx, full, target, symlinkDepth+1, dirDepth+1); err != nil {
-			w.skipSymlink(fmt.Sprintf("error walking symlinked directory: %v", err))
+			w.skipSymlink(fmt.Sprintf("error walking symlinked directory: %v", err), true)
 		}
 		return
 	}
@@ -423,6 +439,7 @@ func (w *walker) considerFile(full, readPath string, de fs.DirEntry) {
 	if err != nil {
 		w.res.Coverage.FilesDiscovered++
 		w.skip(fmt.Sprintf("could not stat file: %v", err))
+		w.recordLimit("a source file could not be examined and was not read")
 		return
 	}
 	w.res.Coverage.FilesDiscovered++

@@ -1,8 +1,10 @@
 package parser
 
 import (
+	"bytes"
 	"slices"
 	"strings"
+	"unsafe"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -13,6 +15,62 @@ import (
 var stringKinds = map[string]bool{
 	"string": true, "string_literal": true, "interpreted_string_literal": true,
 	"raw_string_literal": true, "template_string": true,
+}
+
+// LiteralValue decodes fixed strings, including Rust raw strings and Python's
+// implicit concatenation, with optional parentheses; runtime expressions remain
+// unresolved
+func LiteralValue(n *sitter.Node, src []byte) (string, bool) {
+	switch n.Kind() {
+	case "concatenated_string":
+		var b strings.Builder
+		for _, part := range nonCommentChildren(n) {
+			v, ok := LiteralValue(part, src)
+			if !ok {
+				return "", false
+			}
+			b.WriteString(v)
+		}
+		return b.String(), true
+	case "parenthesized_expression":
+		if inner := nonCommentChildren(n); len(inner) == 1 {
+			return LiteralValue(inner[0], src)
+		}
+		return "", false
+	}
+	if !stringKinds[n.Kind()] {
+		return "", false
+	}
+	text := n.Utf8Text(src)
+	if v, ok := UnquoteString(text); ok {
+		return v, true
+	}
+	return rustRawString(text)
+}
+
+// rustRawString decodes r"..." and r#"..."# forms, including closing quotes
+// followed by hashes that UnquoteString does not handle
+func rustRawString(text string) (string, bool) {
+	t, ok := strings.CutPrefix(text, "r")
+	if !ok {
+		return "", false
+	}
+	hashes := strings.Repeat("#", len(t)-len(strings.TrimLeft(t, "#")))
+	open, close := hashes+`"`, `"`+hashes
+	if len(t) < len(open)+len(close) || !strings.HasPrefix(t, open) || !strings.HasSuffix(t, close) {
+		return "", false
+	}
+	return t[len(open) : len(t)-len(close)], true
+}
+
+func nonCommentChildren(n *sitter.Node) []*sitter.Node {
+	var out []*sitter.Node
+	for i := range n.NamedChildCount() {
+		if ch := n.NamedChild(i); ch != nil && !strings.Contains(ch.Kind(), "comment") {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // AssignTargets returns the variable name(s) an assignment-shaped node
@@ -275,17 +333,16 @@ func bindingNames(n *sitter.Node, src []byte) []string {
 
 func leadingDoc(id language.ID, node *sitter.Node, src []byte) string {
 	if id == language.Python {
+		// Python SDKs use the function's docstring as a fallback; leading comments do not count
 		if body := node.ChildByFieldName("body"); body != nil && body.NamedChildCount() > 0 {
 			first := body.NamedChild(0)
 			if first != nil && first.Kind() == "expression_statement" && first.NamedChildCount() > 0 {
-				s := first.NamedChild(0)
-				if s.Kind() == "string" {
-					if v, ok := UnquoteString(s.Utf8Text(src)); ok {
-						return strings.TrimSpace(v)
-					}
+				if v, ok := LiteralValue(first.NamedChild(0), src); ok {
+					return strings.TrimSpace(v)
 				}
 			}
 		}
+		return ""
 	}
 	start := node
 	if p := node.Parent(); p != nil && p.Kind() == "decorated_definition" {
@@ -313,37 +370,163 @@ func receiverType(recv *sitter.Node, src []byte) string {
 	return strings.TrimPrefix(t.Utf8Text(src), "*")
 }
 
-func javaAnnotations(node *sitter.Node, src []byte) []string {
-	var out []string
+func javaAnnotations(node *sitter.Node, src []byte) (texts []string, args [][]graph.Arg) {
+	add := func(n *sitter.Node) {
+		if n.Kind() == "annotation" || n.Kind() == "marker_annotation" {
+			texts = append(texts, javaAnnotationText(n, src))
+			args = append(args, javaAnnotationArgs(n, src))
+		}
+	}
 	cursor := node.Walk()
 	defer cursor.Close()
 	for _, ch := range node.NamedChildren(cursor) {
-		switch ch.Kind() {
-		case "annotation", "marker_annotation":
-			out = append(out, ch.Utf8Text(src))
-		case "modifiers":
-			mc := ch.Walk()
-			for _, mch := range ch.NamedChildren(mc) {
-				if mch.Kind() == "annotation" || mch.Kind() == "marker_annotation" {
-					out = append(out, mch.Utf8Text(src))
-				}
-			}
-			mc.Close()
+		if ch.Kind() != "modifiers" {
+			add(&ch)
+			continue
 		}
+		mc := ch.Walk()
+		for _, mch := range ch.NamedChildren(mc) {
+			add(&mch)
+		}
+		mc.Close()
+	}
+	return texts, args
+}
+
+// javaAnnotationText reconstructs @, the annotation name and its arguments,
+// omitting comments such as those in `@Tool /* c */ ("...")`
+func javaAnnotationText(n *sitter.Node, src []byte) string {
+	name := n.ChildByFieldName("name")
+	if name == nil {
+		return nodeText(n, src)
+	}
+	text := "@" + memberText(language.Java, name, src)
+	if args := n.ChildByFieldName("arguments"); args != nil {
+		text += nodeText(args, src)
+	}
+	return text
+}
+
+// javaAnnotationArgs reads key = value pairs as keyword arguments and a bare
+// element value as a positional argument
+func javaAnnotationArgs(n *sitter.Node, src []byte) []graph.Arg {
+	list := n.ChildByFieldName("arguments")
+	if list == nil {
+		return nil
+	}
+	var out []graph.Arg
+	for _, ch := range nonCommentChildren(list) {
+		key, val := ch.ChildByFieldName("key"), ch.ChildByFieldName("value")
+		if ch.Kind() != "element_value_pair" || key == nil || val == nil {
+			out = append(out, javaElementValue(ch, src))
+			continue
+		}
+		a := javaElementValue(val, src)
+		a.Keyword = key.Utf8Text(src)
+		out = append(out, a)
 	}
 	return out
 }
 
-func rustAttributes(node *sitter.Node, src []byte) []string {
-	var attrs []string
-	for s := node.PrevSibling(); s != nil && s.Kind() == "attribute_item"; s = s.PrevSibling() {
-		attrs = append(attrs, s.Utf8Text(src))
+// javaElementValue reads an annotation value. String arrays are joined with
+// newlines to match LangChain4j's @Tool({"...", "..."}) description.
+func javaElementValue(n *sitter.Node, src []byte) graph.Arg {
+	if n.Kind() != "element_value_array_initializer" {
+		return exprArg(n, src)
 	}
-	slices.Reverse(attrs)
-	return attrs
+	parts := nonCommentChildren(n)
+	vals := make([]string, 0, len(parts))
+	for _, p := range parts {
+		v, ok := javaConstantString(p, src)
+		if !ok {
+			return graph.Arg{Text: n.Utf8Text(src)}
+		}
+		vals = append(vals, v)
+	}
+	return graph.Arg{Text: n.Utf8Text(src), Literal: true, Value: strings.Join(vals, "\n")}
 }
 
-func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, locals []localSymbol) error {
+// rustAttributes collects an item's outer attributes across intervening comments,
+// including doc comments below #[tool]
+func rustAttributes(node *sitter.Node, src []byte) (texts []string, args [][]graph.Arg) {
+	for s := node.PrevSibling(); s != nil && (s.Kind() == "attribute_item" || s.IsExtra()); s = s.PrevSibling() {
+		if s.IsExtra() {
+			continue
+		}
+		texts = append(texts, rustAttributeText(s, src))
+		args = append(args, rustAttributeArgs(s, src))
+	}
+	slices.Reverse(texts)
+	slices.Reverse(args)
+	return texts, args
+}
+
+// rustAttributeText reconstructs #[, the attribute path, its arguments and ],
+// removing comments and spacing such as those in `#[ /* c */ rmcp :: tool ]`
+func rustAttributeText(item *sitter.Node, src []byte) string {
+	attr := firstNamedChild(item)
+	if attr == nil {
+		return nodeText(item, src)
+	}
+	path := firstNamedChild(attr)
+	if path == nil {
+		return nodeText(item, src)
+	}
+	text := "#[" + memberText(language.Rust, path, src)
+	if a := attr.ChildByFieldName("arguments"); a != nil {
+		text += nodeText(a, src)
+	} else if v := attr.ChildByFieldName("value"); v != nil {
+		text += " = " + nodeText(v, src)
+	}
+	return text + "]"
+}
+
+// rustAttributeArgs splits an attribute's token tree at top-level commas.
+// It treats key = value as a keyword argument and preserves values spanning
+// multiple tokens as unresolved text.
+func rustAttributeArgs(item *sitter.Node, src []byte) []graph.Arg {
+	attr := firstNamedChild(item)
+	if attr == nil {
+		return nil
+	}
+	tree := attr.ChildByFieldName("arguments")
+	if tree == nil || tree.ChildCount() < 2 {
+		return nil
+	}
+	var out []graph.Arg
+	var group []*sitter.Node
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		var kw string
+		if len(group) > 2 && group[0].Kind() == "identifier" && group[1].Kind() == "=" {
+			kw, group = group[0].Utf8Text(src), group[2:]
+		}
+		a := graph.Arg{Text: string(src[group[0].StartByte():group[len(group)-1].EndByte()])}
+		if len(group) == 1 {
+			a = exprArg(group[0], src)
+		}
+		a.Keyword = kw
+		out = append(out, a)
+		group = nil
+	}
+	// Skip the token tree's opening and closing brackets
+	for i := uint(1); i+1 < tree.ChildCount(); i++ {
+		ch := tree.Child(i)
+		switch {
+		case ch == nil || strings.Contains(ch.Kind(), "comment"):
+		case ch.Kind() == ",":
+			flush()
+		default:
+			group = append(group, ch)
+		}
+	}
+	flush()
+	return out
+}
+
+func attachDecorators(b budget, adapter *language.Adapter, root *sitter.Node, src []byte, locals []localSymbol) error {
 	if adapter.ID != language.Python {
 		// Java and Rust attach their decorator equivalents directly while
 		// building the symbol (children/siblings, not a wrapping node); JS
@@ -356,7 +539,7 @@ func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, 
 	}
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
-	matches := qc.Matches(q, root, src)
+	matches := b.matches(qc, q, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, cap := range m.Captures {
 			decorated := cap.Node
@@ -370,9 +553,26 @@ func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, 
 			}
 			cursor := decorated.Walk()
 			for _, ch := range decorated.NamedChildren(cursor) {
-				if ch.Kind() == "decorator" && ch.NamedChildCount() > 0 {
-					target.sym.Decorators = append(target.sym.Decorators, ch.NamedChild(0).Utf8Text(src))
+				if ch.Kind() != "decorator" {
+					continue
 				}
+				expr := firstNamedChild(&ch)
+				if expr == nil {
+					continue
+				}
+				// Unwrap parenthesized decorator expressions such as `@(mcp.tool())`
+				expr = calleeNode(expr)
+				text := memberText(language.Python, expr, src)
+				var args []graph.Arg
+				if expr.Kind() == "call" {
+					argList := expr.ChildByFieldName("arguments")
+					args = genericArgs(argList, src)
+					if fn := expr.ChildByFieldName("function"); fn != nil && argList != nil {
+						text = memberText(language.Python, calleeNode(fn), src) + nodeText(argList, src)
+					}
+				}
+				target.sym.Decorators = append(target.sym.Decorators, text)
+				target.sym.DecoratorArgs = append(target.sym.DecoratorArgs, args)
 			}
 			cursor.Close()
 		}
@@ -448,7 +648,7 @@ func returnText(id language.ID, def *sitter.Node, src []byte) string {
 	if val == nil {
 		return ""
 	}
-	return val.Utf8Text(src)
+	return nodeText(val, src)
 }
 
 // findFirst does a shallow-first search for the first descendant of kind, skipping through
@@ -516,7 +716,7 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 				continue
 			}
 			a := exprArg(val, src)
-			a.Keyword = key.Utf8Text(src)
+			a.Keyword = nodeText(key, src)
 			out = append(out, a)
 		}
 		c.Close()
@@ -533,7 +733,7 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 			if key == nil || val == nil {
 				continue
 			}
-			keyText := key.Utf8Text(src)
+			keyText := nodeText(key, src)
 			if v, ok := UnquoteString(keyText); ok {
 				keyText = v
 			}
@@ -547,22 +747,46 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 	return nil
 }
 
+// nodeText returns a string sharing src. Nested arguments and chained callees
+// contain earlier expressions, so copying each span would require quadratic
+// space. Shared strings keep the source buffer alive without copying its bytes.
+// Callers must keep src immutable while any shared string survives.
+func nodeText(n *sitter.Node, src []byte) string {
+	return spanText(src, n.StartByte(), n.EndByte())
+}
+
+func spanText(src []byte, start, end uint) string {
+	b := src[start:end]
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// copiedLen returns len(s) for allocated text, or zero when s shares src
+func copiedLen(s string, src []byte) int {
+	if s == "" || len(src) == 0 {
+		return len(s)
+	}
+	p := uintptr(unsafe.Pointer(unsafe.StringData(s)))
+	base := uintptr(unsafe.Pointer(unsafe.SliceData(src)))
+	if p >= base && p < base+uintptr(len(src)) {
+		return 0
+	}
+	return len(s)
+}
+
 // exprArg builds an Arg for an argument or field-value expression
 func exprArg(n *sitter.Node, src []byte) graph.Arg {
-	text := n.Utf8Text(src)
+	text := nodeText(n, src)
 	if n.Kind() == "keyword_argument" {
 		nameN := n.ChildByFieldName("name")
 		valN := n.ChildByFieldName("value")
 		if nameN != nil && valN != nil {
 			a := exprArg(valN, src)
-			a.Keyword = nameN.Utf8Text(src)
+			a.Keyword = nodeText(nameN, src)
 			return a
 		}
 	}
-	if stringKinds[n.Kind()] {
-		if v, ok := UnquoteString(text); ok {
-			return graph.Arg{Text: text, Literal: true, Value: v}
-		}
+	if v, ok := LiteralValue(n, src); ok {
+		return graph.Arg{Text: text, Literal: true, Value: v}
 	}
 	return graph.Arg{Text: text}
 }
@@ -577,6 +801,10 @@ func genericArgs(list *sitter.Node, src []byte) []graph.Arg {
 	defer cursor.Close()
 	var out []graph.Arg
 	for _, ch := range list.NamedChildren(cursor) {
+		// Skip comments so positional argument indexes stay aligned
+		if strings.Contains(ch.Kind(), "comment") {
+			continue
+		}
 		child := ch
 		out = append(out, exprArg(&child, src))
 	}
@@ -597,7 +825,7 @@ func goArgs(list *sitter.Node, src []byte) []graph.Arg {
 			out = append(out, exprArg(&child, src))
 			continue
 		}
-		out = append(out, graph.Arg{Text: child.Utf8Text(src)})
+		out = append(out, graph.Arg{Text: nodeText(&child, src)})
 		out = append(out, fields...)
 	}
 	return out
@@ -614,13 +842,28 @@ type Receiver struct {
 // CalleeAndArgs pulls the callee expression text, the callee's own receiver and the call's
 // arguments out of a call-shaped node
 func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText string, receiver Receiver, args []graph.Arg) {
+	return calleeAndArgs(id, call, src, true)
+}
+
+// calleeAndArgs extracts a receiver only when requested. For a call-shaped
+// receiver, it reads the callee and arguments without descending into another
+// receiver; repeating that descent at each link would make chain processing
+// quadratic.
+func calleeAndArgs(id language.ID, call *sitter.Node, src []byte, withReceiver bool) (calleeText string, receiver Receiver, args []graph.Arg) {
+	member := func(fn *sitter.Node, field string) Receiver {
+		if !withReceiver {
+			return Receiver{}
+		}
+		return memberReceiver(id, fn, field, src)
+	}
 	switch id {
 	case language.Go:
 		fn := call.ChildByFieldName("function")
 		if fn == nil {
 			return "", Receiver{}, nil
 		}
-		return fn.Utf8Text(src), memberReceiver(id, fn, "operand", src), goArgs(call.ChildByFieldName("arguments"), src)
+		fn = calleeNode(fn)
+		return memberText(id, fn, src), member(fn, "operand"), goArgs(call.ChildByFieldName("arguments"), src)
 	case language.Python, language.JavaScript, language.TypeScript, language.Rust:
 		if call.Kind() == "new_expression" {
 			// Match Java's constructor naming so catalog entries such as "new Function" apply
@@ -628,13 +871,13 @@ func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText st
 			if ctor == nil {
 				return "", Receiver{}, nil
 			}
-			return "new " + ctor.Utf8Text(src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
+			return "new " + memberText(id, ctor, src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
 		}
 		fn := call.ChildByFieldName("function")
 		if fn == nil {
 			if call.Kind() == "macro_invocation" {
 				if m := call.ChildByFieldName("macro"); m != nil {
-					return m.Utf8Text(src) + "!", Receiver{}, nil
+					return memberText(id, m, src) + "!", Receiver{}, nil
 				}
 			}
 			return "", Receiver{}, nil
@@ -643,28 +886,145 @@ func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText st
 		if id == language.Rust {
 			field = "value"
 		}
-		return fn.Utf8Text(src), memberReceiver(id, fn, field, src), genericArgs(call.ChildByFieldName("arguments"), src)
+		fn = calleeNode(fn)
+		return memberText(id, fn, src), member(fn, field), genericArgs(call.ChildByFieldName("arguments"), src)
 	case language.Java:
 		if call.Kind() == "object_creation_expression" {
 			t := call.ChildByFieldName("type")
 			if t == nil {
 				return "", Receiver{}, nil
 			}
-			return "new " + t.Utf8Text(src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
+			return "new " + memberText(id, t, src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
 		}
 		nameN := call.ChildByFieldName("name")
 		if nameN == nil {
 			return "", Receiver{}, nil
 		}
-		text := nameN.Utf8Text(src)
+		text := nodeText(nameN, src)
 		var recv Receiver
 		if obj := call.ChildByFieldName("object"); obj != nil {
-			text = obj.Utf8Text(src) + "." + text
-			recv = asReceiver(id, obj, src)
+			if op := tokenAfter(call, obj); op != nil {
+				text = joinMember(id, obj, op, nameN, src)
+			}
+			if withReceiver {
+				recv = asReceiver(id, obj, src)
+			}
 		}
 		return text, recv, genericArgs(call.ChildByFieldName("arguments"), src)
 	}
 	return "", Receiver{}, nil
+}
+
+// memberText normalizes member access such as a.b, a?.b and a::b so comments,
+// whitespace and line continuations do not hide names from pattern matching.
+// Other nodes retain their source text.
+func memberText(id language.ID, n *sitter.Node, src []byte) string {
+	if obj, op, name, ok := memberParts(id, n); ok {
+		return joinMember(id, obj, op, name, src)
+	}
+	return nodeText(n, src)
+}
+
+// joinMember joins an object, operator and member name. Rebuilding each link of
+// a chain would copy its preceding links and require quadratic space, so it
+// reuses source spans when contiguous or when whitespace follows the operator
+// after a non-identifier ending. Identifier patterns cannot cross that boundary,
+// and the last segment still follows the operator.
+func joinMember(id language.ID, obj, op, name *sitter.Node, src []byte) string {
+	objText := memberText(id, obj, src)
+	if objText != "" && sharesSpan(objText, src, obj) {
+		after := src[op.EndByte():name.StartByte()]
+		if obj.EndByte() == op.StartByte() && len(after) == 0 ||
+			len(bytes.TrimSpace(after)) == 0 && !isIdentByte(objText[len(objText)-1]) {
+			return spanText(src, obj.StartByte(), name.EndByte())
+		}
+	}
+	return objText + nodeText(op, src) + nodeText(name, src)
+}
+
+// memberParts splits member access into object, operator and name, skipping
+// comments and line continuations; ok is false for other node kinds
+func memberParts(id language.ID, n *sitter.Node) (obj, op, name *sitter.Node, ok bool) {
+	kind := n.Kind()
+	if !slices.Contains(language.ByID(id).Grammar.MemberKinds, kind) &&
+		!((id == language.Java || id == language.Rust) && (kind == "scoped_identifier" || kind == "scoped_type_identifier")) {
+		return nil, nil, nil, false
+	}
+	var parts []*sitter.Node
+	c := n.Walk()
+	defer c.Close()
+	for more := c.GotoFirstChild(); more; more = c.GotoNextSibling() {
+		if ch := c.Node(); !ch.IsExtra() {
+			parts = append(parts, ch)
+		}
+	}
+	// A Rust path that starts at the root, `::std::fs`, has no object
+	if len(parts) < 3 || !parts[0].IsNamed() {
+		return nil, nil, nil, false
+	}
+	return parts[0], parts[1], parts[len(parts)-1], true
+}
+
+// tokenAfter is the first child of parent after n that is not a comment
+func tokenAfter(parent, n *sitter.Node) *sitter.Node {
+	c := parent.Walk()
+	defer c.Close()
+	for more := c.GotoFirstChild(); more; more = c.GotoNextSibling() {
+		if ch := c.Node(); !ch.IsExtra() && ch.StartByte() >= n.EndByte() {
+			return ch
+		}
+	}
+	return nil
+}
+
+// calleeNode unwraps parentheses and sequence expressions to find the function
+// in calls such as `(os.system)(cmd)` and TypeScript's `(0, cp.execSync)(cmd)`
+func calleeNode(fn *sitter.Node) *sitter.Node {
+	for fn.Kind() == "parenthesized_expression" || fn.Kind() == "sequence_expression" {
+		inner := lastNamedChild(fn)
+		if inner == nil {
+			return fn
+		}
+		fn = inner
+	}
+	return fn
+}
+
+// lastNamedChild is n's last named child that is not a comment
+func lastNamedChild(n *sitter.Node) *sitter.Node {
+	var last *sitter.Node
+	c := n.Walk()
+	defer c.Close()
+	for more := c.GotoFirstChild(); more; more = c.GotoNextSibling() {
+		if ch := c.Node(); ch.IsNamed() && !ch.IsExtra() {
+			last = ch
+		}
+	}
+	return last
+}
+
+// firstNamedChild is n's first named child that is not a comment
+func firstNamedChild(n *sitter.Node) *sitter.Node {
+	c := n.Walk()
+	defer c.Close()
+	for more := c.GotoFirstChild(); more; more = c.GotoNextSibling() {
+		if ch := c.Node(); ch.IsNamed() && !ch.IsExtra() {
+			return ch
+		}
+	}
+	return nil
+}
+
+// sharesSpan reports whether s is n's own source text, taken from src rather than built
+func sharesSpan(s string, src []byte, n *sitter.Node) bool {
+	start, end := n.StartByte(), n.EndByte()
+	return uint(len(s)) == end-start && (start == end || unsafe.StringData(s) == &src[start])
+}
+
+// isIdentByte conservatively treats non-ASCII bytes as identifier characters
+// so joinMember keeps the operator adjacent to a possible identifier
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || b >= 0x80 || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
 }
 
 // memberReceiver reads fn's own receiver field - "object" for an
@@ -678,30 +1038,12 @@ func memberReceiver(id language.ID, fn *sitter.Node, field string, src []byte) R
 	return asReceiver(id, obj, src)
 }
 
-// asReceiver classifies one receiver node: a call-shaped node recurses
-// through CalleeAndArgs itself, so a caller sees exactly what it would for
-// an ordinary call to that same expression; anything else is a plain text
-// span
+// asReceiver reads a call-shaped receiver's callee and arguments without its
+// own receiver; other nodes use memberText
 func asReceiver(id language.ID, obj *sitter.Node, src []byte) Receiver {
 	if slices.Contains(language.ByID(id).Grammar.CallKinds, obj.Kind()) {
-		callText, _, callArgs := CalleeAndArgs(id, obj, src)
+		callText, _, callArgs := calleeAndArgs(id, obj, src, false)
 		return Receiver{CallText: callText, CallArgs: callArgs}
 	}
-	return Receiver{Text: obj.Utf8Text(src)}
-}
-
-func inLoop(forKinds []string, node *sitter.Node, enc *localSymbol) bool {
-	var limit uint
-	if enc != nil {
-		limit = enc.start
-	}
-	for p := node.Parent(); p != nil; p = p.Parent() {
-		if p.StartByte() < limit {
-			return false
-		}
-		if slices.Contains(forKinds, p.Kind()) {
-			return true
-		}
-	}
-	return false
+	return Receiver{Text: memberText(id, obj, src)}
 }

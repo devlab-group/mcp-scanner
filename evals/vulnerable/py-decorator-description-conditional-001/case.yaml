@@ -1,0 +1,13 @@
+id: py-decorator-description-conditional-001
+category: tool_poisoning
+regression: true
+notes: >
+  A rug-pull lab server picks its description at import time from an environment variable,
+  with a placeholder docstring. Static analysis cannot know which branch runs, so the scan
+  must stop short of a verdict instead of reading the docstring and reporting SAFE.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  minimum_severity: high
+  status: PARTIAL

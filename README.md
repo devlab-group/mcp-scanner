@@ -15,14 +15,32 @@ SKIPPED   + UNKNOWN   no analyzer produced usable analysis
 
 Timeouts, crashes, unexplained files, and missing statuses downgrade the scan.
 An analyzer error is never self-excusing; only an explicit best-effort policy
-can exempt it. A known limitation is that any recorded file-skip reason accounts
-for all skipped files, so some incomplete file scans can still be `SAFE`.
+can exempt it. Skips that could hide source, such as a symlink to a source
+directory outside the scan root, also record a limit. Every limit downgrades
+the scan.
 
 ## Install
 
 ```sh
 go install github.com/devlab-group/mcp-scanner/cmd/mcp-scanner@latest
 ```
+
+GitHub releases include prebuilt binaries for Linux, macOS and Windows,
+`SHA256SUMS`, and a build provenance attestation for each binary. Verify the
+checksum and attestation before running a downloaded binary:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify mcp-scanner_linux_amd64 \
+  --repo devlab-group/mcp-scanner \
+  --signer-workflow devlab-group/mcp-scanner/.github/workflows/dist.yml \
+  --source-ref refs/tags/vX.Y.Z
+```
+
+The attestation check verifies that the binary came from this repository's
+release workflow and the specified tag. The checksum detects download damage;
+because it comes from the same release as the binary, it cannot establish the
+binary's origin. The attestation provides that check.
 
 Signature matching requires libyara and a tagged build:
 

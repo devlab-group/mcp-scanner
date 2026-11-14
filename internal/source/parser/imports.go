@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"slices"
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -9,7 +10,7 @@ import (
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
-func collectImports(adapter *language.Adapter, root *sitter.Node, path string, src []byte) ([]graph.Import, error) {
+func collectImports(b budget, adapter *language.Adapter, root *sitter.Node, path string, src []byte) ([]graph.Import, error) {
 	q, err := adapter.Query("imports")
 	if err != nil {
 		return nil, err
@@ -18,7 +19,7 @@ func collectImports(adapter *language.Adapter, root *sitter.Node, path string, s
 	defer qc.Close()
 
 	var out []graph.Import
-	matches := qc.Matches(q, root, src)
+	matches := b.matches(qc, q, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, cap := range m.Captures {
 			name := q.CaptureNames()[cap.Index]
@@ -36,10 +37,8 @@ func collectImports(adapter *language.Adapter, root *sitter.Node, path string, s
 				switch name {
 				case "import":
 					out = append(out, jsImports(&node, path, src)...)
-				case "require.path":
-					if v, ok := UnquoteString(node.Utf8Text(src)); ok {
-						out = append(out, graph.Import{Path: v, File: path, Line: int(node.StartPosition().Row) + 1})
-					}
+				case "require":
+					out = append(out, requireImports(&node, path, src)...)
 				}
 			case language.Java:
 				if name == "import" {
@@ -53,6 +52,26 @@ func collectImports(adapter *language.Adapter, root *sitter.Node, path string, s
 		}
 	}
 	return out, nil
+}
+
+// requireImports reads each string argument of a require call as an import
+func requireImports(call *sitter.Node, path string, src []byte) []graph.Import {
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return nil
+	}
+	cursor := args.Walk()
+	defer cursor.Close()
+	var out []graph.Import
+	for _, a := range args.NamedChildren(cursor) {
+		if a.Kind() != "string" {
+			continue
+		}
+		if v, ok := UnquoteString(a.Utf8Text(src)); ok {
+			out = append(out, graph.Import{Path: v, File: path, Line: int(a.StartPosition().Row) + 1})
+		}
+	}
+	return out
 }
 
 func goImport(node *sitter.Node, path string, src []byte) []graph.Import {
@@ -249,7 +268,7 @@ func attachInlineHandlers(call *sitter.Node, args []graph.Arg, locals []localSym
 	}
 }
 
-func collectCalls(adapter *language.Adapter, root *sitter.Node, path string, src []byte, locals []localSymbol) ([]graph.Call, error) {
+func collectCalls(b budget, adapter *language.Adapter, root *sitter.Node, path string, src []byte, locals []localSymbol) ([]graph.Call, error) {
 	q, err := adapter.Query("calls")
 	if err != nil {
 		return nil, err
@@ -257,31 +276,100 @@ func collectCalls(adapter *language.Adapter, root *sitter.Node, path string, src
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
 
-	var out []graph.Call
-	matches := qc.Matches(q, root, src)
+	var nodes []sitter.Node
+	matches := b.matches(qc, q, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, cap := range m.Captures {
-			node := cap.Node
-			calleeText, _, args := CalleeAndArgs(adapter.ID, &node, src)
-			if calleeText == "" {
-				continue
-			}
-			attachInlineHandlers(&node, args, locals)
-			enc := enclosing(node.StartByte(), locals)
-			var caller graph.SymbolID
-			if enc != nil {
-				caller = enc.sym.ID
-			}
-			out = append(out, graph.Call{
-				Caller:      caller,
-				CalleeText:  calleeText,
-				File:        path,
-				Line:        int(node.StartPosition().Row) + 1,
-				Args:        args,
-				InLoop:      inLoop(adapter.Grammar.ForKinds, &node, enc),
-				IsDecorator: node.Parent() != nil && node.Parent().Kind() == "decorator",
-			})
+			nodes = append(nodes, cap.Node)
 		}
 	}
+	ancestry := make(map[uintptr]callAncestry, len(nodes))
+	for _, node := range nodes {
+		ancestry[node.Id()] = callAncestry{}
+	}
+	if !fillAncestry(b, adapter.Grammar.ForKinds, root, ancestry) {
+		return nil, ErrParseTimeout
+	}
+
+	// Bound allocated call text; spans sharing src do not count toward the budget
+	copyLimit := CopiedTextFactor*len(src) + 16<<10
+	copied := 0
+	var out []graph.Call
+	for _, node := range nodes {
+		if b.spent() {
+			return nil, ErrParseTimeout
+		}
+		calleeText, _, args := calleeAndArgs(adapter.ID, &node, src, false)
+		if calleeText == "" {
+			continue
+		}
+		copied += copiedLen(calleeText, src)
+		for _, a := range args {
+			copied += copiedLen(a.Text, src) + copiedLen(a.Value, src) + copiedLen(a.Keyword, src)
+		}
+		if copied > copyLimit {
+			return nil, ErrTextLimit
+		}
+		attachInlineHandlers(&node, args, locals)
+		enc := enclosing(node.StartByte(), locals)
+		var caller graph.SymbolID
+		var limit uint
+		if enc != nil {
+			caller, limit = enc.sym.ID, enc.start
+		}
+		a := ancestry[node.Id()]
+		out = append(out, graph.Call{
+			Caller:     caller,
+			CalleeText: calleeText,
+			File:       path,
+			Line:       int(node.StartPosition().Row) + 1,
+			Args:       args,
+			// Only a loop inside the calling symbol counts, not one around its definition
+			InLoop:      a.inLoop && a.loopStart >= limit,
+			IsDecorator: a.decorator,
+		})
+	}
 	return out, nil
+}
+
+// callAncestry holds the loop and decorator context needed by collectCalls
+type callAncestry struct {
+	loopStart uint // start of the innermost loop around the call, when inLoop
+	inLoop    bool
+	decorator bool // the call's parent is a decorator
+}
+
+// fillAncestry fills entries already keyed in ancestry during one tree walk,
+// carrying the innermost loop and parent kind downward. This avoids repeated
+// Node.Parent traversals, which search from the root and make deeply nested
+// calls expensive. The walk checks the budget and returns false when spent.
+func fillAncestry(b budget, forKinds []string, root *sitter.Node, ancestry map[uintptr]callAncestry) bool {
+	c := root.Walk()
+	defer c.Close()
+	// above tracks inherited context at each depth on the cursor's path
+	above := []callAncestry{{}}
+	for visited := 1; ; visited++ {
+		if visited%4096 == 0 && b.spent() {
+			return false
+		}
+		n := c.Node()
+		here := above[len(above)-1]
+		if _, ok := ancestry[n.Id()]; ok {
+			ancestry[n.Id()] = here
+		}
+		here.decorator = n.Kind() == "decorator"
+		if slices.Contains(forKinds, n.Kind()) {
+			here.loopStart, here.inLoop = n.StartByte(), true
+		}
+		if c.GotoFirstChild() {
+			above = append(above, here)
+			continue
+		}
+		for !c.GotoNextSibling() {
+			if !c.GotoParent() {
+				return true
+			}
+			above = above[:len(above)-1]
+		}
+	}
 }

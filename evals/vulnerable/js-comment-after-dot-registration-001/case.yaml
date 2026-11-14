@@ -1,0 +1,13 @@
+id: js-comment-after-dot-registration-001
+category: command_injection
+notes: >
+  A comment between the dot and the method name hid a registration: the
+  callee read as "server./* ... */tool", whose last segment is not "tool".
+  The server registers a second, harmless tool, which kept the scan from
+  reporting that no registration was found.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

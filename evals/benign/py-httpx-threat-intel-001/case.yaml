@@ -1,0 +1,13 @@
+id: py-httpx-threat-intel-001
+category: none
+notes: >
+  A threat-intelligence lookup server that imports httpx and also does what every such
+  server does: reads fields from JSON responses with dict.get, looks tool arguments up in
+  local tables, sends the argument as a query parameter or a request body, and puts a
+  validated address in the path of a fixed host. None of these lets the caller choose the
+  host, and the scan must not report SSRF for them.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  forbidden_rules: [taint.ssrf]

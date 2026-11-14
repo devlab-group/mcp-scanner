@@ -1,0 +1,13 @@
+id: py-parenthesized-decorator-001
+category: command_injection
+notes: >
+  Python reads any expression after @, and @(mcp.tool()) registers the tool
+  like @mcp.tool(). The decorator text started with a bracket, which hid the
+  registration. A second, harmless tool kept the scan from reporting that no
+  registration was found.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

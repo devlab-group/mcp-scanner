@@ -1,0 +1,14 @@
+id: py-decorator-positional-001
+category: tool_poisoning
+notes: >
+  A FastMCP tool that passes its name, title and description positionally, as the SDK's
+  tool(name, title, description) signature allows, with a harmless docstring underneath.
+  The server serves the third argument, not the docstring.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules:
+    - promptdefense.exfiltration
+    - promptdefense.credential-harvesting

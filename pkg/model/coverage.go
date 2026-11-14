@@ -82,9 +82,12 @@ func (c *Coverage) AddSkipReason(reason string) {
 	}
 }
 
-// Gaps lists coverage losses that prevent a complete result. An unexplained skip is a gap, and an
-// analyzer that examined nothing cannot support a clean verdict. Any skip reason excuses both skip
-// counts, but the zero-parsed-file and zero-analyzed-capability floors still apply.
+// Gaps lists coverage losses that prevent a complete result. Unexplained skips and
+// analyzers that examined nothing create gaps. Any skip reason accounts for both
+// skip counts, but the zero-parsed-file and zero-analyzed-capability floors still
+// apply. Callers must also record omissions that could hide relevant content in
+// LimitsHit; a skip reason alone is appropriate for harmless duplicates, such as
+// a second path to a directory already walked.
 func (c Coverage) Gaps() []string {
 	var gaps []string
 	// The floor under all the others. Every check below is guarded by a positive count, so an

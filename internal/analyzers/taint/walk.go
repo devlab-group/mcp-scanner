@@ -188,6 +188,9 @@ type ctx struct {
 	seedCounts map[graph.SymbolID]int
 	seedCapHit bool
 
+	// clientBindings caches httpClientBindings per file
+	clientBindings map[string]map[string]bool
+
 	// depthCapHit records a tainted flow that stopped at maxDepth. Recursion requires a non-empty
 	// seed, so every hit represents an untraced continuation.
 	depthCapHit bool
@@ -948,6 +951,8 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 	}
 	line := int(n.StartPosition().Row) + 1
 	rhs = unwrapAwait(rhs)
+	// Clear SSRF taint when a fixed prefix closes the URL's host before computed text begins
+	fixedHost := c.hostFixed(pf, file, rhs)
 
 	if augmentedAssignKinds[n.Kind()] {
 		text := strings.Join(targets, " + ") + " + " + rhs.Utf8Text(pf.src)
@@ -1005,7 +1010,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			if san.normalizes {
 				info.normalized = true
 			}
-			setTaint(tainted, targets, info, conditional)
+			setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 			return
 		}
 
@@ -1025,7 +1030,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			info.clearedFor = withoutCategory(info.clearedFor, "path_traversal")
 			info.normalized = false
 		}
-		setTaint(tainted, targets, info, conditional)
+		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 
 		if resolved {
 			c.recurseInto(sym, seedFromArgs(sym, args, tainted, step, mult), depth)
@@ -1043,7 +1048,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		return
 	}
 	if info, ok := propagatedTaint(text, tainted); ok {
-		setTaint(tainted, targets, info, conditional)
+		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 		return
 	}
 	clearTaint(tainted, targets, conditional)
@@ -1120,19 +1125,27 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// they share a name
 		sink, sinkFound = matchMethodSink(sinkText)
 	}
-	if !sinkFound && !resolvedInRepo && fileImportsHTTPClient(c.g, file) {
-		// Only tried once the file is already known to import a
-		// recognized HTTP client module - see gatedMethodSinkPatterns for
-		// why "get"/"post" cannot be matched the unconditional way
-		// matchMethodSink's other entries are
-		sink, sinkFound = matchGatedMethodSink(sinkText)
+	if !sinkFound && !resolvedInRepo {
+		recv := receiver
+		if recv.Text == "" && recv.CallText == "" {
+			// Recover the receiver from the callee after unwrapping asyncio.to_thread(client.get, url)
+			if i := strings.LastIndexByte(sinkText, '.'); i > 0 {
+				recv.Text = sinkText[:i]
+			}
+		}
+		if c.httpClientReceiver(pf, file, recv) {
+			sink, sinkFound = matchGatedMethodSink(sinkText)
+		}
 	}
 	if sinkFound {
 		var info taintInfo
 		var found bool
 		if sink.argIndex >= 0 {
-			if sink.argIndex < len(args) {
-				info, found = mentionsAny(args[sink.argIndex].Text, tainted, sink.category)
+			if a, ok := sinkArg(args, sink.argIndex, sink.category); ok {
+				info, found = mentionsAny(a.Text, tainted, sink.category)
+				if found && sink.category == "ssrf" && c.hostFixed(pf, file, argNode(n, a, pf.src)) {
+					found = false
+				}
 			}
 		} else {
 			_, info, found = c.taintedArgOrReceiver(file, receiver, args, tainted, sink.category)

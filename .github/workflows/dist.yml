@@ -1,9 +1,10 @@
 name: dist
 
-# Builds release binaries for every platform. The tree-sitter parsers need cgo, so each build
-# needs a C compiler for its target: Linux and Windows cross-compile on one Ubuntu runner, and
-# macOS builds on a macOS runner. A tag push also publishes the binaries as a GitHub Release; a
-# manual run only uploads them as a workflow artifact.
+# Build release binaries with the C compilers required by the tree-sitter parsers.
+# Linux builds link musl on runners matching each target architecture. Windows
+# cross-compiles on the amd64 Linux runner; macOS builds on a macOS runner.
+# Tag pushes publish a GitHub Release after check passes and govulncheck passes
+# for each binary. Manual runs upload workflow artifacts.
 
 on:
   push:
@@ -14,66 +15,100 @@ permissions:
   contents: read
 
 jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
   linux-windows:
-    runs-on: ubuntu-latest
+    # Pin the image supplying the statically linked C runtimes documented in THIRD_PARTY_NOTICES
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # the version stamp comes from git describe
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools gcc-mingw-w64-x86-64
       - run: make dist
-      - run: make dist GOARCH=arm64 CC=aarch64-linux-gnu-gcc
       - run: make dist GOOS=windows CC=x86_64-w64-mingw32-gcc
-      - uses: actions/upload-artifact@v4
+      # Copy notices from the installed MinGW-w64 package used to link the Windows binary
+      - run: cp /usr/share/doc/mingw-w64-x86-64-dev/copyright dist/THIRD_PARTY_NOTICES.mingw-w64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-linux-windows
+          path: dist/
+
+  linux-arm64:
+    # Keep the C runtime source consistent with linux-windows
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: make dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-linux-arm64
           path: dist/
 
   darwin:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - run: make dist
       - run: make dist GOARCH=amd64 CC="clang -arch x86_64"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-darwin
           path: dist/
 
   checksums:
-    needs: [linux-windows, darwin]
+    needs: [linux-windows, linux-arm64, darwin]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: dist-*
           merge-multiple: true
+      # Scan the Go and module versions embedded in each binary, covering every release target
+      # and build tag; a source scan covers only this runner's configuration
+      - run: make vuln-dist
       - run: cd dist && sha256sum mcp-scanner_* > SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
 
   release:
-    needs: checksums
+    needs: [check, checksums]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # create the release
+      id-token: write # request the signing certificate for the provenance attestation
+      attestations: write # store the provenance attestation
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/mcp-scanner_*
       - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

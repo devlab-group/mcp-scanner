@@ -147,3 +147,50 @@ func hasSubstring(list []string, sub string) bool {
 	}
 	return false
 }
+
+func TestBuild_CallTextLimitIsAGap(t *testing.T) {
+	dir := t.TempDir()
+	src := "class A { void m() { a" + strings.Repeat(".x\n.f()", 2000) + "; } }\n"
+	if err := os.WriteFile(filepath.Join(dir, "A.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cov, err := Build(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cov.FilesParsed != 0 || cov.FilesFailed != 1 {
+		t.Errorf("FilesParsed=%d FilesFailed=%d, want the file counted as failed", cov.FilesParsed, cov.FilesFailed)
+	}
+	if !hasSubstring(cov.LimitsHit, "produced call text past") {
+		t.Fatalf("want a LimitsHit entry for the aborted file, got %v", cov.LimitsHit)
+	}
+	if hasSubstring(cov.LimitsHit, "parse deadline") {
+		t.Errorf("the text limit is reported as a deadline: %v", cov.LimitsHit)
+	}
+	if len(cov.Gaps()) == 0 {
+		t.Error("want Coverage.Gaps() to report the aborted file, got none")
+	}
+}
+
+func TestBuild_DepthLimitIsAGap(t *testing.T) {
+	dir := t.TempDir()
+	src := "x = " + strings.Repeat("f(", 20000) + "0" + strings.Repeat(")", 20000) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "deep.py"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cov, err := Build(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if cov.FilesParsed != 0 || cov.FilesFailed != 1 {
+		t.Errorf("FilesParsed=%d FilesFailed=%d, want the file counted as failed", cov.FilesParsed, cov.FilesFailed)
+	}
+	if !hasSubstring(cov.LimitsHit, "syntax levels and were not analyzed") {
+		t.Fatalf("want a LimitsHit entry for the file past the depth limit, got %v", cov.LimitsHit)
+	}
+	if len(cov.Gaps()) == 0 {
+		t.Error("want Coverage.Gaps() to report the file, got none")
+	}
+}

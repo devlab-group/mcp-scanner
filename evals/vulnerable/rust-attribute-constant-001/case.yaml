@@ -1,0 +1,13 @@
+id: rust-attribute-constant-001
+category: tool_poisoning
+notes: >
+  An rmcp tool whose description is a const &str in the same file. The constant was not
+  read before, which left the payload unanalyzed.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules:
+    - promptdefense.exfiltration
+    - promptdefense.credential-harvesting

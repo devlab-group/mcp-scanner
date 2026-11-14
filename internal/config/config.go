@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 	"github.com/devlab-group/mcp-scanner/pkg/model"

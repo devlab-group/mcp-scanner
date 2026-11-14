@@ -238,30 +238,38 @@ Read the verdict when low-severity findings matter.
 ```yaml
 name: mcp-scan
 on: [pull_request]
+permissions:
+  contents: read
+  security-events: write # upload-sarif
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.26"
-      - run: go build -o mcp-scanner ./cmd/mcp-scanner
+          go-version: stable
+      - run: go install github.com/devlab-group/mcp-scanner/cmd/mcp-scanner@vX.Y.Z
       - name: Scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          ./mcp-scanner source . \
+          mcp-scanner source . \
             --analyzers supplychain,taint,llm \
             --best-effort llm \
             --fail-on high \
             --format sarif --output results.sarif
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
 ```
+
+Replace `vX.Y.Z` with a release version. Pinning the scanner avoids changes
+between runs caused by `@latest`. The source parsers use cgo, so `go install`
+requires a C compiler. GitHub's Ubuntu runners and the `golang` image include
+one.
 
 The scan step's own exit code (2 on a policy failure, 3 on an incomplete
 scan) fails the job; `if: always()` on the upload step still publishes
@@ -271,10 +279,10 @@ whatever SARIF was produced.
 
 ```yaml
 mcp-scan:
-  image: golang:1.26
+  image: golang:latest
   script:
-    - go build -o mcp-scanner ./cmd/mcp-scanner
-    - ./mcp-scanner source . --fail-on high --format json --output gl-mcp-scan-report.json
+    - go install github.com/devlab-group/mcp-scanner/cmd/mcp-scanner@vX.Y.Z
+    - mcp-scanner source . --fail-on high --format json --output gl-mcp-scan-report.json
   artifacts:
     when: always
     paths:

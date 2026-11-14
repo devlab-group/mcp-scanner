@@ -1,0 +1,12 @@
+id: ts-compiled-import-call-001
+category: command_injection
+notes: >
+  The JavaScript tsc emits for a call to an imported function:
+  (0, child_process_1.execSync)(...). Published npm packages ship this form,
+  and the callee names the function only inside the brackets.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

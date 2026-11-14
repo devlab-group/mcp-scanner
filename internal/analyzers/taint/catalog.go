@@ -2,7 +2,6 @@ package taint
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
@@ -173,17 +172,17 @@ var sinkPatterns = []sinkPattern{
 	{"os.walk", "path_traversal", model.SeverityMedium, -1},
 	{"glob.glob", "path_traversal", model.SeverityMedium, -1},
 
-	{"http.Get", "ssrf", model.SeverityHigh, -1},
-	{"http.Post", "ssrf", model.SeverityHigh, -1},
-	{"http.NewRequest", "ssrf", model.SeverityHigh, -1},
+	{"http.Get", "ssrf", model.SeverityHigh, 0},
+	{"http.Post", "ssrf", model.SeverityHigh, 0},
+	{"http.NewRequest", "ssrf", model.SeverityHigh, 1},
 	// http.NewRequestWithContext(ctx, method, url, body) is
 	// http.NewRequest's own sibling - the form every Go linter recommends
 	// over it since 1.13 - and just as invisible to the shorter entry
-	{"http.NewRequestWithContext", "ssrf", model.SeverityHigh, -1},
-	{"requests.get", "ssrf", model.SeverityHigh, -1},
-	{"requests.post", "ssrf", model.SeverityHigh, -1},
-	{"fetch", "ssrf", model.SeverityHigh, -1},
-	{"reqwest::get", "ssrf", model.SeverityHigh, -1},
+	{"http.NewRequestWithContext", "ssrf", model.SeverityHigh, 2},
+	{"requests.get", "ssrf", model.SeverityHigh, 0},
+	{"requests.post", "ssrf", model.SeverityHigh, 0},
+	{"fetch", "ssrf", model.SeverityHigh, 0},
+	{"reqwest::get", "ssrf", model.SeverityHigh, 0},
 	{"URLConnection", "ssrf", model.SeverityHigh, -1},
 
 	{"socket.socket", "raw_socket", model.SeverityMedium, -1},
@@ -234,7 +233,7 @@ var sinkPatterns = []sinkPattern{
 	// urllib.request.urlopen is the standard-library request call for code
 	// with no third-party HTTP dependency at all - requests/httpx/aiohttp
 	// above assume one is installed, urllib never does
-	{"urllib.request.urlopen", "ssrf", model.SeverityHigh, -1},
+	{"urllib.request.urlopen", "ssrf", model.SeverityHigh, 0},
 
 	{"os.ReadDir", "path_traversal", model.SeverityMedium, -1},
 	{"os.Rename", "path_traversal", model.SeverityMedium, -1},
@@ -372,9 +371,9 @@ var methodSinkPatterns = []sinkPattern{
 	// A configured HTTP client - a package-level *http.Client, an axios/httpx/aiohttp instance
 	// - calls its verb as a method on a receiver; sinkPatterns' http.Get/requests.get/fetch
 	// only match the free-function spellings
-	{"Get", "ssrf", model.SeverityHigh, -1},
-	{"Post", "ssrf", model.SeverityHigh, -1},
-	{"Do", "ssrf", model.SeverityHigh, -1},
+	{"Get", "ssrf", model.SeverityHigh, 0},
+	{"Post", "ssrf", model.SeverityHigh, 0},
+	{"Do", "ssrf", model.SeverityHigh, 0},
 
 	// (*net.Dialer).DialContext has no free-function form at all - unlike
 	// net.Dial/net.DialTimeout, it only ever exists as a method on a
@@ -423,37 +422,17 @@ func matchReceiverConstructor(calleeText string) bool {
 	return receiverConstructors[parser.LastSegment(calleeText)]
 }
 
-// gatedMethodSinkPatterns require a recognized HTTP client import. Bare get/post names are too
-// common to match receiver-blind without that file-level evidence.
+// gatedMethodSinkPatterns matches get and post after httpClientReceiver checks
+// the receiver; names shared with dict.get and Map.get are too broad on their own
 var gatedMethodSinkPatterns = []sinkPattern{
-	{"get", "ssrf", model.SeverityHigh, -1},
-	{"post", "ssrf", model.SeverityHigh, -1},
+	{"get", "ssrf", model.SeverityHigh, 0},
+	{"post", "ssrf", model.SeverityHigh, 0},
 }
 
-// httpClientImports are the module paths fileImportsHTTPClient looks for
+// httpClientImports lists HTTP modules recognized by the get and post receiver check
 var httpClientImports = []string{"axios", "httpx", "aiohttp", "requests"}
 
-// fileImportsHTTPClient reports whether file imports one of httpClientImports - a plain
-// match, a submodule of one ("aiohttp.web"), or a name imported from one ("from httpx
-// import AsyncClient" records the import path as "httpx.AsyncClient")
-func fileImportsHTTPClient(g *graph.Graph, file string) bool {
-	f := g.Files[file]
-	if f == nil {
-		return false
-	}
-	for _, imp := range f.Imports {
-		for _, name := range httpClientImports {
-			if imp.Path == name || strings.HasPrefix(imp.Path, name+".") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// matchGatedMethodSink is matchMethodSink's counterpart for
-// gatedMethodSinkPatterns - see there for why "get"/"post" cannot be
-// matched unconditionally
+// matchGatedMethodSink is matchMethodSink's counterpart for gatedMethodSinkPatterns
 func matchGatedMethodSink(calleeText string) (sinkPattern, bool) {
 	last := parser.LastSegment(calleeText)
 	for _, p := range gatedMethodSinkPatterns {
