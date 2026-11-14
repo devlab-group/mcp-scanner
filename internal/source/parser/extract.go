@@ -3,6 +3,7 @@ package parser
 import (
 	"slices"
 	"strings"
+	"unsafe"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -484,7 +485,7 @@ func rustAttributeArgs(item *sitter.Node, src []byte) []graph.Arg {
 	return out
 }
 
-func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, locals []localSymbol) error {
+func attachDecorators(b budget, adapter *language.Adapter, root *sitter.Node, src []byte, locals []localSymbol) error {
 	if adapter.ID != language.Python {
 		// Java and Rust attach their decorator equivalents directly while
 		// building the symbol (children/siblings, not a wrapping node); JS
@@ -497,7 +498,7 @@ func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, 
 	}
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
-	matches := qc.Matches(q, root, src)
+	matches := b.matches(qc, q, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, cap := range m.Captures {
 			decorated := cap.Node
@@ -595,7 +596,7 @@ func returnText(id language.ID, def *sitter.Node, src []byte) string {
 	if val == nil {
 		return ""
 	}
-	return val.Utf8Text(src)
+	return nodeText(val, src)
 }
 
 // findFirst does a shallow-first search for the first descendant of kind, skipping through
@@ -663,7 +664,7 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 				continue
 			}
 			a := exprArg(val, src)
-			a.Keyword = key.Utf8Text(src)
+			a.Keyword = nodeText(key, src)
 			out = append(out, a)
 		}
 		c.Close()
@@ -680,7 +681,7 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 			if key == nil || val == nil {
 				continue
 			}
-			keyText := key.Utf8Text(src)
+			keyText := nodeText(key, src)
 			if v, ok := UnquoteString(keyText); ok {
 				keyText = v
 			}
@@ -694,15 +695,41 @@ func literalFields(n *sitter.Node, src []byte) []graph.Arg {
 	return nil
 }
 
+// nodeText returns a string sharing src. Nested arguments and chained callees
+// contain earlier expressions, so copying each span would require quadratic
+// space. Shared strings keep the source buffer alive without copying its bytes.
+// Callers must keep src immutable while any shared string survives.
+func nodeText(n *sitter.Node, src []byte) string {
+	return spanText(src, n.StartByte(), n.EndByte())
+}
+
+func spanText(src []byte, start, end uint) string {
+	b := src[start:end]
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// copiedLen returns len(s) for allocated text, or zero when s shares src
+func copiedLen(s string, src []byte) int {
+	if s == "" || len(src) == 0 {
+		return len(s)
+	}
+	p := uintptr(unsafe.Pointer(unsafe.StringData(s)))
+	base := uintptr(unsafe.Pointer(unsafe.SliceData(src)))
+	if p >= base && p < base+uintptr(len(src)) {
+		return 0
+	}
+	return len(s)
+}
+
 // exprArg builds an Arg for an argument or field-value expression
 func exprArg(n *sitter.Node, src []byte) graph.Arg {
-	text := n.Utf8Text(src)
+	text := nodeText(n, src)
 	if n.Kind() == "keyword_argument" {
 		nameN := n.ChildByFieldName("name")
 		valN := n.ChildByFieldName("value")
 		if nameN != nil && valN != nil {
 			a := exprArg(valN, src)
-			a.Keyword = nameN.Utf8Text(src)
+			a.Keyword = nodeText(nameN, src)
 			return a
 		}
 	}
@@ -746,7 +773,7 @@ func goArgs(list *sitter.Node, src []byte) []graph.Arg {
 			out = append(out, exprArg(&child, src))
 			continue
 		}
-		out = append(out, graph.Arg{Text: child.Utf8Text(src)})
+		out = append(out, graph.Arg{Text: nodeText(&child, src)})
 		out = append(out, fields...)
 	}
 	return out
@@ -763,13 +790,27 @@ type Receiver struct {
 // CalleeAndArgs pulls the callee expression text, the callee's own receiver and the call's
 // arguments out of a call-shaped node
 func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText string, receiver Receiver, args []graph.Arg) {
+	return calleeAndArgs(id, call, src, true)
+}
+
+// calleeAndArgs extracts a receiver only when requested. For a call-shaped
+// receiver, it reads the callee and arguments without descending into another
+// receiver; repeating that descent at each link would make chain processing
+// quadratic.
+func calleeAndArgs(id language.ID, call *sitter.Node, src []byte, withReceiver bool) (calleeText string, receiver Receiver, args []graph.Arg) {
+	member := func(fn *sitter.Node, field string) Receiver {
+		if !withReceiver {
+			return Receiver{}
+		}
+		return memberReceiver(id, fn, field, src)
+	}
 	switch id {
 	case language.Go:
 		fn := call.ChildByFieldName("function")
 		if fn == nil {
 			return "", Receiver{}, nil
 		}
-		return fn.Utf8Text(src), memberReceiver(id, fn, "operand", src), goArgs(call.ChildByFieldName("arguments"), src)
+		return nodeText(fn, src), member(fn, "operand"), goArgs(call.ChildByFieldName("arguments"), src)
 	case language.Python, language.JavaScript, language.TypeScript, language.Rust:
 		if call.Kind() == "new_expression" {
 			// Match Java's constructor naming so catalog entries such as "new Function" apply
@@ -777,13 +818,13 @@ func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText st
 			if ctor == nil {
 				return "", Receiver{}, nil
 			}
-			return "new " + ctor.Utf8Text(src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
+			return "new " + nodeText(ctor, src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
 		}
 		fn := call.ChildByFieldName("function")
 		if fn == nil {
 			if call.Kind() == "macro_invocation" {
 				if m := call.ChildByFieldName("macro"); m != nil {
-					return m.Utf8Text(src) + "!", Receiver{}, nil
+					return nodeText(m, src) + "!", Receiver{}, nil
 				}
 			}
 			return "", Receiver{}, nil
@@ -792,28 +833,52 @@ func CalleeAndArgs(id language.ID, call *sitter.Node, src []byte) (calleeText st
 		if id == language.Rust {
 			field = "value"
 		}
-		return fn.Utf8Text(src), memberReceiver(id, fn, field, src), genericArgs(call.ChildByFieldName("arguments"), src)
+		return nodeText(fn, src), member(fn, field), genericArgs(call.ChildByFieldName("arguments"), src)
 	case language.Java:
 		if call.Kind() == "object_creation_expression" {
 			t := call.ChildByFieldName("type")
 			if t == nil {
 				return "", Receiver{}, nil
 			}
-			return "new " + t.Utf8Text(src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
+			return "new " + nodeText(t, src), Receiver{}, genericArgs(call.ChildByFieldName("arguments"), src)
 		}
 		nameN := call.ChildByFieldName("name")
 		if nameN == nil {
 			return "", Receiver{}, nil
 		}
-		text := nameN.Utf8Text(src)
+		text := nodeText(nameN, src)
 		var recv Receiver
 		if obj := call.ChildByFieldName("object"); obj != nil {
-			text = obj.Utf8Text(src) + "." + text
-			recv = asReceiver(id, obj, src)
+			text = javaCallee(obj, nameN, src)
+			if withReceiver {
+				recv = asReceiver(id, obj, src)
+			}
 		}
 		return text, recv, genericArgs(call.ChildByFieldName("arguments"), src)
 	}
 	return "", Receiver{}, nil
+}
+
+// javaCallee joins a method call's object and name around one dot, which keeps
+// `Files\n    .readAllBytes` matching Files.readAllBytes. Joining copies the
+// object's text, and in a chain each object holds every link before it, which
+// would make the copies quadratic. It reuses the source span when only the dot
+// separates the two, or when whitespace alone surrounds the dot after an object
+// ending in a bracket: identifier patterns cannot cross that boundary, and the
+// last segment still follows the dot.
+func javaCallee(obj, name *sitter.Node, src []byte) string {
+	objText := nodeText(obj, src)
+	sep := spanText(src, obj.EndByte(), name.StartByte())
+	if sep == "." || strings.TrimSpace(sep) == "." && objText != "" && !isIdentByte(objText[len(objText)-1]) {
+		return spanText(src, obj.StartByte(), name.EndByte())
+	}
+	return objText + "." + nodeText(name, src)
+}
+
+// isIdentByte conservatively treats non-ASCII bytes as identifier characters
+// so javaCallee keeps the dot adjacent to a possible identifier
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '$' || b >= 0x80 || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
 }
 
 // memberReceiver reads fn's own receiver field - "object" for an
@@ -827,30 +892,12 @@ func memberReceiver(id language.ID, fn *sitter.Node, field string, src []byte) R
 	return asReceiver(id, obj, src)
 }
 
-// asReceiver classifies one receiver node: a call-shaped node recurses
-// through CalleeAndArgs itself, so a caller sees exactly what it would for
-// an ordinary call to that same expression; anything else is a plain text
-// span
+// asReceiver reads a call-shaped receiver's callee and arguments without its
+// own receiver; other nodes use their source text
 func asReceiver(id language.ID, obj *sitter.Node, src []byte) Receiver {
 	if slices.Contains(language.ByID(id).Grammar.CallKinds, obj.Kind()) {
-		callText, _, callArgs := CalleeAndArgs(id, obj, src)
+		callText, _, callArgs := calleeAndArgs(id, obj, src, false)
 		return Receiver{CallText: callText, CallArgs: callArgs}
 	}
-	return Receiver{Text: obj.Utf8Text(src)}
-}
-
-func inLoop(forKinds []string, node *sitter.Node, enc *localSymbol) bool {
-	var limit uint
-	if enc != nil {
-		limit = enc.start
-	}
-	for p := node.Parent(); p != nil; p = p.Parent() {
-		if p.StartByte() < limit {
-			return false
-		}
-		if slices.Contains(forKinds, p.Kind()) {
-			return true
-		}
-	}
-	return false
+	return Receiver{Text: nodeText(obj, src)}
 }

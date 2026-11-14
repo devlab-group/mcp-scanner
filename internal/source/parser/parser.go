@@ -18,17 +18,36 @@ import (
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
-// ParseTimeout bounds how long one file may spend inside tree-sitter. A progress callback enforces
-// it within the cgo parse, where a Go deadline cannot preempt pathological grammar work.
+// ParseTimeout is the per-file deadline shared by parsing and extraction.
+// A progress callback checks it during cgo parsing, and tree-sitter queries use
+// the remaining time as their timeout because Go cannot preempt that C work.
+// Extraction also checks the deadline to bound work on hostile syntax trees.
 const ParseTimeout = 5 * time.Second
+
+// CopiedTextFactor sets the size-dependent budget for copied call text;
+// collectCalls adds a fixed allowance. Source spans share the file buffer, but
+// decoded literals and reconstructed callees allocate text that can grow faster
+// than the input on deeply nested files.
+const CopiedTextFactor = 4
+
+// ErrTextLimit means extracted call text exceeded the budget in collectCalls
+// and is reported by Build as a resource limit in Coverage.LimitsHit
+var ErrTextLimit = errors.New("call text exceeded its per-file limit")
+
+// MaxTreeDepth rejects deeply nested syntax trees before queries run.
+// Tree-sitter stores query match depths in 16 bits and can silently lose matches
+// beyond that range. This limit leaves a margin below the overflow boundary.
+const MaxTreeDepth = 1 << 15
+
+// ErrDepthLimit means the syntax tree exceeded MaxTreeDepth and is reported
+// by Build as a resource limit in Coverage.LimitsHit
+var ErrDepthLimit = errors.New("syntax tree exceeded the per-file depth limit")
 
 // parseDeadline defaults to ParseTimeout; tests shorten it to avoid depending on machine speed
 var parseDeadline = ParseTimeout
 
-// ErrParseTimeout means ParseFile aborted because ParseTimeout elapsed
-// before the parse finished. Distinguished from a plain parse failure so
-// the caller can record it as a resource limit (Coverage.LimitsHit)
-// rather than an unexplained one.
+// ErrParseTimeout means parsing or extraction exceeded the per-file deadline
+// and is reported by Build as a resource limit in Coverage.LimitsHit
 var ErrParseTimeout = errors.New("parse exceeded its per-file deadline")
 
 // FileResult is what parsing one file produces, before cross-file resolution
@@ -48,17 +67,51 @@ type FileResult struct {
 	Constants map[string]string
 }
 
-// localSymbol tracks a symbol's byte range in its own file, so calls and
-// decorators found later in the same file can be attributed to it
+// localSymbol tracks a symbol's byte range so calls and decorators found later
+// in the file can be attributed to it
 type localSymbol struct {
 	sym   *graph.Symbol
 	start uint
 	end   uint
 }
 
+// budget shares one deadline across parsing and extraction. Extraction checks
+// elapsed time; parsing also checks the scan context, as Build does between files.
+type budget struct {
+	deadline time.Time
+}
+
+func newBudget() budget {
+	return budget{deadline: time.Now().Add(parseDeadline)}
+}
+
+func (b budget) spent() bool {
+	return time.Now().After(b.deadline)
+}
+
+func (b budget) err() error {
+	if b.spent() {
+		return ErrParseTimeout
+	}
+	return nil
+}
+
+// matches gives q the remaining wall-clock budget. Time spent by the caller
+// between Next calls counts toward the timeout; Next stops returning matches
+// after the timeout is detected.
+func (b budget) matches(qc *sitter.QueryCursor, q *sitter.Query, root *sitter.Node, src []byte) sitter.QueryMatches {
+	// Zero would mean no timeout at all
+	qc.SetTimeoutMicros(uint64(max(time.Until(b.deadline).Microseconds(), 1)))
+	return qc.Matches(q, root, src)
+}
+
 // ParseTree returns a raw tree under ParseTimeout and context cancellation. The caller owns a
 // non-nil returned tree and must Close it.
 func ParseTree(ctx context.Context, adapter *language.Adapter, src []byte) (*sitter.Tree, error) {
+	return parseTree(ctx, newBudget(), adapter, src)
+}
+
+func parseTree(ctx context.Context, b budget, adapter *language.Adapter, src []byte) (*sitter.Tree, error) {
 	lang, err := adapter.Language()
 	if err != nil {
 		return nil, err
@@ -70,7 +123,6 @@ func ParseTree(ctx context.Context, adapter *language.Adapter, src []byte) (*sit
 		return nil, fmt.Errorf("setting language: %w", err)
 	}
 
-	deadline := time.Now().Add(parseDeadline)
 	length := len(src)
 	tree := p.ParseWithOptions(func(i int, _ sitter.Point) []byte {
 		if i < length {
@@ -79,11 +131,11 @@ func ParseTree(ctx context.Context, adapter *language.Adapter, src []byte) (*sit
 		return []byte{}
 	}, nil, &sitter.ParseOptions{
 		ProgressCallback: func(sitter.ParseState) bool {
-			return ctx.Err() != nil || time.Now().After(deadline)
+			return ctx.Err() != nil || b.spent()
 		},
 	})
 	if tree == nil {
-		if time.Now().After(deadline) {
+		if b.spent() {
 			return nil, ErrParseTimeout
 		}
 		if err := ctx.Err(); err != nil {
@@ -91,14 +143,44 @@ func ParseTree(ctx context.Context, adapter *language.Adapter, src []byte) (*sit
 		}
 		return nil, fmt.Errorf("parser produced no tree")
 	}
+	if err := checkDepth(b, tree.RootNode()); err != nil {
+		tree.Close()
+		return nil, err
+	}
 	return tree, nil
+}
+
+// checkDepth rejects trees deeper than MaxTreeDepth before a query can silently
+// return incomplete matches
+func checkDepth(b budget, root *sitter.Node) error {
+	c := root.Walk()
+	defer c.Close()
+	depth := 0
+	for visited := 1; ; visited++ {
+		if visited%4096 == 0 && b.spent() {
+			return ErrParseTimeout
+		}
+		if c.GotoFirstChild() {
+			if depth++; depth > MaxTreeDepth {
+				return ErrDepthLimit
+			}
+			continue
+		}
+		for !c.GotoNextSibling() {
+			if !c.GotoParent() {
+				return nil
+			}
+			depth--
+		}
+	}
 }
 
 // ParseFile parses one file and returns its extracted FileResult. Total failure, timeout, or
 // cancellation returns an error; local syntax damage may still return a result whose syntax-error
 // flag becomes a coverage gap.
 func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src []byte) (*FileResult, error) {
-	tree, err := ParseTree(ctx, adapter, src)
+	b := newBudget()
+	tree, err := parseTree(ctx, b, adapter, src)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +189,7 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 
 	res := &FileResult{Path: path, Language: adapter.ID, HasSyntaxErrors: root.HasError()}
 
-	locals, err := collectSymbols(adapter, root, path, src)
+	locals, err := collectSymbols(b, adapter, root, path, src)
 	if err != nil {
 		return nil, err
 	}
@@ -117,18 +199,18 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 	}
 
 	if adapter.HasQuery("decorators") {
-		if err := attachDecorators(adapter, root, src, locals); err != nil {
+		if err := attachDecorators(b, adapter, root, src, locals); err != nil {
 			return nil, err
 		}
 	}
 
-	imports, err := collectImports(adapter, root, path, src)
+	imports, err := collectImports(b, adapter, root, path, src)
 	if err != nil {
 		return nil, err
 	}
 	res.Imports = imports
 
-	calls, err := collectCalls(adapter, root, path, src, locals)
+	calls, err := collectCalls(b, adapter, root, path, src, locals)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +223,11 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 		res.Constants = javaConstants(root, src)
 	case language.Rust:
 		res.Constants = rustConstants(root, src)
+	}
+	// A timed-out query ends like an exhausted one, so check the budget before returning.
+	// Constant extraction does not check the deadline during its walks.
+	if err := b.err(); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
@@ -158,7 +245,7 @@ func enclosing(pos uint, locals []localSymbol) *localSymbol {
 	return best
 }
 
-func collectSymbols(adapter *language.Adapter, root *sitter.Node, path string, src []byte) ([]localSymbol, error) {
+func collectSymbols(b budget, adapter *language.Adapter, root *sitter.Node, path string, src []byte) ([]localSymbol, error) {
 	q, err := adapter.Query("symbols")
 	if err != nil {
 		return nil, err
@@ -167,7 +254,7 @@ func collectSymbols(adapter *language.Adapter, root *sitter.Node, path string, s
 	defer qc.Close()
 
 	var locals []localSymbol
-	matches := qc.Matches(q, root, src)
+	matches := b.matches(qc, q, root, src)
 	for m := matches.Next(); m != nil; m = matches.Next() {
 		for _, cap := range m.Captures {
 			name := q.CaptureNames()[cap.Index]

@@ -177,9 +177,13 @@ These limits create gaps because the server may load source the scanner did
 not read. A link with a non-source extension to a non-directory target, or a
 second path to a directory already walked, does not create a gap.
 
-Oversized files are parsed up to the byte cap instead of being dropped.
-Tree-sitter parsing uses a scanner-enforced progress-callback deadline for
-every language. Taint reparsing uses the same byte and time limits.
+Oversized files are parsed up to the byte cap. Parsing and extraction share a
+5 second deadline per file. Syntax trees deeper than 32,768 levels are rejected
+before queries run because tree-sitter's 16-bit query depth can silently lose
+matches beyond 65,535 levels. Call text that cannot share the source buffer is
+capped at four times the file size plus 16 KiB. Exceeding the time, depth or
+text budget creates a coverage gap. Taint reparsing uses the same byte, depth
+and time limits.
 
 The scanner never excludes a file because its name or contents claim it is
 generated. It also scans arbitrary dot-directories and build directories such
