@@ -3,7 +3,7 @@ API_BIN := mcp-scanner-api
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.scanVersion=$(VERSION)
 
-.PHONY: all build build-yara check-version test test-yara race vet fmt fmt-check lint vuln vuln-dist fuzz cover check clean dist sync-rules
+.PHONY: all build build-yara check-version test test-yara race vet fmt fmt-check lint vuln vuln-dist fuzz cover check clean dist release-notes sync-rules
 
 all: check build
 
@@ -122,6 +122,11 @@ dist:
 		-ldflags '$(LDFLAGS) $(DIST_LDFLAGS)' -o dist/$(BIN)_$(DIST_OS)_$(DIST_ARCH)$(DIST_EXT) ./cmd/mcp-scanner
 	cp -f LICENSE THIRD_PARTY_NOTICES dist/
 	cd dist && $(SHA256) $(BIN)_* > SHA256SUMS
+
+# Print the notes the release job publishes for TAG, with the introduction from
+# docs/release-notes/TAG.md when that file exists
+release-notes:
+	@sh .github/release-notes.sh $(TAG)
 
 # The rule files under rules/ are the source of truth. Each analyzer embeds a
 # copy so an installed binary carries its rules; a drift test fails if the two

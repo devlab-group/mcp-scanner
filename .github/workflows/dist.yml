@@ -4,7 +4,8 @@ name: dist
 # Linux builds link musl on runners matching each target architecture. Windows
 # cross-compiles on the amd64 Linux runner; macOS builds on a macOS runner.
 # Tag pushes publish a GitHub Release after check passes and govulncheck passes
-# for each binary. Manual runs upload workflow artifacts.
+# for each binary, with notes from .github/release-notes.sh. Manual runs upload
+# workflow artifacts.
 
 on:
   push:
@@ -102,6 +103,9 @@ jobs:
       id-token: write # request the signing certificate for the provenance attestation
       attestations: write # store the provenance attestation
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the notes list the commits since the previous tag
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
@@ -109,6 +113,8 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/mcp-scanner_*
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+      # Preview locally with make release-notes TAG=vX.Y.Z
+      - run: sh .github/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --notes-file "$RUNNER_TEMP/notes.md"
         env:
           GH_TOKEN: ${{ github.token }}
