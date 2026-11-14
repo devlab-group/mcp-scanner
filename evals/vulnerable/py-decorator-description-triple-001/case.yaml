@@ -1,0 +1,13 @@
+id: py-decorator-description-triple-001
+category: tool_poisoning
+notes: >
+  The description is a triple-quoted literal in the decorator. Scanning for the first
+  closing quote read it as an empty string, which hid the payload.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules:
+    - promptdefense.exfiltration
+    - promptdefense.credential-harvesting

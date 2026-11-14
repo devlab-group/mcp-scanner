@@ -116,10 +116,9 @@ func classifyDecorator(dec string) (graph.CapabilityKind, bool) {
 	return "", false
 }
 
-// decoratorArg does a minimal scan for `key = "value"` (a Python keyword argument,
-// `@mcp.tool(description="...")`) or `key: "value"` (a dict entry,
-// `@mcp.tool(annotations={"title": "..."})`) inside a decorator's raw text, since a
-// decorator is stored as source text rather than a parsed argument list
+// decoratorArg scans raw text for key = "value" or a nested key: "value" entry.
+// It may match text inside a string, so it supplies only an anonymous function's
+// display title. Names and descriptions use parsed arguments.
 func decoratorArg(dec, key string) (string, bool) {
 	for idx := strings.Index(dec, key); idx != -1; {
 		rest := dec[idx+len(key):]

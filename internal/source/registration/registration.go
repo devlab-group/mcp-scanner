@@ -8,8 +8,10 @@ package registration
 import (
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/language"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 )
 
@@ -253,7 +255,7 @@ func Discover(g *graph.Graph) {
 	}
 
 	for _, sym := range g.Symbols {
-		for _, dec := range sym.Decorators {
+		for i, dec := range sym.Decorators {
 			if role, ok := classifyRequestHandlerDecorator(dec); ok {
 				reqHandlers.addDecorator(role, sym)
 				continue
@@ -262,7 +264,11 @@ func Discover(g *graph.Graph) {
 			if !ok {
 				continue
 			}
-			emitDecorator(g, kind, dec, sym)
+			var args []graph.Arg
+			if i < len(sym.DecoratorArgs) {
+				args = sym.DecoratorArgs[i]
+			}
+			emitDecorator(g, kind, dec, args, sym)
 		}
 	}
 
@@ -310,11 +316,11 @@ func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Ca
 			}
 		}
 	}
-	if !cap.NameResolved && roles.Name != nil && roles.Name.Literal {
-		cap.Name, cap.NameResolved = roles.Name.Value, true
+	if !cap.NameResolved {
+		cap.Name, cap.NameResolved = argValue(g, c.File, roles.Name)
 	}
-	if !cap.DescriptionResolved && roles.Desc != nil && roles.Desc.Literal {
-		cap.Description, cap.DescriptionResolved = roles.Desc.Value, true
+	if !cap.DescriptionResolved {
+		cap.Description, cap.DescriptionResolved = argValue(g, c.File, roles.Desc)
 	}
 	if roles.Handler != nil {
 		cap.HandlerText = roles.Handler.Text
@@ -329,12 +335,8 @@ func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Ca
 
 func emitWrapper(g *graph.Graph, idx index, t template, c graph.Call) {
 	cap := graph.Capability{Kind: t.kind, Form: "wrapper", File: c.File, Line: c.Line}
-	if a := argAt(c.Args, t.nameIdx); a != nil && a.Literal {
-		cap.Name, cap.NameResolved = a.Value, true
-	}
-	if a := argAt(c.Args, t.descIdx); a != nil && a.Literal {
-		cap.Description, cap.DescriptionResolved = a.Value, true
-	}
+	cap.Name, cap.NameResolved = argValue(g, c.File, argAt(c.Args, t.nameIdx))
+	cap.Description, cap.DescriptionResolved = argValue(g, c.File, argAt(c.Args, t.descIdx))
 	if a := argAt(c.Args, t.handlerIdx); a != nil {
 		cap.HandlerText = a.Text
 		if a.HandlerID != "" {
@@ -346,29 +348,139 @@ func emitWrapper(g *graph.Graph, idx index, t template, c graph.Call) {
 	g.Capabilities = append(g.Capabilities, cap)
 }
 
-func emitDecorator(g *graph.Graph, kind graph.CapabilityKind, dec string, sym *graph.Symbol) {
+func emitDecorator(g *graph.Graph, kind graph.CapabilityKind, dec string, args []graph.Arg, sym *graph.Symbol) {
 	cap := graph.Capability{
 		Kind: kind, Form: "decorator", File: sym.File, Line: sym.Line,
 		Handler: sym.ID, HandlerText: sym.Name,
 	}
-	if v, ok := decoratorArg(dec, "name"); ok {
-		cap.Name, cap.NameResolved = v, true
-	} else if sym.Name != "" && sym.Name != "<anonymous>" {
-		// The function's own name is a stronger signal than a decorator's
-		// "title" kwarg (Python's @mcp.tool(annotations={"title": ...}) is
-		// a cosmetic display label, not the tool's identity), so it is
-		// checked first; title only fills in for an anonymous function
-		// with no explicit name of its own
-		cap.Name, cap.NameResolved = sym.Name, true
-	} else if v, ok := decoratorArg(dec, "title"); ok {
-		cap.Name, cap.NameResolved = v, true
+	var lang language.ID
+	if f := g.Files[sym.File]; f != nil {
+		lang = language.ID(f.Language)
 	}
-	if v, ok := decoratorArg(dec, "description"); ok {
+
+	// Use a fixed argument when available. Fall back to the function's name or docstring
+	// only for absent, empty or None arguments; an unreadable argument must stay unresolved.
+	if v, given, ok := decoratorValue(g, sym.File, decoratorName(args, kind, lang)); ok {
+		cap.Name, cap.NameResolved = v, true
+	} else if !given {
+		if sym.Name != "" && sym.Name != "<anonymous>" {
+			// A title is a display label, so prefer the function's name for tool identity;
+			// use the title only for anonymous functions
+			cap.Name, cap.NameResolved = sym.Name, true
+		} else if v, ok := decoratorArg(dec, "title"); ok {
+			cap.Name, cap.NameResolved = v, true
+		}
+	}
+
+	if v, given, ok := decoratorValue(g, sym.File, decoratorDescription(args, kind, lang)); ok {
 		cap.Description, cap.DescriptionResolved = v, true
-	} else if sym.Doc != "" {
+	} else if !given && sym.Doc != "" {
 		cap.Description, cap.DescriptionResolved = sym.Doc, true
+	} else if !given && lang == language.Python {
+		// Python without a docstring has a known empty description. Rust doc comments and
+		// Java framework fallbacks are not read here, so those descriptions stay unresolved.
+		cap.DescriptionResolved = true
 	}
 	g.Capabilities = append(g.Capabilities, cap)
+}
+
+// decoratorValue returns ok for a fixed non-empty string. given is false for
+// absent, empty or None arguments, and true for other values, including those
+// static analysis cannot resolve.
+func decoratorValue(g *graph.Graph, file string, a *graph.Arg) (v string, given, ok bool) {
+	if a == nil {
+		return "", false, false
+	}
+	v, ok = argValue(g, file, a)
+	switch {
+	case ok && v != "":
+		return v, true, true
+	case ok, a.Text == "None":
+		return "", false, false
+	}
+	return "", true, false
+}
+
+// decoratorName selects the name keyword or the first positional argument of a
+// Python tool or prompt. A Python resource's first positional argument is its URI.
+func decoratorName(args []graph.Arg, kind graph.CapabilityKind, lang language.ID) *graph.Arg {
+	if a := keywordOrSplat(args, "name"); a != nil {
+		return a
+	}
+	if pos := positionalArgs(args); lang == language.Python && kind != graph.CapabilityResource && len(pos) > 0 {
+		return pos[0]
+	}
+	return nil
+}
+
+// decoratorDescription selects the description keyword, the third positional
+// argument of a Python tool or prompt, or the value of a Java @Tool annotation
+// used by LangChain4j
+func decoratorDescription(args []graph.Arg, kind graph.CapabilityKind, lang language.ID) *graph.Arg {
+	if a := keywordOrSplat(args, "description"); a != nil {
+		return a
+	}
+	pos := positionalArgs(args)
+	switch {
+	case lang == language.Python && kind != graph.CapabilityResource && len(pos) >= 3:
+		return pos[2]
+	case lang == language.Java && kind == graph.CapabilityTool:
+		if a := keywordArg(args, "value"); a != nil {
+			return a
+		}
+		if len(pos) > 0 {
+			return pos[0]
+		}
+	}
+	return nil
+}
+
+// keywordOrSplat finds key or an unpacked *args or **options that could supply
+// it with a value static analysis cannot resolve
+func keywordOrSplat(args []graph.Arg, key string) *graph.Arg {
+	if a := keywordArg(args, key); a != nil {
+		return a
+	}
+	for i := range args {
+		if args[i].Keyword == "" && strings.HasPrefix(args[i].Text, "*") {
+			return &args[i]
+		}
+	}
+	return nil
+}
+
+func positionalArgs(args []graph.Arg) []*graph.Arg {
+	var out []*graph.Arg
+	for i := range args {
+		if args[i].Keyword == "" && !strings.HasPrefix(args[i].Text, "*") {
+			out = append(out, &args[i])
+		}
+	}
+	return out
+}
+
+func keywordArg(args []graph.Arg, key string) *graph.Arg {
+	for i := range args {
+		if normalize(args[i].Keyword) == key {
+			return &args[i]
+		}
+	}
+	return nil
+}
+
+// argValue resolves a literal or a name in the file's string constant map
+func argValue(g *graph.Graph, file string, a *graph.Arg) (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	if a.Literal {
+		return a.Value, true
+	}
+	if f := g.Files[file]; f != nil {
+		v, ok := f.Constants[a.Text]
+		return v, ok
+	}
+	return "", false
 }
 
 func applyLiteral(cap *graph.Capability, lit []graph.Arg) {

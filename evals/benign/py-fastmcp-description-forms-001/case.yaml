@@ -1,0 +1,11 @@
+id: py-fastmcp-description-forms-001
+category: none
+notes: >
+  An ordinary FastMCP server that writes its descriptions the ways tutorials do: a module
+  constant, a triple-quoted constant, parenthesized concatenation, a docstring, and
+  description=None falling back to the docstring. Every description must resolve, so the
+  scan completes with full coverage and no finding.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false

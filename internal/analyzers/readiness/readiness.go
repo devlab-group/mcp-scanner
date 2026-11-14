@@ -12,6 +12,7 @@ import (
 
 	"github.com/devlab-group/mcp-scanner/internal/mcp/snapshot"
 	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
@@ -58,7 +59,13 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 	// resolvable from a registration call, so their absence here says nothing about the server.
 	declaredOnly := snap.Transport.Kind == model.TransportSource
 
-	findings = append(findings, checkToolDocumentation(snap, declaredOnly)...)
+	var unresolved map[string]bool
+	if declaredOnly && ac.Artifacts != nil {
+		if g, ok := analyzer.Get[*graph.Graph](ac.Artifacts, source.ArtifactKey); ok && g != nil {
+			unresolved = source.UnresolvedDescriptions(g)
+		}
+	}
+	findings = append(findings, checkToolDocumentation(snap, declaredOnly, unresolved)...)
 	if declaredOnly {
 		skipReasons = append(skipReasons,
 			"input schemas, annotations, server instructions and authorization metadata are "+
@@ -142,13 +149,14 @@ func checkInstructions(snap *model.Snapshot) []model.Finding {
 	)}
 }
 
-// checkToolDocumentation reports tools that document nothing. declaredOnly
-// drops the schema half: a source tree does not carry input schemas, so their
-// absence there is the scanner's blind spot rather than the server's omission
-func checkToolDocumentation(snap *model.Snapshot, declaredOnly bool) []model.Finding {
+// checkToolDocumentation reports missing descriptions and schemas. In source mode,
+// declaredOnly omits schemas because static registration discovery does not resolve
+// them. Tools in unresolved are also excluded from the missing-description finding;
+// the source analyzer already reports their unresolved descriptions as coverage gaps.
+func checkToolDocumentation(snap *model.Snapshot, declaredOnly bool, unresolved map[string]bool) []model.Finding {
 	var noDesc, noSchema []string
 	for _, t := range snap.Tools {
-		if strings.TrimSpace(t.Description) == "" {
+		if strings.TrimSpace(t.Description) == "" && !unresolved[t.Name] {
 			noDesc = append(noDesc, t.Name)
 		}
 		if !declaredOnly && len(t.InputSchema) == 0 {

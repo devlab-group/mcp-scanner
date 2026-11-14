@@ -15,6 +15,62 @@ var stringKinds = map[string]bool{
 	"raw_string_literal": true, "template_string": true,
 }
 
+// LiteralValue decodes fixed strings, including Rust raw strings and Python's
+// implicit concatenation, with optional parentheses; runtime expressions remain
+// unresolved
+func LiteralValue(n *sitter.Node, src []byte) (string, bool) {
+	switch n.Kind() {
+	case "concatenated_string":
+		var b strings.Builder
+		for _, part := range nonCommentChildren(n) {
+			v, ok := LiteralValue(part, src)
+			if !ok {
+				return "", false
+			}
+			b.WriteString(v)
+		}
+		return b.String(), true
+	case "parenthesized_expression":
+		if inner := nonCommentChildren(n); len(inner) == 1 {
+			return LiteralValue(inner[0], src)
+		}
+		return "", false
+	}
+	if !stringKinds[n.Kind()] {
+		return "", false
+	}
+	text := n.Utf8Text(src)
+	if v, ok := UnquoteString(text); ok {
+		return v, true
+	}
+	return rustRawString(text)
+}
+
+// rustRawString decodes r"..." and r#"..."# forms, including closing quotes
+// followed by hashes that UnquoteString does not handle
+func rustRawString(text string) (string, bool) {
+	t, ok := strings.CutPrefix(text, "r")
+	if !ok {
+		return "", false
+	}
+	hashes := strings.Repeat("#", len(t)-len(strings.TrimLeft(t, "#")))
+	open, close := hashes+`"`, `"`+hashes
+	if len(t) < len(open)+len(close) || !strings.HasPrefix(t, open) || !strings.HasSuffix(t, close) {
+		return "", false
+	}
+	return t[len(open) : len(t)-len(close)], true
+}
+
+func nonCommentChildren(n *sitter.Node) []*sitter.Node {
+	var out []*sitter.Node
+	for i := range n.NamedChildCount() {
+		if ch := n.NamedChild(i); ch != nil && !strings.Contains(ch.Kind(), "comment") {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
 // AssignTargets returns the variable name(s) an assignment-shaped node
 // writes to. The field is called "left" on every grammar's assignment
 // expression, "name" on a declarator with an initializer (Go's var_spec,
@@ -275,17 +331,16 @@ func bindingNames(n *sitter.Node, src []byte) []string {
 
 func leadingDoc(id language.ID, node *sitter.Node, src []byte) string {
 	if id == language.Python {
+		// Python SDKs use the function's docstring as a fallback; leading comments do not count
 		if body := node.ChildByFieldName("body"); body != nil && body.NamedChildCount() > 0 {
 			first := body.NamedChild(0)
 			if first != nil && first.Kind() == "expression_statement" && first.NamedChildCount() > 0 {
-				s := first.NamedChild(0)
-				if s.Kind() == "string" {
-					if v, ok := UnquoteString(s.Utf8Text(src)); ok {
-						return strings.TrimSpace(v)
-					}
+				if v, ok := LiteralValue(first.NamedChild(0), src); ok {
+					return strings.TrimSpace(v)
 				}
 			}
 		}
+		return ""
 	}
 	start := node
 	if p := node.Parent(); p != nil && p.Kind() == "decorated_definition" {
@@ -313,34 +368,120 @@ func receiverType(recv *sitter.Node, src []byte) string {
 	return strings.TrimPrefix(t.Utf8Text(src), "*")
 }
 
-func javaAnnotations(node *sitter.Node, src []byte) []string {
-	var out []string
+func javaAnnotations(node *sitter.Node, src []byte) (texts []string, args [][]graph.Arg) {
+	add := func(n *sitter.Node) {
+		if n.Kind() == "annotation" || n.Kind() == "marker_annotation" {
+			texts = append(texts, n.Utf8Text(src))
+			args = append(args, javaAnnotationArgs(n, src))
+		}
+	}
 	cursor := node.Walk()
 	defer cursor.Close()
 	for _, ch := range node.NamedChildren(cursor) {
-		switch ch.Kind() {
-		case "annotation", "marker_annotation":
-			out = append(out, ch.Utf8Text(src))
-		case "modifiers":
-			mc := ch.Walk()
-			for _, mch := range ch.NamedChildren(mc) {
-				if mch.Kind() == "annotation" || mch.Kind() == "marker_annotation" {
-					out = append(out, mch.Utf8Text(src))
-				}
-			}
-			mc.Close()
+		if ch.Kind() != "modifiers" {
+			add(&ch)
+			continue
 		}
+		mc := ch.Walk()
+		for _, mch := range ch.NamedChildren(mc) {
+			add(&mch)
+		}
+		mc.Close()
+	}
+	return texts, args
+}
+
+// javaAnnotationArgs reads key = value pairs as keyword arguments and a bare
+// element value as a positional argument
+func javaAnnotationArgs(n *sitter.Node, src []byte) []graph.Arg {
+	list := n.ChildByFieldName("arguments")
+	if list == nil {
+		return nil
+	}
+	var out []graph.Arg
+	for _, ch := range nonCommentChildren(list) {
+		key, val := ch.ChildByFieldName("key"), ch.ChildByFieldName("value")
+		if ch.Kind() != "element_value_pair" || key == nil || val == nil {
+			out = append(out, javaElementValue(ch, src))
+			continue
+		}
+		a := javaElementValue(val, src)
+		a.Keyword = key.Utf8Text(src)
+		out = append(out, a)
 	}
 	return out
 }
 
-func rustAttributes(node *sitter.Node, src []byte) []string {
-	var attrs []string
-	for s := node.PrevSibling(); s != nil && s.Kind() == "attribute_item"; s = s.PrevSibling() {
-		attrs = append(attrs, s.Utf8Text(src))
+// javaElementValue reads an annotation value. String arrays are joined with
+// newlines to match LangChain4j's @Tool({"...", "..."}) description.
+func javaElementValue(n *sitter.Node, src []byte) graph.Arg {
+	if n.Kind() != "element_value_array_initializer" {
+		return exprArg(n, src)
 	}
-	slices.Reverse(attrs)
-	return attrs
+	parts := nonCommentChildren(n)
+	vals := make([]string, 0, len(parts))
+	for _, p := range parts {
+		v, ok := javaConstantString(p, src)
+		if !ok {
+			return graph.Arg{Text: n.Utf8Text(src)}
+		}
+		vals = append(vals, v)
+	}
+	return graph.Arg{Text: n.Utf8Text(src), Literal: true, Value: strings.Join(vals, "\n")}
+}
+
+func rustAttributes(node *sitter.Node, src []byte) (texts []string, args [][]graph.Arg) {
+	for s := node.PrevSibling(); s != nil && s.Kind() == "attribute_item"; s = s.PrevSibling() {
+		texts = append(texts, s.Utf8Text(src))
+		args = append(args, rustAttributeArgs(s, src))
+	}
+	slices.Reverse(texts)
+	slices.Reverse(args)
+	return texts, args
+}
+
+// rustAttributeArgs splits an attribute's token tree at top-level commas.
+// It treats key = value as a keyword argument and preserves values spanning
+// multiple tokens as unresolved text.
+func rustAttributeArgs(item *sitter.Node, src []byte) []graph.Arg {
+	if item.NamedChildCount() == 0 {
+		return nil
+	}
+	tree := item.NamedChild(0).ChildByFieldName("arguments")
+	if tree == nil || tree.ChildCount() < 2 {
+		return nil
+	}
+	var out []graph.Arg
+	var group []*sitter.Node
+	flush := func() {
+		if len(group) == 0 {
+			return
+		}
+		var kw string
+		if len(group) > 2 && group[0].Kind() == "identifier" && group[1].Kind() == "=" {
+			kw, group = group[0].Utf8Text(src), group[2:]
+		}
+		a := graph.Arg{Text: string(src[group[0].StartByte():group[len(group)-1].EndByte()])}
+		if len(group) == 1 {
+			a = exprArg(group[0], src)
+		}
+		a.Keyword = kw
+		out = append(out, a)
+		group = nil
+	}
+	// Skip the token tree's opening and closing brackets
+	for i := uint(1); i+1 < tree.ChildCount(); i++ {
+		ch := tree.Child(i)
+		switch {
+		case ch == nil || strings.Contains(ch.Kind(), "comment"):
+		case ch.Kind() == ",":
+			flush()
+		default:
+			group = append(group, ch)
+		}
+	}
+	flush()
+	return out
 }
 
 func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, locals []localSymbol) error {
@@ -371,7 +512,13 @@ func attachDecorators(adapter *language.Adapter, root *sitter.Node, src []byte, 
 			cursor := decorated.Walk()
 			for _, ch := range decorated.NamedChildren(cursor) {
 				if ch.Kind() == "decorator" && ch.NamedChildCount() > 0 {
-					target.sym.Decorators = append(target.sym.Decorators, ch.NamedChild(0).Utf8Text(src))
+					expr := ch.NamedChild(0)
+					var args []graph.Arg
+					if expr.Kind() == "call" {
+						args = genericArgs(expr.ChildByFieldName("arguments"), src)
+					}
+					target.sym.Decorators = append(target.sym.Decorators, expr.Utf8Text(src))
+					target.sym.DecoratorArgs = append(target.sym.DecoratorArgs, args)
 				}
 			}
 			cursor.Close()
@@ -559,10 +706,8 @@ func exprArg(n *sitter.Node, src []byte) graph.Arg {
 			return a
 		}
 	}
-	if stringKinds[n.Kind()] {
-		if v, ok := UnquoteString(text); ok {
-			return graph.Arg{Text: text, Literal: true, Value: v}
-		}
+	if v, ok := LiteralValue(n, src); ok {
+		return graph.Arg{Text: text, Literal: true, Value: v}
 	}
 	return graph.Arg{Text: text}
 }
@@ -577,6 +722,10 @@ func genericArgs(list *sitter.Node, src []byte) []graph.Arg {
 	defer cursor.Close()
 	var out []graph.Arg
 	for _, ch := range list.NamedChildren(cursor) {
+		// Skip comments so positional argument indexes stay aligned
+		if strings.Contains(ch.Kind(), "comment") {
+			continue
+		}
 		child := ch
 		out = append(out, exprArg(&child, src))
 	}

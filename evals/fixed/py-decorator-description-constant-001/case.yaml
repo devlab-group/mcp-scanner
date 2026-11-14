@@ -1,0 +1,12 @@
+id: py-decorator-description-constant-001-fixed
+category: tool_poisoning
+notes: >
+  The same server with the exfiltration and secrecy sentences removed from the constant.
+  The scan must complete with full coverage, not report the constant as unresolved.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  forbidden_rules:
+    - promptdefense.exfiltration
+    - promptdefense.credential-harvesting

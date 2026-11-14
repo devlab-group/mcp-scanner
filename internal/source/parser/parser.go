@@ -43,6 +43,9 @@ type FileResult struct {
 	// not parse cleanly; the result below is still the best effort from the
 	// rest of the file
 	HasSyntaxErrors bool
+
+	// Constants holds unambiguous same-file string constants from Python, Java or Rust
+	Constants map[string]string
 }
 
 // localSymbol tracks a symbol's byte range in its own file, so calls and
@@ -131,6 +134,14 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 	}
 	res.Calls = calls
 
+	switch adapter.ID {
+	case language.Python:
+		res.Constants = pythonModuleConstants(root, src)
+	case language.Java:
+		res.Constants = javaConstants(root, src)
+	case language.Rust:
+		res.Constants = rustConstants(root, src)
+	}
 	return res, nil
 }
 
@@ -212,10 +223,10 @@ func buildSymbol(adapter *language.Adapter, node *sitter.Node, kind graph.Symbol
 		}
 	}
 	if adapter.ID == language.Java {
-		sym.Decorators = javaAnnotations(node, src)
+		sym.Decorators, sym.DecoratorArgs = javaAnnotations(node, src)
 	}
 	if adapter.ID == language.Rust {
-		sym.Decorators = rustAttributes(node, src)
+		sym.Decorators, sym.DecoratorArgs = rustAttributes(node, src)
 	}
 	return sym
 }

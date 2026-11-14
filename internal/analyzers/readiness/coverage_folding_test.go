@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/devlab-group/mcp-scanner/internal/source"
+	"github.com/devlab-group/mcp-scanner/internal/testutil"
 	"github.com/devlab-group/mcp-scanner/pkg/analyzer"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
@@ -60,5 +61,35 @@ func TestAnalyze_NoWalkCoverageOnRemoteTarget(t *testing.T) {
 	})
 	if res.Coverage.FilesDiscovered != 0 || res.Coverage.FilesParsed != 0 {
 		t.Errorf("coverage = %+v, want no file-level counters on a remote target", res.Coverage)
+	}
+}
+
+// Report a known empty description, but leave unresolved descriptions to the source
+// analyzer: an empty snapshot field alone does not establish that a tool has none
+func TestAnalyze_SourceToolDescriptionAbsentVersusUnresolved(t *testing.T) {
+	dir := testutil.WriteTree(t, map[string]string{"server.py": "from mcp.server.fastmcp import FastMCP\n\nmcp = FastMCP(\"calc\")\nMODE = load()\n\n\n" +
+		"@mcp.tool()\ndef documented(a: int) -> int:\n    \"\"\"Returns a.\"\"\"\n    return a\n\n\n" +
+		"@mcp.tool()\ndef silent(a: int) -> int:\n    return a\n\n\n" +
+		"@mcp.tool(description=\"Returns a.\" if MODE else \"Returns a, quietly.\")\ndef computed(a: int) -> int:\n    return a\n"})
+	g, walkCov, err := source.Build(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := analyzer.NewArtifacts()
+	source.Publish(artifacts, g, walkCov)
+	snap, _ := source.Synthesize(g)
+
+	res := (&Analyzer{}).Analyze(context.Background(), model.Target{Kind: model.TargetSource, Path: dir}, &analyzer.AnalysisContext{
+		Snapshot:  snap,
+		Artifacts: artifacts,
+	})
+	var got []string
+	for _, f := range res.Findings {
+		if f.RuleID == "readiness.tool-missing-description" {
+			got = append(got, f.Tool)
+		}
+	}
+	if len(got) != 1 || got[0] != "silent" {
+		t.Fatalf("missing-description findings name %q, want exactly [\"silent\"]", got)
 	}
 }

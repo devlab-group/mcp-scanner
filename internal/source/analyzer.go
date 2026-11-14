@@ -130,9 +130,8 @@ func ResolveRoot(targetPath, acRoot string) (string, error) {
 	return acRoot, nil
 }
 
-// capabilityFindings reports the two things the discovery pass itself is positioned to say
-// about a capability's static declaration, without any dataflow: it has no description, or
-// its name could not be pinned down
+// capabilityFindings reports unresolved names and descriptions in static
+// capability declarations, without dataflow analysis
 func capabilityFindings(g *graph.Graph) []model.Finding {
 	var findings []model.Finding
 	for _, c := range g.Capabilities {
@@ -170,7 +169,7 @@ func capabilityFindings(g *graph.Graph) []model.Finding {
 				Line:          c.Line,
 				Tool:          displayName(c),
 				Description: fmt.Sprintf(
-					"the %s registered at %s:%d has no description in its registration and no docstring on its handler; a model relying on the declared surface has nothing to judge intent against",
+					"the %s registered at %s:%d has no description static analysis can read: its registration computes one, names one defined elsewhere, or leaves it to a fallback this scanner does not read, such as a Rust doc comment; a reviewer of the declared surface cannot see what a model is told",
 					c.Kind, c.File, c.Line),
 				Evidence: []model.Evidence{{
 					Level:       model.EvidenceStatic,
@@ -183,6 +182,19 @@ func capabilityFindings(g *graph.Graph) []model.Finding {
 		}
 	}
 	return findings
+}
+
+// UnresolvedDescriptions returns tools whose descriptions could not be resolved,
+// using the names assigned by Synthesize. Their empty snapshot fields indicate
+// coverage gaps, not known empty descriptions.
+func UnresolvedDescriptions(g *graph.Graph) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range g.Capabilities {
+		if c.Kind == graph.CapabilityTool && !c.DescriptionResolved {
+			out[displayName(c)] = true
+		}
+	}
+	return out
 }
 
 func displayName(c graph.Capability) string {
@@ -209,6 +221,8 @@ func (*Analyzer) Describe() analyzer.Description {
 			"call resolution is name-based, not type-based: two functions with the same name in different packages can resolve to the wrong one",
 			"a registration table or loop built from data computed at runtime is recorded once as discovered but unresolved, not enumerated per element",
 			"dynamic dispatch, reflection and code generation are invisible to a static parse",
+			"a name or description held in a constant resolves only for a string constant in the same file: a Python module-level name bound once, a Java static final String field, or a Rust const or static; a conditional, a call, or a constant from another file leaves it unresolved and the scan incomplete",
+			"a Rust or Java tool with no description argument stays unresolved: rmcp serves doc comments and Spring AI derives text from the method name, and neither is read",
 			"JavaScript and TypeScript decorator-style registration is not resolved (no required fixture form depends on it)",
 			"only the registration forms this build actually recognizes are analyzed on a source target; see docs/analyzers/source-and-behavioral.md for the current list of what is, and is not, discovered",
 		},
