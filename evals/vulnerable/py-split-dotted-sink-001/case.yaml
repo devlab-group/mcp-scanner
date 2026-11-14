@@ -1,0 +1,12 @@
+id: py-split-dotted-sink-001
+category: command_injection
+notes: >
+  A method chain broken across lines inside brackets, the way Black formats a
+  long one. The callee read as "subprocess\n.check_output", which no dotted
+  sink pattern matches.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

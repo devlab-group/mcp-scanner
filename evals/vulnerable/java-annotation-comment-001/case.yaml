@@ -1,0 +1,12 @@
+id: java-annotation-comment-001
+category: path_traversal
+notes: >
+  A comment between @Tool and its arguments hid the annotation, which read
+  as "Tool /* ... */" rather than Tool. A second, harmless tool kept the scan
+  from reporting that no registration was found.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.path_traversal]

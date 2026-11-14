@@ -1,0 +1,13 @@
+id: rust-doc-comment-under-attribute-001
+category: command_injection
+notes: >
+  A doc comment between #[tool] and the function. The compiler still applies
+  the attribute, but the attribute lookup stopped at the comment and the tool
+  went unregistered. A second, harmless tool kept the scan from reporting that
+  no registration was found.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: true
+  minimum_severity: high
+  rules: [taint.command_injection]

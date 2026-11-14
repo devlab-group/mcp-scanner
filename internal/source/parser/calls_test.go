@@ -319,11 +319,12 @@ func TestParseFile_JavaCalleeJoinsAroundTheDot(t *testing.T) {
 		{"line comment before the dot", "Files // c\n    .readAllBytes(p)", "Files.readAllBytes"},
 		{"comment after the dot", "b.build()./* c */run()", "b.build().run"},
 		{"type arguments after the dot", "a.<String>f()", "a.f"},
+		{"comment inside the object", "a /* c */ .b.f()", "a.b.f"},
 		{"non-ASCII identifier before a newline", "Ünï\n    .f()", "Ünï.f"},
-		{"comment after a call", "b.build() /* c */ .run()", "b.build().run"},
 		// Preserve spans after brackets: identifier patterns cannot cross them, and the
 		// final segment still follows the last dot
 		{"newline after a call", "b.build()\n    .run()", "b.build()\n    .run"},
+		{"comment after a call", "b.build() /* c */ .run()", "b.build() /* c */ .run"},
 		{"newline after an index", "a[0]\n    .f()", "a[0]\n    .f"},
 	}
 	for _, c := range cases {

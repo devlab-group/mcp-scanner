@@ -1,0 +1,15 @@
+id: js-commented-fluent-chain-001
+category: none
+notes: >
+  An HTTP route table written as one fluent chain with a comment above each
+  link. The comments sit between a bracket and the next dot, where the callee
+  keeps its source text, which costs no copy per link. Joining every link
+  around its dot would copy the chain once per link and push this file past
+  the text limit for call text.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  status: COMPLETED
+  vulnerable: false
+  minimum_severity: medium
+  forbidden_rules: [taint.command_injection, taint.path_traversal]
