@@ -1,0 +1,11 @@
+id: ts-axios-map-get-001
+category: none
+notes: >
+  A TypeScript server that imports axios also caches results in a Map and reads them with
+  Map.get, and sends the tool argument to a fixed endpoint as a request body. Neither call
+  lets the caller choose the host.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  forbidden_rules: [taint.ssrf]

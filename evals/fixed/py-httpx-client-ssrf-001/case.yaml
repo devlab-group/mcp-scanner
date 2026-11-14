@@ -1,0 +1,10 @@
+id: py-httpx-client-ssrf-001-fixed
+category: ssrf
+notes: >
+  The same tool takes a page slug instead of a URL and builds the URL on a fixed host. The
+  slug can change the path on that host but not which host is contacted.
+analyzers: []
+target: {kind: source, path: src}
+expected:
+  vulnerable: false
+  forbidden_rules: [taint.ssrf]
