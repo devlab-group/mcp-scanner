@@ -171,13 +171,10 @@ func sentences(text string) []string {
 	})
 }
 
-// negatedNear reports whether a negator appears in the negationWindow
-// words immediately before word's occurrence in sentence
-func negatedNear(sentence, word string) bool {
-	head, _, ok := strings.Cut(sentence, word)
-	if !ok {
-		return false
-	}
+// negatedBefore reports whether a negator appears in the negationWindow
+// words at the end of head, the sentence text before one occurrence of a
+// category word
+func negatedBefore(head string) bool {
 	before := strings.Fields(head)
 	if len(before) > negationWindow {
 		before = before[len(before)-negationWindow:]
@@ -206,20 +203,30 @@ func containsWordPrefix(text, word string) bool {
 }
 
 func matchWord(text, word string, prefixOnly bool) bool {
+	return len(wordOccurrences(text, word, prefixOnly)) > 0
+}
+
+// wordOccurrences returns the byte offset of every occurrence of word in text that matchWord
+// would accept: whole words, or with prefixOnly, words that begin with it
+func wordOccurrences(text, word string, prefixOnly bool) []int {
+	if word == "" {
+		return nil
+	}
+	var out []int
 	for idx := strings.Index(text, word); idx != -1; {
 		before := idx == 0 || !isWordByte(text[idx-1])
 		end := idx + len(word)
 		after := prefixOnly || end >= len(text) || !isWordByte(text[end])
 		if before && after {
-			return true
+			out = append(out, idx)
 		}
 		next := strings.Index(text[idx+1:], word)
 		if next == -1 {
-			return false
+			break
 		}
 		idx += 1 + next
 	}
-	return false
+	return out
 }
 
 func isWordByte(b byte) bool {
@@ -229,17 +236,27 @@ func isWordByte(b byte) bool {
 // matchCategory reports whether any of words appears in description as a plain, undenied
 // claim (declared), and separately whether any appears explicitly denied (contradicted) -
 // "never touches the network" and "touches the network" both mention the word, but only one
-// of them is declaring the capability
+// of them is declaring the capability.
+//
+// Every occurrence is judged at the position it was matched. A word that a sentence both
+// negates and uses plainly is not a denial there: "you did not have internet access, ... this
+// tool now grants you internet access" is about having it. Other words of the same category do
+// not lift a denial, so "never contacts the network or any web api" still denies the network.
 func matchCategory(description string, words []string, stems bool) (declared, contradicted bool) {
 	for _, sentence := range sentences(strings.ToLower(description)) {
 		for _, w := range words {
-			if !matchWord(sentence, w, stems) {
-				continue
+			var negated, plain bool
+			for _, idx := range wordOccurrences(sentence, w, stems) {
+				if negatedBefore(sentence[:idx]) {
+					negated = true
+				} else {
+					plain = true
+				}
 			}
-			if negatedNear(sentence, w) {
-				contradicted = true
-			} else {
+			if plain {
 				declared = true
+			} else if negated {
+				contradicted = true
 			}
 		}
 	}

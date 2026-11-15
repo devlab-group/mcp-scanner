@@ -215,7 +215,7 @@ func Discover(g *graph.Graph) {
 			continue
 		}
 		reqHandlers.addCall(g, idx, c)
-		kind, ok := classifyCall(c, mcpTree)
+		kind, ok := classifyCall(c, mcpTree, callsLocalHelper(g, idx, c))
 		if !ok {
 			continue
 		}

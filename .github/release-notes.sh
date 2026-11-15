@@ -1,6 +1,6 @@
 #!/bin/sh
 # release-notes.sh TAG prints the GitHub release notes for TAG: the optional
-# introduction in docs/release-notes/TAG.md, the commits since the previous tag
+# introduction in docs/release-notes/<TAG>.md, the commits since the previous tag
 # grouped by their conventional-commit type, and how to verify the binaries.
 # The introduction is read from the tagged tree, which means it is committed
 # before the tag is pushed.

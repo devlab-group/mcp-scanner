@@ -124,7 +124,7 @@ dist:
 	cd dist && $(SHA256) $(BIN)_* > SHA256SUMS
 
 # Print the notes the release job publishes for TAG, with the introduction from
-# docs/release-notes/TAG.md when that file exists
+# docs/release-notes/<TAG>.md when that file exists
 release-notes:
 	@sh .github/release-notes.sh $(TAG)
 

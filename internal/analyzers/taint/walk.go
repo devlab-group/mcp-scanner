@@ -225,6 +225,11 @@ type ctx struct {
 	// read at the call site that passes it
 	objects map[fileAlias]string
 
+	// regexps holds JavaScript/TypeScript names this file binds only to a regular expression -
+	// a literal, new RegExp(...) or RegExp(...) - so the bare "exec" sink can tell
+	// RegExp.prototype.exec from child_process.exec
+	regexps map[fileAlias]bool
+
 	findings []model.Finding
 
 	// seeded records which capability handlers actually received a
@@ -249,6 +254,7 @@ func newCtx(runCtx context.Context, g *graph.Graph) *ctx {
 		aliases:       map[fileAlias]string{},
 		moduleAliases: map[fileAlias]string{},
 		objects:       map[fileAlias]string{},
+		regexps:       map[fileAlias]bool{},
 	}
 	if g.Root != "" {
 		if r, err := os.OpenRoot(g.Root); err == nil {
@@ -736,6 +742,11 @@ func (c *ctx) recordFileAliases(pf *parsedFile, file string) {
 	moduleConflict := map[string]bool{}
 	objects := map[string]string{}
 	objectConflict := map[string]bool{}
+	// regexBind is whether each assignment to a name was a regular expression; a name also
+	// assigned anything else is not one
+	regexBind := map[string]bool{}
+	regexConflict := map[string]bool{}
+	tracksRegExps := pf.adapter.ID == language.JavaScript || pf.adapter.ID == language.TypeScript
 	for _, imp := range c.g.Files[file].Imports {
 		local := imp.Alias
 		if local == "" {
@@ -769,6 +780,15 @@ func (c *ctx) recordFileAliases(pf *parsedFile, file string) {
 		case slices.Contains(pf.adapter.Grammar.AssignKinds, n.Kind()):
 			targets := parser.AssignTargets(n, pf.src)
 			rhs := parser.AssignValue(n, pf.src)
+			if tracksRegExps {
+				isRegExp := rhs != nil && len(targets) == 1 && isRegExpValue(pf, rhs)
+				for _, t := range targets {
+					if prev, seen := regexBind[t]; seen && prev != isRegExp {
+						regexConflict[t] = true
+					}
+					regexBind[t] = isRegExp
+				}
+			}
 			// `const { exec: run } = require("node:child_process")` is
 			// the CommonJS spelling of a renaming import, and the only
 			// place the original name appears is the destructuring key
@@ -813,6 +833,11 @@ func (c *ctx) recordFileAliases(pf *parsedFile, file string) {
 			c.objects[fileAlias{file: file, name: name}] = text
 		}
 	}
+	for name, isRegExp := range regexBind {
+		if isRegExp && !regexConflict[name] && !conflict[name] {
+			c.regexps[fileAlias{file: file, name: name}] = true
+		}
+	}
 	for name, path := range modules {
 		// A name bound to a sink outright wins: it is the more specific
 		// answer about the same identifier
@@ -821,6 +846,105 @@ func (c *ctx) recordFileAliases(pf *parsedFile, file string) {
 		}
 		c.moduleAliases[fileAlias{file: file, name: name}] = path
 	}
+}
+
+// isRegExpValue reports whether a JavaScript/TypeScript expression evaluates to a regular
+// expression: a literal, new RegExp(...), or RegExp(...)
+func isRegExpValue(pf *parsedFile, n *sitter.Node) bool {
+	n = unwrapParens(n)
+	switch n.Kind() {
+	case "regex":
+		return true
+	case "new_expression":
+		ctor := n.ChildByFieldName("constructor")
+		return ctor != nil && isRegExpConstructor(ctor.Utf8Text(pf.src))
+	case "call_expression":
+		fn := n.ChildByFieldName("function")
+		return fn != nil && isRegExpConstructor(fn.Utf8Text(pf.src))
+	}
+	return false
+}
+
+func isRegExpConstructor(text string) bool {
+	text = strings.TrimSpace(text)
+	return text == "RegExp" || text == "globalThis.RegExp"
+}
+
+func unwrapParens(n *sitter.Node) *sitter.Node {
+	for n.Kind() == "parenthesized_expression" && n.NamedChildCount() == 1 {
+		n = n.NamedChild(0)
+	}
+	return n
+}
+
+// regExpReceiver reports whether call is `<receiver>.exec(...)` on a value known to be a regular
+// expression: an inline literal or constructor, or a name this file binds only to one. Any
+// receiver it cannot place - a parameter, a property, an import - is left to the sink tables.
+func (c *ctx) regExpReceiver(pf *parsedFile, file string, call *sitter.Node) bool {
+	if pf.adapter.ID != language.JavaScript && pf.adapter.ID != language.TypeScript {
+		return false
+	}
+	fn := call.ChildByFieldName("function")
+	if fn == nil || fn.Kind() != "member_expression" {
+		return false
+	}
+	prop := fn.ChildByFieldName("property")
+	if prop == nil || prop.Utf8Text(pf.src) != "exec" {
+		return false
+	}
+	obj := fn.ChildByFieldName("object")
+	if obj == nil {
+		return false
+	}
+	obj = unwrapParens(obj)
+	if isRegExpValue(pf, obj) {
+		return true
+	}
+	if obj.Kind() != "identifier" {
+		return false
+	}
+	name := obj.Utf8Text(pf.src)
+	return c.regexps[fileAlias{file: file, name: name}] && !shadowedAt(call, name, pf.src)
+}
+
+// shadowedAt reports whether a function parameter, loop variable or catch binding around n
+// declares name. Assignments are already folded into the file-wide binding; these bindings are
+// not assignments, and one of them can hold anything, child_process included.
+func shadowedAt(n *sitter.Node, name string, src []byte) bool {
+	for a := n.Parent(); a != nil; a = a.Parent() {
+		var bindings []*sitter.Node
+		switch a.Kind() {
+		case "function_declaration", "function_expression", "function", "arrow_function",
+			"method_definition", "generator_function_declaration", "generator_function":
+			bindings = append(bindings, a.ChildByFieldName("parameters"), a.ChildByFieldName("parameter"))
+		case "for_in_statement":
+			bindings = append(bindings, a.ChildByFieldName("left"))
+		case "catch_clause":
+			bindings = append(bindings, a.ChildByFieldName("parameter"))
+		}
+		for _, b := range bindings {
+			if b != nil && declaresIdent(b, name, src) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// declaresIdent reports whether any identifier in a binding subtree is name. It also visits
+// default values and type annotations, which can only make it report a shadow that is not
+// there - the safe direction, since a shadow keeps the sink.
+func declaresIdent(n *sitter.Node, name string, src []byte) bool {
+	switch n.Kind() {
+	case "identifier", "shorthand_property_identifier_pattern":
+		return n.Utf8Text(src) == name
+	}
+	for i := uint(0); i < n.NamedChildCount(); i++ {
+		if ch := n.NamedChild(i); ch != nil && declaresIdent(ch, name, src) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRequireCall reports whether n is `require(<literal>)`
@@ -1119,6 +1243,10 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if sinkFound && sink.text == "exec" && sinkText == calleeText && c.regExpReceiver(pf, file, n) {
+		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
+		sinkFound = false
+	}
 	if !sinkFound && !resolvedInRepo {
 		// methodSinkPatterns matches by method name alone, which a plain in-repo function sharing
 		// that name would also match - a helper named execute() is not cursor.execute just because
