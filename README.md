@@ -163,6 +163,7 @@ its sandbox.
 - [Command line](docs/cli.md)
 - [HTTP API](docs/api.md)
 - [Release notes for v1.1.0](docs/release-notes/v1.1.0.md)
+- [Release notes for v1.1.1](docs/release-notes/v1.1.1.md)
 
 ## Development
 
