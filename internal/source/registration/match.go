@@ -68,10 +68,51 @@ func hasServerishReceiver(calleeText string) bool {
 	return false
 }
 
+// callsLocalHelper reports whether c is a receiver-less call - `tool(...)`, not `server.tool(...)` -
+// to a function the project defines itself, with no function among its arguments. A test helper
+// named tool(bindir, "node", body) would otherwise register a "node" tool at every call site.
+//
+// parser.Resolve matches on the final identifier alone, so a resolved call through a receiver
+// says nothing about which tool method runs; a bare name does. A file that imports that bare name
+// from a package (not a relative path) keeps the call, since the import, not the project's own
+// definition, may be what the name refers to there. A call that passes a function - inline, or
+// one defined in this tree - also keeps it: that is the shape of a hand-rolled registry,
+// `tool("read_note", "...", async (args) => ...)`, whose handler must still be analyzed.
+func callsLocalHelper(g *graph.Graph, idx index, c graph.Call) bool {
+	if !c.Resolved || c.CalleeText != parser.LastSegment(c.CalleeText) {
+		return false
+	}
+	sym := g.Symbols[c.Callee]
+	if sym == nil || sym.Name != c.CalleeText {
+		return false
+	}
+	if f := g.Files[c.File]; f != nil {
+		for _, imp := range f.Imports {
+			local := imp.Alias
+			if local == "" {
+				local = parser.LastSegment(imp.Path)
+			}
+			if local == c.CalleeText && !strings.HasPrefix(imp.Path, ".") {
+				return false
+			}
+		}
+	}
+	if h := classifyArgs(c.Args).Handler; h != nil {
+		if h.HandlerID != "" {
+			return false
+		}
+		if _, ok := idx.resolve(h.Text); ok {
+			return false
+		}
+	}
+	return true
+}
+
 // classifyCall recognizes direct SDK registration calls. Generic lowercase methods require
 // registration arity plus either an MCP import anywhere in the tree or a server-like receiver;
 // the receiver signal covers helpers handed a server object without importing its SDK.
-func classifyCall(c graph.Call, inMCPTree bool) (graph.CapabilityKind, bool) {
+// localHelper (see callsLocalHelper) rules the generic names out for the project's own functions.
+func classifyCall(c graph.Call, inMCPTree, localHelper bool) (graph.CapabilityKind, bool) {
 	seg := parser.LastSegment(c.CalleeText)
 	switch normalize(seg) {
 	case "addtool", "registertool":
@@ -81,7 +122,7 @@ func classifyCall(c graph.Call, inMCPTree bool) (graph.CapabilityKind, bool) {
 	case "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate":
 		return graph.CapabilityResource, true
 	}
-	if !bareRegistration(inMCPTree, c.CalleeText, len(c.Args)) {
+	if localHelper || !bareRegistration(inMCPTree, c.CalleeText, len(c.Args)) {
 		return "", false
 	}
 	switch seg {
