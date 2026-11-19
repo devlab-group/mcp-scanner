@@ -74,19 +74,36 @@ func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 			continue
 		}
 		var downgraded *model.Finding
+		var spans [][2]int // earlier patterns' matches in this unit
 		for _, p := range r.patterns {
 			loc := r.firstMatch(p, u.text)
 			if loc == nil {
 				continue
 			}
 			start, end := loc[0], loc[1]
+			inside := false
+			for _, sp := range spans {
+				if start >= sp[0] && end <= sp[1] {
+					inside = true
+					break
+				}
+			}
+			spans = append(spans, [2]int{start, end})
+			if inside {
+				// the host inside a URL another pattern already judged is the same match, and
+				// judging it again without the qualifier that came before the URL would undo that
+				continue
+			}
 			lo, hi := r.windowBounds(u.text, start, end)
 			window := u.text[lo:hi]
 			before := u.text[lo:start]
 
 			level := model.EvidenceLevel(strings.ToUpper(r.Evidence))
 			kind := "pattern_match"
-			if r.PromoteIfStructural != "" && structuralHit(r.PromoteIfStructural, u.text) {
+			if r.PromoteIfStructural != "" && structuralHit(r.PromoteIfStructural, u.text) &&
+				(!r.ContextIsPremise || len(r.requireContext) == 0 || anyMatch(r.requireContext, sentenceBefore(u.text, start))) {
+				// For a rule whose context is half of its claim (a send verb for a URL), the structure
+				// promotes only the match that verb governs: one in the same sentence, before it
 				level = model.EvidenceStatic
 				kind = "pattern_match+structural"
 			}
@@ -779,4 +796,22 @@ func readOnlyHint(ann map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// sentenceBefore returns the text from the start of the sentence that contains position i up to
+// i. A sentence ends at ". ", "! ", "? " or a newline, so the dots inside a URL or a file name do
+// not end one.
+func sentenceBefore(text string, i int) string {
+	j := i
+	for j > 0 {
+		c := text[j-1]
+		if c == '\n' {
+			break
+		}
+		if (c == ' ' || c == '\t') && j >= 2 && strings.ContainsRune(".!?", rune(text[j-2])) {
+			break
+		}
+		j--
+	}
+	return text[j:i]
 }

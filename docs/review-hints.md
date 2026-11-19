@@ -49,6 +49,10 @@ dependency, is built at run time, or the call is not a registration at all (a cl
 analyzed. Ask: is it a real registration, and what does its handler do? Check: read the call and
 the receiver's type.
 
+`hand_rolled_protocol` - no registration was found, but source files spell MCP methods such as
+`"tools/call"`: a JSON-RPC dispatcher written without an SDK. No tool was analyzed. Ask: which
+tools does it serve, and what do they reach? Check: read the dispatch and follow each tool name.
+
 `unsupported_language_files` - source files in a language the scanner does not parse (C#, Kotlin,
 Swift, Lua, shell). Server code there was not analyzed. Ask: does any MCP handler live there?
 Check: read those files.

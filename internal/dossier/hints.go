@@ -1,8 +1,11 @@
 package dossier
 
 import (
+	"bytes"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -49,6 +52,15 @@ func hints(d *Dossier, g *graph.Graph, cov model.Coverage) []Hint {
 			Undecided:  "which tools the server exposes; none of them was analyzed",
 			Question:   "How does this server register its tools, and what do they do?",
 			HowToCheck: "find the registration code; list tools against a running instance"})
+	}
+	if len(d.Capabilities) == 0 {
+		if files := protocolMethodFiles(g); len(files) > 0 {
+			add(Hint{Code: "hand_rolled_protocol", Strength: strengthLead, File: files[0],
+				Observed:   fmt.Sprintf("no registration was found, but %d source file(s) name MCP methods such as \"tools/call\": %s", len(files), strings.Join(first(files, 4), ", ")),
+				Undecided:  "the tools a server implementing JSON-RPC by hand exposes, and what they do; none of them was analyzed",
+				Question:   "Which tools does this hand-written dispatcher serve, and what do they reach?",
+				HowToCheck: "read the tools/call dispatch and follow each tool name to its code; list tools against a running instance"})
+		}
 	}
 	for _, l := range cov.LimitsHit {
 		if m := unsupportedFiles.FindStringSubmatch(l); m != nil {
@@ -333,4 +345,25 @@ func handlerText(t string) string {
 		t = t[:80] + "..."
 	}
 	return fmt.Sprintf(" (handler argument %q)", t)
+}
+
+// protocolMethodFiles lists non-test source files that spell the MCP tools/call or tools/list
+// method as a string - the sign of a JSON-RPC dispatcher written without an SDK
+func protocolMethodFiles(g *graph.Graph) []string {
+	var out []string
+	for p := range g.Files {
+		low := strings.ToLower(p)
+		if strings.Contains(low, "test") || strings.Contains(low, "/examples/") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(g.Root, p))
+		if err != nil || len(b) > 2<<20 {
+			continue
+		}
+		if bytes.Contains(b, []byte(`"tools/call"`)) || bytes.Contains(b, []byte(`'tools/call'`)) || bytes.Contains(b, []byte(`"tools/list"`)) {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

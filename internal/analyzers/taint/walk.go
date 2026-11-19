@@ -10,6 +10,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -170,7 +171,20 @@ func seedKeyFor(sym graph.SymbolID, seed map[string]taintInfo) seedKey {
 		if ch := seed[n].chain; len(ch) > 0 {
 			class = sourceClass(ch[0].Detail)
 		}
-		parts[i] = n + ":" + class
+		// So is what the value was already cleared for: a caller that passes a relative path,
+		// cleared for SSRF, must not stand for one that passes the caller's whole URL
+		cleared := ""
+		if cf := seed[n].clearedFor; len(cf) > 0 {
+			cats := make([]string, 0, len(cf))
+			for k, v := range cf {
+				if v {
+					cats = append(cats, k)
+				}
+			}
+			sort.Strings(cats)
+			cleared = "/" + strings.Join(cats, "+")
+		}
+		parts[i] = n + ":" + class + cleared
 	}
 	return seedKey{sym: sym, seed: strings.Join(parts, ",")}
 }
@@ -253,17 +267,27 @@ type ctx struct {
 	// a handler walked with nothing seeded analyzed nothing an attacker
 	// controls, and coverage must not call that "analyzed"
 	seeded map[graph.SymbolID]bool
+
+	// summaries and replays carry a walked shape's findings to later callers the visited guard
+	// turns away (see replay)
+	summaries map[seedKey][]summaryEntry
+	replays   map[seedKey]int
+	// escapers caches bodyEscaper per symbol
+	escapers map[graph.SymbolID]string
 }
 
 func newCtx(runCtx context.Context, g *graph.Graph) *ctx {
 	idx := map[string][]graph.SymbolID{}
-	for id, sym := range g.Symbols {
-		idx[sym.Name] = append(idx[sym.Name], id)
+	for _, sym := range orderedSymbols(g) {
+		idx[sym.Name] = append(idx[sym.Name], sym.ID)
 	}
 	c := &ctx{
 		g: g, idx: idx, runCtx: runCtx,
 		files:         map[string]*parsedFile{},
 		visited:       map[seedKey]bool{},
+		summaries:     map[seedKey][]summaryEntry{},
+		escapers:      map[graph.SymbolID]string{},
+		replays:       map[seedKey]int{},
 		seedCounts:    map[graph.SymbolID]int{},
 		visitedSyms:   map[graph.SymbolID]bool{},
 		seeded:        map[graph.SymbolID]bool{},
@@ -607,6 +631,9 @@ func (c *ctx) analyzeSymbol(sym *graph.Symbol, seed map[string]taintInfo, depth 
 	}
 	key := seedKeyFor(sym.ID, seed)
 	if c.visited[key] {
+		// The same shape was walked from another caller; its findings still hold for this one,
+		// whose path - and so reachability and source - can differ
+		c.replay(key, seed)
 		return
 	}
 	if key.seed != "" && c.seedCounts[sym.ID] >= maxSeedsPerSymbol {
@@ -628,7 +655,96 @@ func (c *ctx) analyzeSymbol(sym *graph.Symbol, seed map[string]taintInfo, depth 
 	}
 	tainted := make(map[string]taintInfo, len(seed))
 	maps.Copy(tainted, seed)
+	start := len(c.findings)
 	c.walk(pf, sym.File, tainted, body, depth, false)
+	c.summarize(key, seed, start)
+}
+
+// maxReplaysPerKey bounds how many times one walk's findings are re-emitted for later callers
+const maxReplaysPerKey = 64
+
+// summaryEntry is a finding a walk produced from one of its seeded parameters: the path after
+// that parameter's own chain is the part every caller with the same shape shares
+type summaryEntry struct {
+	finding   model.Finding
+	review    string
+	param     string
+	prefixLen int
+	seedConf  float64
+}
+
+// summarize records, for the walk just finished, each finding whose path starts with one seeded
+// parameter's chain. A finding that does not start with one (its source is inside the walk) is the
+// same whoever calls, so it needs no replay.
+func (c *ctx) summarize(key seedKey, seed map[string]taintInfo, start int) {
+	if len(seed) == 0 {
+		return
+	}
+	names := taintedNames(seed)
+	for i := start; i < len(c.findings); i++ {
+		f := c.findings[i]
+		if len(f.Evidence) == 0 {
+			continue
+		}
+		path := f.Evidence[0].Path
+		best, bestLen := "", -1
+		for _, n := range names {
+			pc := seed[n].chain
+			if len(pc) > bestLen && len(pc) <= len(path) && slices.Equal(path[:len(pc)], pc) {
+				best, bestLen = n, len(pc)
+			}
+		}
+		if best == "" {
+			continue
+		}
+		review := ""
+		if f.Triage == model.TriageNeedsReview && f.TriageReason != seed[best].review {
+			// a reason the walk itself produced, not one the seed carried in
+			review = f.TriageReason
+		}
+		c.summaries[key] = append(c.summaries[key], summaryEntry{finding: f, review: review, param: best, prefixLen: bestLen, seedConf: seed[best].confidence})
+	}
+}
+
+// replay re-emits a walked shape's findings with this caller's chain in front of the shared part
+func (c *ctx) replay(key seedKey, seed map[string]taintInfo) {
+	if len(seed) == 0 || c.replays[key] >= maxReplaysPerKey {
+		return
+	}
+	entries := c.summaries[key]
+	if len(entries) == 0 {
+		return
+	}
+	c.replays[key]++
+	for _, e := range entries {
+		ns, ok := seed[e.param]
+		if !ok || ns.clearedFor[e.finding.Category] {
+			continue
+		}
+		old := e.finding.Evidence[0].Path
+		chain := make([]model.FlowStep, 0, len(ns.chain)+len(old)-e.prefixLen)
+		chain = append(chain, ns.chain...)
+		chain = append(chain, old[e.prefixLen:]...)
+		if slices.Equal(chain, old) {
+			continue
+		}
+		f := e.finding
+		f.Evidence = []model.Evidence{f.Evidence[0]}
+		f.Evidence[0].Path = chain
+		desc := "traced path: " + describePath(chain)
+		f.Description, f.Evidence[0].Description = desc, desc
+		if e.seedConf > 0 {
+			f.Confidence = max(0, min(f.Confidence*ns.confidence/e.seedConf, 1))
+		}
+		f.Triage, f.TriageReason = "", ""
+		switch {
+		case ns.review != "":
+			f.Triage, f.TriageReason = model.TriageNeedsReview, ns.review
+		case e.review != "":
+			f.Triage, f.TriageReason = model.TriageNeedsReview, e.review
+		}
+		c.findings = append(c.findings, f)
+	}
 }
 
 // branchKinds are node kinds whose body may or may not run. Assignments inside them may add
@@ -1173,12 +1289,29 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 	}
 	line := int(n.StartPosition().Row) + 1
 	rhs = unwrapAwait(rhs)
+	if branches, ok := conditionalBranches(rhs); ok {
+		// x = "a.jsonl" if kind == FLOW else "b.jsonl": the value is one of the branches; the
+		// condition only picks which, so it carries no taint into x
+		var text []string
+		for _, b := range branches {
+			text = append(text, b.Utf8Text(pf.src))
+		}
+		if _, found := propagatedTaint(strings.Join(text, " ; "), tainted); !found {
+			clearTaint(tainted, targets, conditional)
+			return
+		}
+	}
 	// Clear SSRF taint when a fixed prefix closes the URL's host before computed text begins
 	fixedHost := c.hostFixed(pf, file, rhs) || untaintedBaseThenPath(pf, rhs, tainted) || relativePathURL(pf, rhs)
 
 	if augmentedAssignKinds[n.Kind()] {
 		text := strings.Join(targets, " + ") + " + " + rhs.Utf8Text(pf.src)
 		if info, ok := propagatedTaint(text, tainted); ok {
+			if len(targets) == 1 && !fromMCPInputName(tainted, targets[0]) && c.holdsFixedHostURL(pf, n, targets[0]) {
+				// url = "https://docs.example/latest/"; url += topic: text appended to a URL whose
+				// host is already closed lands in its path
+				info = info.clearFor("ssrf")
+			}
 			setTaint(tainted, targets, info, conditional)
 		}
 		// No clear branch: appending to a value never removes what was
@@ -1250,6 +1383,9 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			Detail: "result of a call that received tainted input",
 		}
 		info := from.extend(step, mult)
+		if why, ok := c.escapedBy(rhs.Utf8Text(pf.src)); ok && info.review == "" {
+			info.review = escapedReview(why)
+		}
 		if resolved && c.isProjectValidator(sym) {
 			info = info.extend(model.FlowStep{
 				Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Detail: validatorDetail, Resolved: true,
@@ -1424,8 +1560,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	// never removes what the receiver already carried, so there is no
 	// clear branch here either, only a set
 	if skip, ok := mutatingCollectionMethods[parser.LastSegment(calleeText)]; ok && isPlainIdent(receiver.Text) && skip < len(args) {
-		if _, info, found := taintedArgIndex(args[skip:], tainted, ""); found {
+		if idx, info, found := taintedArgIndex(args[skip:], tainted, ""); found {
 			line := int(n.StartPosition().Row) + 1
+			if why, ok := c.escapedBy(args[skip+idx].Text); ok && info.review == "" {
+				info.review = escapedReview(why)
+			}
 			setTaint(tainted, []string{receiver.Text}, info.extend(model.FlowStep{
 				Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
 				Detail: "collection extended with tainted input",
@@ -1453,7 +1592,20 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// strong sanitizer upstream may still have cleared it for this
 		// exact category (info.clearedFor) without clearing it for every
 		// category, the same gate the plain-sink branch below applies
-		if category, severity, mult, note, info, found := c.classifyArgv(file, argv.kind, argvArgs, tainted); found && !info.clearedFor[category] {
+		if category, severity, mult, note, info, found := c.classifyArgv(file, argv.kind, c.expandArgvVar(pf, n, argv.kind, argvArgs), tainted); found && !info.clearedFor[category] {
+			if info.review == "" && (category == "command_injection" || category == "argument_injection") {
+				// an element the project built through its own quoting function
+				for _, a := range c.expandArgvVar(pf, n, argv.kind, argvArgs) {
+					for _, e := range append([]graph.Arg{a}, bracketedListElements(a.Text)...) {
+						if _, hit := mentionsAny(e.Text, tainted, ""); !hit {
+							continue
+						}
+						if why, ok := c.escapedBy(e.Text); ok {
+							info.review = escapedReview(why)
+						}
+					}
+				}
+			}
 			line := int(n.StartPosition().Row) + 1
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: category, Resolved: true,
@@ -1501,6 +1653,10 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// of that name elsewhere in the tree - a fetch(req) method in a server object - does not
 		// shadow the global here.
 		sinkFound = false
+	}
+	if sinkFound && sink.text == "exec" && sink.category == "command_injection" && pf.adapter.ID == language.Python && strings.TrimSpace(sinkText) == "exec" {
+		// Python's builtin exec(code) runs Python source, not a process: code execution
+		sink = sinkPattern{text: "exec", category: "eval", severity: model.SeverityHigh, argIndex: 0}
 	}
 	if sinkFound && sink.text == "exec" && asWritten && c.regExpReceiver(pf, file, n) {
 		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
@@ -1563,6 +1719,12 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				if found && byMethodName && sink.category == "sql_injection" && !sqlReceiver(sinkText, a.Text) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is not named like a database handle and the argument shows no SQL text, so it is probably another API's %s", sinkText, parser.LastSegment(sinkText))
 				}
+				if found && byMethodName && !strings.ContainsAny(strings.TrimSpace(sinkText), ".:") && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+					// Query(**filters): the name patterns are for methods on a handle, and this call
+					// has no receiver - a constructor or a plain function - unless the method was
+					// pulled off its object first (const { query } = pool)
+					info.review = fmt.Sprintf("%s was matched by a method name, but the call has no receiver and no SQL text was seen on the path, so it is probably a constructor or a plain function of the same name", sinkText)
+				}
 			}
 		} else {
 			var idx int
@@ -1595,6 +1757,17 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 						Kind: "transform", Symbol: titleCallee(a.Text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
 					}, 1)
 				}
+			}
+			if sink.category == "deserialization" && strings.HasSuffix(strings.TrimSpace(sinkText), "yaml.load") &&
+				(pf.adapter.ID == language.TypeScript || pf.adapter.ID == language.JavaScript) && info.review == "" {
+				// js-yaml's load has used the safe default schema since version 4; in 3 it builds
+				// JavaScript functions from !!js/function tags. The version installed decides.
+				info.review = fmt.Sprintf("%s is js-yaml's load, which is safe from version 4 on and builds JavaScript functions from !!js/function tags in version 3; the installed version decides between a real issue and noise", sinkText)
+			}
+			if sink.text == "exec" && sink.category == "command_injection" && c.execOnOtherObject(file, sinkText) {
+				// client.browsers.process.exec(id, {...}): a method named exec on an object no
+				// child_process import binds - an API client's own exec - matched by name alone
+				info.review = fmt.Sprintf("%s was matched as a command by its method name only: its receiver is not bound to child_process in this file, so it may be another API's exec (a remote sandbox, a database driver)", sinkText)
 			}
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: sink.category, Resolved: true,
@@ -1976,7 +2149,8 @@ func mentionsAny(text string, tainted map[string]taintInfo, category string) (ta
 	text = maskSubscriptKeys(maskLiteralText(text))
 	var best, cleared taintInfo
 	found, foundCleared := false, false
-	for name, info := range tainted {
+	for _, name := range taintedNames(tainted) {
+		info := tainted[name]
 		if !mentionsIdent(text, name) {
 			continue
 		}
@@ -2009,7 +2183,8 @@ func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool
 	fullyMasked := maskStrongSanitizerCalls(text, "")
 	var best taintInfo
 	found := false
-	for name, info := range tainted {
+	for _, name := range taintedNames(tainted) {
+		info := tainted[name]
 		if !mentionsIdent(text, name) {
 			continue
 		}
@@ -2333,7 +2508,14 @@ func subscriptAt(out []byte, idx int) bool {
 // maskLiteralText prevents literal words from looking like variable references while leaving
 // interpolated expressions visible. Blanking preserves positions for the identifier matcher;
 // these offsets are not emitted as evidence.
+// constantPerElement matches expressions that turn each element of a collection into the same
+// literal - placeholders for a parameterized query: xs.map(() => "?"), xs.map((_) => '$1'),
+// ["?"] * len(xs), "?" * len(xs), "?" for _ in xs. Their text names the collection, but what they
+// produce does not depend on its contents.
+var constantPerElement = regexp.MustCompile(`[A-Za-z_$][\w.$]*\s*\.map\(\s*\(?\s*\w*\s*(?:,\s*\w+\s*)?\)?\s*=>\s*(?:"[^"]*"|'[^']*'|` + "`[^`$]*`" + `)\s*\)|\[\s*(?:"[^"]*"|'[^']*')\s*\]\s*\*\s*len\(\s*[\w.]+\s*\)|(?:"[^"]*"|'[^']*')\s*\*\s*len\(\s*[\w.]+\s*\)|(?:"[^"]*"|'[^']*')\s+for\s+\w+\s+in\s+[\w.]+`)
+
 func maskLiteralText(text string) string {
+	text = constantPerElement.ReplaceAllString(text, `""`)
 	out := []byte(text)
 	var quote byte
 	for i := 0; i < len(out); i++ {
@@ -2572,4 +2754,180 @@ func mentionsIdent(text, name string) bool {
 
 func isIdentByte(b byte) bool {
 	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// taintedNames returns the keys of a taint map in sorted order. When two names tie, the first one
+// seen supplies the path, so map order would otherwise pick the path at random.
+func taintedNames(tainted map[string]taintInfo) []string {
+	out := make([]string, 0, len(tainted))
+	for k := range tainted {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// execOnOtherObject reports whether a JavaScript or TypeScript exec call has a receiver that no
+// import of child_process (or a module re-exporting it) binds in this file: a.b.exec(...) where a
+// is a local client. A bare exec(...) or child_process.exec(...) is not this case.
+func (c *ctx) execOnOtherObject(file, sinkText string) bool {
+	f := c.g.Files[file]
+	if f == nil || (f.Language != string(language.TypeScript) && f.Language != string(language.JavaScript)) {
+		return false
+	}
+	root, _, dotted := strings.Cut(strings.TrimSpace(sinkText), ".")
+	if !dotted || root == "" {
+		return false
+	}
+	for _, imp := range f.Imports {
+		path := strings.TrimPrefix(imp.Path, "node:")
+		if path != "child_process" && !strings.HasPrefix(path, "child_process/") && path != "execa" && path != "shelljs" {
+			continue
+		}
+		local := imp.Alias
+		if local == "" {
+			local = parser.LastSegment(imp.Path)
+		}
+		if local == root || imp.Alias == "" {
+			// a namespace or default import of child_process may bind the root; an import whose
+			// binding is not recorded could too
+			return false
+		}
+	}
+	return root != "child_process" && root != "cp" && root != "childProcess"
+}
+
+// escaperName matches the names projects give their own quoting and escaping functions
+var escaperName = regexp.MustCompile(`(?i)^_*\w*(quote|escape)\w*$`)
+
+// callNames finds the callees an expression calls
+var callNames = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)*)\s*\(`)
+
+// escapedBy reports whether an expression's value is escaped by a function the project names as a
+// quoting or escaping one: called directly (shell_quote(x)), or called inside an in-repo function
+// the expression calls, including as an iterator step - args.iter().map(quote_remote_arg). The
+// escaping is not verified, so a finding through it goes to review rather than away.
+func (c *ctx) escapedBy(text string) (string, bool) {
+	for _, m := range callNames.FindAllStringSubmatch(text, 8) {
+		name := parser.LastSegment(m[1])
+		if isEscaper(name) {
+			return name, true
+		}
+		ids := c.idx[name]
+		if len(ids) != 1 {
+			continue
+		}
+		if esc := c.bodyEscaper(c.g.Symbols[ids[0]]); esc != "" {
+			return name + " (which applies " + esc + ")", true
+		}
+	}
+	return "", false
+}
+
+// bodyEscaper returns the escaping function a symbol's body applies, or "", once per symbol
+func (c *ctx) bodyEscaper(sym *graph.Symbol) string {
+	if sym == nil {
+		return ""
+	}
+	if v, ok := c.escapers[sym.ID]; ok {
+		return v
+	}
+	out := ""
+	if pf, node := c.defNodeFor(sym); pf != nil && node != nil {
+		if body := node.Utf8Text(pf.src); len(body) <= 20000 {
+			for _, e := range escaperUse.FindAllStringSubmatch(body, -1) {
+				if esc := e[1] + e[2]; isEscaper(esc) && esc != sym.Name {
+					out = esc
+					break
+				}
+			}
+		}
+	}
+	c.escapers[sym.ID] = out
+	return out
+}
+
+// escaperUse finds an escaping function applied inside a body: .map(quote_arg), map(shlex_quote,
+// ...), or a direct call
+var escaperUse = regexp.MustCompile(`(?i)(?:\.map\(\s*|\bmap\(\s*)(_*\w*(?:quote|escape)\w*)\s*[,)]|\b(_*\w*(?:quote|escape)\w*)\s*\(`)
+
+// isEscaper reports whether a name reads as escaping, not as its inverse (unescape, unquote) or as
+// an unrelated word that contains it
+func isEscaper(name string) bool {
+	low := strings.ToLower(name)
+	return escaperName.MatchString(name) && !strings.Contains(low, "unescape") && !strings.Contains(low, "unquote") && !strings.Contains(low, "dequote")
+}
+
+func escapedReview(why string) string {
+	return "the value passes through " + why + ", a quoting or escaping function of the project; whether it escapes correctly for the program or query that receives the value decides between a real issue and noise, and the scanner does not verify it"
+}
+
+// conditionalBranches returns the two value branches of a conditional expression - Python's
+// `a if cond else b`, the C-family `cond ? a : b` - and false for anything else
+func conditionalBranches(n *sitter.Node) ([]*sitter.Node, bool) {
+	if n == nil {
+		return nil, false
+	}
+	for n.Kind() == "parenthesized_expression" && n.NamedChildCount() == 1 {
+		n = n.NamedChild(0)
+	}
+	switch n.Kind() {
+	case "conditional_expression":
+		// Python: a if cond else b - named children in order a, cond, b
+		if n.NamedChildCount() == 3 {
+			return []*sitter.Node{n.NamedChild(0), n.NamedChild(2)}, true
+		}
+	case "ternary_expression":
+		c, a := n.ChildByFieldName("consequence"), n.ChildByFieldName("alternative")
+		if c != nil && a != nil {
+			return []*sitter.Node{c, a}, true
+		}
+	}
+	return nil, false
+}
+
+func fromMCPInputName(tainted map[string]taintInfo, name string) bool {
+	info, ok := tainted[name]
+	return ok && fromMCPInput(info)
+}
+
+// holdsFixedHostURL reports whether name's latest plain assignment before n, in the enclosing
+// function, is a literal URL whose host is closed ("https://host/..."), directly or through one
+// variable assigned such a literal in the same file
+func (c *ctx) holdsFixedHostURL(pf *parsedFile, n *sitter.Node, name string) bool {
+	if !isPlainIdent(name) {
+		return false
+	}
+	fn := n.Parent()
+	for fn != nil && !strings.Contains(fn.Kind(), "function") && !strings.Contains(fn.Kind(), "method") && fn.Kind() != "arrow_function" {
+		fn = fn.Parent()
+	}
+	start := uint(0)
+	if fn != nil {
+		start = fn.StartByte()
+	}
+	before := string(pf.src[start:n.StartByte()])
+	rhs := lastPlainAssignment(before, name)
+	if rhs == "" {
+		return false
+	}
+	if v, ok := parser.UnquoteString(rhs); ok {
+		return fixesURLHost(v)
+	}
+	if isPlainIdent(rhs) {
+		if v, ok := parser.UnquoteString(lastPlainAssignment(string(pf.src[:n.StartByte()]), rhs)); ok {
+			return fixesURLHost(v)
+		}
+	}
+	return false
+}
+
+// lastPlainAssignment returns the right-hand side of the last `name = value` (not +=) in text
+func lastPlainAssignment(text, name string) string {
+	re := regexp.MustCompile(`(?m)^[ \t]*(?:let|const|var|final)?\s*` + regexp.QuoteMeta(name) + `\s*(?::[^=\n]+)?=\s*([^=\n].*?)\s*;?\s*$`)
+	ms := re.FindAllStringSubmatch(text, -1)
+	if len(ms) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(ms[len(ms)-1][1])
 }

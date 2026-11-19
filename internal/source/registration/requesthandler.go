@@ -6,6 +6,7 @@
 package registration
 
 import (
+	"path"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
@@ -55,8 +56,24 @@ func classifySetRequestHandlerCall(c graph.Call) (requestHandlerRole, bool) {
 	if normalize(parser.LastSegment(c.CalleeText)) != "setrequesthandler" || len(c.Args) == 0 {
 		return requestHandlerRole{}, false
 	}
+	if c.Args[0].Literal {
+		// The v2 TypeScript SDK names the method itself: setRequestHandler('tools/list', ...)
+		role, ok := requestHandlerMethods[c.Args[0].Value]
+		return role, ok
+	}
 	role, ok := requestHandlerSchemas[normalize(parser.LastSegment(c.Args[0].Text))]
 	return role, ok
+}
+
+// requestHandlerMethods maps MCP method names, as the v2 TypeScript SDK's setRequestHandler takes
+// them, to the same roles as the schema constants
+var requestHandlerMethods = map[string]requestHandlerRole{
+	"tools/list":     {graph.CapabilityTool, true},
+	"tools/call":     {graph.CapabilityTool, false},
+	"prompts/list":   {graph.CapabilityPrompt, true},
+	"prompts/get":    {graph.CapabilityPrompt, false},
+	"resources/list": {graph.CapabilityResource, true},
+	"resources/read": {graph.CapabilityResource, false},
 }
 
 // classifyRequestHandlerDecorator reports whether dec is a
@@ -159,6 +176,12 @@ func (st *requestHandlerState) emit(g *graph.Graph) {
 			continue
 		}
 		elems := returnArrayElements(site.sym.ReturnText)
+		if len(elems) == 0 {
+			// return { tools: evilTools }: the list is a constant, here or in an imported module
+			if text := listConstant(g, site.sym.File, site.sym.ReturnText); text != "" {
+				elems = returnArrayElements(text)
+			}
+		}
 		if len(elems) == 0 {
 			g.Capabilities = append(g.Capabilities, graph.Capability{
 				Kind: site.kind, Form: "request_handler",
@@ -265,4 +288,64 @@ func callKeywordFields(text string) map[string]string {
 		return nil
 	}
 	return fields
+}
+
+// listConstant resolves the list a list handler returns by name - `return { tools: evilTools }` or
+// `return evilTools` - to the array constant's text, from the handler's own file or from the module
+// a relative import of that name points at
+func listConstant(g *graph.Graph, file, returnText string) string {
+	t := strings.TrimSpace(returnText)
+	name := ""
+	if isIdentifierText(t) {
+		name = t
+	} else if fields := objectLiteralFields(t); fields != nil {
+		for _, key := range listValueKeys {
+			if v, ok := fields[key]; ok {
+				name = strings.TrimSpace(v)
+				break
+			}
+		}
+	}
+	if name == "" || !isIdentifierText(name) || strings.Contains(name, ".") {
+		return ""
+	}
+	f := g.Files[file]
+	if f == nil {
+		return ""
+	}
+	if v := f.ObjectConstants[name]; v != "" {
+		return v
+	}
+	for _, imp := range f.Imports {
+		if imp.Alias != name || !strings.HasPrefix(imp.Path, ".") {
+			continue
+		}
+		for _, cand := range moduleCandidates(file, imp.Path) {
+			if tf := g.Files[cand]; tf != nil {
+				if v := tf.ObjectConstants[name]; v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// moduleCandidates lists the files a relative JavaScript/TypeScript import can name: the path as
+// written, with its .js extension swapped for TypeScript's, with an extension added, or as a
+// directory's index
+func moduleCandidates(fromFile, spec string) []string {
+	base := path.Join(path.Dir(fromFile), spec)
+	stem := base
+	for _, ext := range []string{".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"} {
+		stem = strings.TrimSuffix(stem, ext)
+	}
+	var out []string
+	for _, ext := range []string{".ts", ".tsx", ".js", ".mjs", ".cjs", ".jsx"} {
+		out = append(out, stem+ext)
+	}
+	for _, ext := range []string{".ts", ".js"} {
+		out = append(out, path.Join(stem, "index"+ext))
+	}
+	return append([]string{base}, out...)
 }

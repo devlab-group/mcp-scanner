@@ -88,6 +88,13 @@ func untaintedBaseThenPath(pf *parsedFile, n *sitter.Node, tainted map[string]ta
 		}
 		switch e.Kind() {
 		case "identifier", "attribute", "member_expression", "selector_expression", "field_expression", "subscript_expression", "subscript":
+		case "call_expression", "call":
+			// getRefUrl() + "/read?url=" + ...: a call with no arguments is handed nothing of the
+			// caller's, so its result - a configured or constant base - carries no MCP input
+			args := e.ChildByFieldName("arguments")
+			if args == nil || args.NamedChildCount() != 0 {
+				return false
+			}
 		default:
 			return false
 		}

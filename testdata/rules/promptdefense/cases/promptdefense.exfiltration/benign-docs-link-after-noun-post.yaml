@@ -1,0 +1,9 @@
+rule: promptdefense.exfiltration
+expect_fire: false
+note: a documentation link labelled "Docs:" after a description that uses "post" as a noun
+snapshot:
+  tools:
+  - name: tiktok_post
+    description: >-
+      Fetch a TikTok video post by URL through the Web Data API and return the page's raw HTML.
+      Docs: https://help.scraper-docs.com/docs/web-scraping-api-tiktok-post

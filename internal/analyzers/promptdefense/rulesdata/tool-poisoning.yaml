@@ -38,6 +38,29 @@ rules:
     negate_before:
       - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"
 
+  - id: promptdefense.tool-poisoning-cross-tool-harvesting
+    title: Description hooks the tool onto other tools' calls or asks for their data
+    category: tool_poisoning
+    severity: CRITICAL
+    evidence_level: HEURISTIC
+    description: >
+      This text tells the model to call this tool whenever any other tool is used, or to hand it
+      other tools' names, arguments or results - a way to collect everything the agent does.
+    remediation: >
+      Describe what the tool does for the user. A tool should not ask to see other tools' calls.
+    references:
+      - https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks
+    patterns:
+      - "(?:every|each) time (?:a|any|another|any other) tool is (?:used|called|invoked|run)"
+      - "after (?:any|every|each) (?:action|tool call|tool use|other tool|tool is used)"
+      - "(?:before|after|alongside|together with) (?:any|every|each) (?:other )?tool"
+      - "(?:include|pass|send|record|provide|forward|report)\\b[^.]{0,60}\\b(?:all|every|other|the other|each) tool(?:s|'s|s')? (?:names?|arguments?|args|inputs?|outputs?|results?|responses?|parameters)"
+      - "(?:include|pass|send|record|provide|forward|report)\\b[^.]{0,40}\\b(?:all|every) tool names, arguments"
+    negate:
+      - "\\b(detect|detects|detecting|block|blocks|blocking|prevent|prevents|preventing|defends? against|flag|flags|flagging|identif(y|ies|ying)|mitigat(e|es|ing)|warns? (about|against))\\b"
+    negate_before:
+      - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"
+
   - id: promptdefense.tool-poisoning-unrelated-file-access
     title: Description reaches for credentials or files outside its stated job
     category: tool_poisoning

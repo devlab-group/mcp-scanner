@@ -6,6 +6,7 @@ package taint
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,28 +57,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 	tc := newCtx(ctx, g)
 	defer tc.closeAll()
 
-	// Seed every handler from its own capability, even if another trace already reached it. That
-	// trace carried different arguments; the (symbol, seed) guard still prevents duplicate work.
-	for _, sym := range g.Symbols {
-		if ctx.Err() != nil {
-			break
-		}
-		if seed := tc.seedFor(sym); seed != nil {
-			tc.analyzeSymbol(sym, seed, 0)
-		}
-	}
-	// Everything else: a plain function can still introduce taint on its
-	// own (an environment variable, a file, an HTTP response) and reach a
-	// sink entirely within itself, with no handler involved
-	for _, sym := range g.Symbols {
-		if ctx.Err() != nil {
-			break
-		}
-		if tc.visitedSyms[sym.ID] {
-			continue
-		}
-		tc.analyzeSymbol(sym, nil, 0)
-	}
+	tc.walkAll(ctx)
 
 	model.SortFindings(tc.findings)
 
@@ -157,7 +137,41 @@ func better(a, b model.Finding) bool {
 	if a.Confidence != b.Confidence {
 		return a.Confidence > b.Confidence
 	}
-	return pathLen(a) < pathLen(b)
+	if pathLen(a) != pathLen(b) {
+		return pathLen(a) < pathLen(b)
+	}
+	// Equal on everything that matters: a fixed order, so repeated scans keep the same path
+	return pathKey(a) < pathKey(b)
+}
+
+func pathKey(f model.Finding) string {
+	if len(f.Evidence) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, st := range f.Evidence[0].Path {
+		fmt.Fprintf(&b, "%s|%s|%s|%d;", st.Kind, st.Symbol, st.File, st.Line)
+	}
+	return b.String()
+}
+
+// orderedSymbols lists the graph's symbols by file, line and id
+func orderedSymbols(g *graph.Graph) []*graph.Symbol {
+	out := make([]*graph.Symbol, 0, len(g.Symbols))
+	for _, s := range g.Symbols {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.ID < b.ID
+	})
+	return out
 }
 
 func pathLen(f model.Finding) int {
@@ -319,5 +333,34 @@ func (*Analyzer) Describe() analyzer.Description {
 			"a value appended to a collection taints the collection only when the receiver is a plain local name: cmd.append(v) and args.push(v) are followed, self.items.append(v) and registry[key].push(v) are not, so a command assembled through a field or a nested element is not traced",
 			"an argv array handed to a child process as a variable rather than written out at the call site cannot be read element by element; it is checked as one argument, so the position of the tainted value is unknown - which means a terminator or an option boundary inside such an array does not clear the flow, and a shell given an unreadable argv is reported as command injection rather than the weaker category",
 		},
+	}
+}
+
+// walkAll seeds every handler, then walks every function no handler reached
+func (c *ctx) walkAll(ctx context.Context) {
+	// Seed every handler from its own capability, even if another trace already reached it. That
+	// trace carried different arguments; the (symbol, seed) guard still prevents duplicate work,
+	// and replay carries what the first walk found to the later callers. Walk in a fixed order: the (symbol, seed) guard lets the first trace into a shared helper
+	// stand for every later one, so map order would decide which handler a finding names
+	ordered := orderedSymbols(c.g)
+	for _, sym := range ordered {
+		if ctx.Err() != nil {
+			break
+		}
+		if seed := c.seedFor(sym); seed != nil {
+			c.analyzeSymbol(sym, seed, 0)
+		}
+	}
+	// Everything else: a plain function can still introduce taint on its
+	// own (an environment variable, a file, an HTTP response) and reach a
+	// sink entirely within itself, with no handler involved
+	for _, sym := range ordered {
+		if ctx.Err() != nil {
+			break
+		}
+		if c.visitedSyms[sym.ID] {
+			continue
+		}
+		c.analyzeSymbol(sym, nil, 0)
 	}
 }

@@ -49,7 +49,9 @@ func jsModuleConstants(root *sitter.Node, src []byte) (map[string]string, map[st
 			}
 			if v, ok := LiteralValue(value, src); ok {
 				strs[name.Utf8Text(src)] = v
-			} else if value.Kind() == "object" {
+			} else if value.Kind() == "object" || value.Kind() == "array" {
+				// an array too: `export const tools = [{ name: "...", description: "..." }]`
+				// is what a low-level server's tools/list handler returns
 				objs[name.Utf8Text(src)] = value.Utf8Text(src)
 			}
 		}

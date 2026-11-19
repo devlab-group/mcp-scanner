@@ -19,7 +19,7 @@ func buildGraph(t *testing.T, files map[language.ID]map[string]string) *graph.Gr
 			if err != nil {
 				t.Fatalf("ParseFile(%s): %v", path, err)
 			}
-			g.Files[path] = &graph.File{Path: path, Language: string(lang), Imports: res.Imports, Constants: res.Constants}
+			g.Files[path] = &graph.File{Path: path, Language: string(lang), Imports: res.Imports, Constants: res.Constants, ObjectConstants: res.ObjectConstants}
 			for _, s := range res.Symbols {
 				g.Symbols[s.ID] = s
 			}

@@ -225,6 +225,10 @@ func argAt(args []graph.Arg, i int) *graph.Arg {
 func Discover(g *graph.Graph) {
 	idx := buildIndex(g)
 	mcpTree := TreeImportsMCPSDK(g)
+	callsByFile := map[string][]int{}
+	for i, c := range g.Calls {
+		callsByFile[c.File] = append(callsByFile[c.File], i)
+	}
 	templates := map[graph.SymbolID]template{}
 	reqHandlers := newRequestHandlerState()
 
@@ -277,7 +281,7 @@ func Discover(g *graph.Graph) {
 				}
 			}
 		}
-		emitDirect(g, idx, kind, c, roles)
+		emitDirect(g, idx, callsByFile, kind, c, roles)
 	}
 
 	called := map[graph.SymbolID]bool{}
@@ -299,7 +303,7 @@ func Discover(g *graph.Graph) {
 		if called[id] {
 			continue
 		}
-		emitDirect(g, idx, t.kind, t.innerCall, classifyArgs(t.innerCall.Args))
+		emitDirect(g, idx, callsByFile, t.kind, t.innerCall, classifyArgs(t.innerCall.Args))
 	}
 
 	for _, sym := range g.Symbols {
@@ -331,7 +335,7 @@ func Discover(g *graph.Graph) {
 	})
 }
 
-func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Call, roles argRoles) {
+func emitDirect(g *graph.Graph, idx index, callsByFile map[string][]int, kind graph.CapabilityKind, c graph.Call, roles argRoles) {
 	form := "direct"
 	if c.InLoop {
 		form = "loop"
@@ -387,6 +391,9 @@ func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Ca
 				}
 			}
 		}
+	}
+	if roles.Handler == nil {
+		roles.Handler = wrappedHandler(g, idx, callsByFile, c)
 	}
 	if roles.Handler != nil {
 		cap.HandlerText = roles.Handler.Text
@@ -682,4 +689,55 @@ func docstringDescription(g *graph.Graph, cap *graph.Capability) {
 		return
 	}
 	cap.Description, cap.DescriptionResolved = sym.Doc, true
+}
+
+// wrappedHandler finds a handler the registration passes through a wrapping call as its last
+// argument - registerTool("x", config, trackedTool("x", async () => {...})) or
+// server.tool("x", withAuth(handler)): the wrapper's own function argument is the code that runs.
+// It reads the wrapping call's arguments from the graph's record of that call.
+func wrappedHandler(g *graph.Graph, idx index, callsByFile map[string][]int, c graph.Call) *graph.Arg {
+	var last *graph.Arg
+	for i := range c.Args {
+		if c.Args[i].Keyword == "" {
+			last = &c.Args[i]
+		}
+	}
+	if last == nil || last.Literal || !looksLikeCall(last.Text) {
+		return nil
+	}
+	open := strings.IndexByte(last.Text, '(')
+	if open <= 0 {
+		return nil
+	}
+	callee := strings.TrimSpace(last.Text[:open])
+	for _, i := range callsByFile[c.File] {
+		w := &g.Calls[i]
+		if w.CalleeText != callee || w.Line < c.Line || !strings.HasPrefix(last.Text, w.CalleeText) {
+			continue
+		}
+		// The recorded call must be this argument: its arguments appear in the argument's text
+		match := true
+		for _, a := range w.Args {
+			if !strings.Contains(last.Text, a.Text) {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		for j := len(w.Args) - 1; j >= 0; j-- {
+			a := &w.Args[j]
+			if a.HandlerID != "" {
+				return a
+			}
+			if !a.Literal && isIdentifierText(a.Text) {
+				if _, ok := idx.resolve(a.Text); ok {
+					return a
+				}
+			}
+		}
+		return nil
+	}
+	return nil
 }

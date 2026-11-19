@@ -51,7 +51,7 @@ func (a *Analyzer) Describe() analyzer.Description {
 		Threats:         []string{"known_vulnerable_dependency", "known_vulnerable_package"},
 		Evidence:        []model.EvidenceLevel{model.EvidenceStatic},
 		Active:          false,
-		Limitations:     []string{"only catches vulnerabilities OSV already knows about", "a lockfile format this parser does not recognize (pnpm-lock.yaml, yarn.lock, uv.lock, Pipfile.lock, pdm.lock, composer.lock, gradle.lockfile, Gemfile.lock) is reported as a coverage gap, not silently ignored", "vendor/ and node_modules/ trees are excluded from lockfile discovery - the same tradeoff internal/source/inventory makes for source code - which always downgrades the scan when one of those directories is present", "a package.json, pyproject.toml, setup.py or Cargo.toml with no lockfile beside it declares dependency ranges, not resolved versions - an ordinary checkout commonly ships only the manifest, and that gap is reported, not silently passed as clean", "a requirements.txt dependency without an exact == version is reported as a coverage gap"},
+		Limitations:     []string{"only catches vulnerabilities OSV already knows about", "a lockfile format this parser does not recognize (pnpm-lock.yaml, yarn.lock, Pipfile.lock, pdm.lock, composer.lock, gradle.lockfile, Gemfile.lock) is reported as a coverage gap, not silently ignored", "vendor/ and node_modules/ trees are excluded from lockfile discovery - the same tradeoff internal/source/inventory makes for source code - which always downgrades the scan when one of those directories is present", "a package.json, pyproject.toml, setup.py or Cargo.toml with no lockfile beside it declares dependency ranges, not resolved versions - an ordinary checkout commonly ships only the manifest, and that gap is reported, not silently passed as clean", "a requirements.txt dependency without an exact == version is reported as a coverage gap"},
 		RequiresNetwork: true,
 	}
 }
@@ -64,7 +64,9 @@ type lockfileParser struct {
 // parsed is what one lockfile parser learned. It separates unpinned dependencies that were read
 // but cannot be queried from included content that was never opened and must downgrade coverage.
 type parsed struct {
-	coords   []osv.Coordinate
+	coords []osv.Coordinate
+	// devOnly are coordinates the lockfile marks as development dependencies everywhere they appear
+	devOnly  map[osv.Coordinate]bool
 	unpinned int
 	unread   int
 	// notes are gaps the parser found in what it could look up at all: a
@@ -77,14 +79,15 @@ type parsed struct {
 var lockfileParsers = []lockfileParser{
 	{match: eq("go.sum"), parse: coordsOnly(osv.ParseGoSum)},
 	{match: eq("go.mod"), parse: withNotes(osv.ParseGoMod)},
-	{match: eq("package-lock.json"), parse: withNotes(osv.ParsePackageLock)},
+	{match: eq("package-lock.json"), parse: parsePackageLock},
 	// npm-shrinkwrap.json is package-lock.json's published twin, byte for
 	// byte the same format: package-lock.json is never inside a published
 	// tarball and this one is, which makes it the one an npm package
 	// target actually ships
-	{match: eq("npm-shrinkwrap.json"), parse: withNotes(osv.ParsePackageLock)},
+	{match: eq("npm-shrinkwrap.json"), parse: parsePackageLock},
 	{match: eq("requirements.txt"), parse: parseRequirements},
-	{match: eq("poetry.lock"), parse: withNotes(osv.ParsePoetryLock)},
+	{match: eq("poetry.lock"), parse: parsePoetryLock},
+	{match: eq("uv.lock"), parse: parseUvLock},
 	{match: eq("Cargo.lock"), parse: coordsOnly(osv.ParseCargoLock)},
 }
 
@@ -95,7 +98,6 @@ var lockfileParsers = []lockfileParser{
 var unrecognizedLockfileNames = map[string]bool{
 	"pnpm-lock.yaml":  true,
 	"yarn.lock":       true,
-	"uv.lock":         true,
 	"Pipfile.lock":    true,
 	"pdm.lock":        true,
 	"composer.lock":   true,
@@ -161,6 +163,21 @@ func withNotes(f func([]byte) ([]osv.Coordinate, []string, error)) func([]byte) 
 	}
 }
 
+func parsePackageLock(data []byte) (parsed, error) {
+	coords, notes, err := osv.ParsePackageLock(data)
+	return parsed{coords: coords, notes: notes, devOnly: osv.PackageLockDevOnly(data)}, err
+}
+
+func parsePoetryLock(data []byte) (parsed, error) {
+	coords, notes, err := osv.ParsePoetryLock(data)
+	return parsed{coords: coords, notes: notes, devOnly: osv.PoetryLockDevOnly(data)}, err
+}
+
+func parseUvLock(data []byte) (parsed, error) {
+	coords, notes, err := osv.ParseUvLock(data)
+	return parsed{coords: coords, notes: notes, devOnly: osv.UvLockDevOnly(data)}, err
+}
+
 func parseRequirements(data []byte) (parsed, error) {
 	coords, unpinned, included, err := osv.ParseRequirementsTxt(data)
 	return parsed{coords: coords, unpinned: unpinned, unread: included}, err
@@ -184,6 +201,7 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 	type coordHit struct {
 		coord osv.Coordinate
 		file  string
+		dev   bool
 	}
 	var hits []coordHit
 
@@ -341,7 +359,7 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 						fmt.Sprintf("%s: %d included requirements file(s) were not opened, their dependencies were not checked", lf.rel, out.unread))
 				}
 				for _, c := range out.coords {
-					hits = append(hits, coordHit{coord: c, file: lf.rel})
+					hits = append(hits, coordHit{coord: c, file: lf.rel, dev: out.devOnly[c]})
 				}
 			}
 		}
@@ -362,8 +380,17 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 	querier := querierFrom(ac)
 	fileByCoord := make(map[osv.Coordinate]string, len(hits))
 	coords := make([]osv.Coordinate, 0, len(hits))
+	// A coordinate is development-only when every lockfile that lists it says so; one production
+	// occurrence anywhere puts it in the installed server
+	inProduction := map[osv.Coordinate]bool{}
 	for _, l := range hits {
-		if _, dup := fileByCoord[l.coord]; dup {
+		_, dup := fileByCoord[l.coord]
+		if !l.dev && !inProduction[l.coord] {
+			// the file named is one that installs it
+			inProduction[l.coord] = true
+			fileByCoord[l.coord] = l.file
+		}
+		if dup {
 			continue
 		}
 		fileByCoord[l.coord] = l.file
@@ -377,7 +404,15 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 
 	for coord, vulns := range results {
 		for _, v := range vulns {
-			res.Findings = append(res.Findings, toFinding(coord, fileByCoord[coord], v))
+			f := toFinding(coord, fileByCoord[coord], v)
+			if !inProduction[coord] {
+				// The lockfile records it as a development dependency: a production install leaves
+				// it out, so the running server does not contain it. It still runs in development
+				// and CI, so the severity stays.
+				f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+					"%s records %s@%s as a development dependency only: a production install (npm ci --omit=dev, uv sync --no-dev, poetry install --only main) leaves it out of the running server; it still runs in development and CI", fileByCoord[coord], coord.Name, coord.Version)
+			}
+			res.Findings = append(res.Findings, f)
 		}
 	}
 	model.SortFindings(res.Findings)

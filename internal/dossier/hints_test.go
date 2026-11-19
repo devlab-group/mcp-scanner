@@ -97,3 +97,27 @@ def add(a: int, b: int) -> int:
 		}
 	}
 }
+
+// A JSON-RPC dispatcher written without an SDK registers nothing the scanner can see; the hint says
+// where it is
+func TestHints_HandRolledProtocol(t *testing.T) {
+	dir := testutil.WriteTree(t, map[string]string{
+		"src/main.rs": `fn handle(method: &str) {
+    match method {
+        "tools/list" => list(),
+        "tools/call" => call(),
+        _ => {}
+    }
+}
+fn list() {}
+fn call() {}
+`,
+	})
+	d, err := Build(context.Background(), dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := hintsByCode(d.ReviewHints)["hand_rolled_protocol"]; len(h) != 1 || h[0].File != "src/main.rs" {
+		t.Fatalf("want a hand_rolled_protocol hint on src/main.rs, got %+v", d.ReviewHints)
+	}
+}

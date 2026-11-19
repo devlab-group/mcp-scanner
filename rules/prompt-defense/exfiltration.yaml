@@ -28,5 +28,8 @@ rules:
     # Documentation language must immediately precede a URL to lower severity. negate_before
     # cannot let a later "for details" phrase qualify an earlier send instruction.
     negate_before:
-      - "\\b(documentation|see also|reference|learn more|support|homepage|read more|for details|for more information)\\b[\\s:,-]*$"
+      - "\\b(documentation|docs?|api docs|see also|reference|learn more|support|homepage|read more|for details|for more information)\\b[\\s:,-]*$"
+    # A concrete destination URL promotes the finding only when a handover verb sits in the same
+    # sentence before it ("upload the results to https://..."); a link in a sentence of its own
+    # ("Docs: https://...") stays heuristic
     promote_if_structural: valid_url

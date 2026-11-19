@@ -51,7 +51,7 @@ type reachIndex struct {
 
 func newReachIndex(g *graph.Graph) *reachIndex {
 	r := &reachIndex{g: g, byFile: map[string][]*graph.Symbol{}, resolved: map[graph.SymbolID][]string{}, possible: map[graph.SymbolID][]string{}}
-	for _, s := range g.Symbols {
+	for _, s := range orderedSymbols(g) {
 		r.byFile[s.File] = append(r.byFile[s.File], s)
 	}
 	seeds := map[graph.SymbolID][]string{}
@@ -72,8 +72,8 @@ func newReachIndex(g *graph.Graph) *reachIndex {
 		return r
 	}
 	byName := map[string][]graph.SymbolID{}
-	for id, s := range g.Symbols {
-		byName[s.Name] = append(byName[s.Name], id)
+	for _, s := range orderedSymbols(g) {
+		byName[s.Name] = append(byName[s.Name], s.ID)
 	}
 	r.resolved = propagate(g, seeds, nil)
 	r.possible = propagate(g, seeds, byName)
@@ -86,8 +86,13 @@ func newReachIndex(g *graph.Graph) *reachIndex {
 func propagate(g *graph.Graph, seeds map[graph.SymbolID][]string, byName map[string][]graph.SymbolID) map[graph.SymbolID][]string {
 	labels := map[graph.SymbolID][]string{}
 	var queue []graph.SymbolID
-	for id, ls := range seeds {
-		labels[id] = append([]string(nil), ls...)
+	ids := make([]graph.SymbolID, 0, len(seeds))
+	for id := range seeds {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		labels[id] = append([]string(nil), seeds[id]...)
 		queue = append(queue, id)
 	}
 	for len(queue) > 0 {
@@ -175,7 +180,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 		return fs
 	}
 	r := newReachIndex(g)
-	guards := guardIndex{root: g.Root, files: map[string][]string{}}
+	guards := &guardIndex{root: g.Root, files: map[string][]string{}, g: g, callee: map[graph.SymbolID]calleeGuard{}}
 	for i := range fs {
 		f := &fs[i]
 		if len(f.Evidence) == 0 || len(f.Evidence[0].Path) == 0 {

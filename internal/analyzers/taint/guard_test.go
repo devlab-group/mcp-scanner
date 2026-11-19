@@ -1,6 +1,8 @@
 package taint
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/devlab-group/mcp-scanner/pkg/model"
@@ -64,6 +66,149 @@ server.tool("links", "Lists the links of a page", async ({ url }: { url: string 
 				if f.Triage != tc.want {
 					t.Fatalf("want triage %s, got %s (%s)", tc.want, f.Triage, f.TriageReason)
 				}
+			}
+		})
+	}
+}
+
+// The check can sit in a project function the value passes through: buildMeta(id) throws when id
+// contains "..". The pair: the same helper without the check leaves the finding a plain one.
+func TestGuard_CheckInsideAHelperOnThePath(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { promises as fs } from "fs";
+import * as path from "path";
+const server = new McpServer({ name: "x", version: "1" });
+const ROOT = "/srv/docs";
+
+const buildMeta = (id: string) => {
+  %s
+  const normalized = id.replace(/^\/+/, "");
+  return { path: normalized + ".md" };
+};
+
+server.tool("doc", "Returns a document", async ({ id }: { id: string }) => {
+  const meta = buildMeta(id);
+  const text = await fs.readFile(path.join(ROOT, meta.path), "utf8");
+  return { content: [{ type: "text", text }] };
+});
+`
+	for _, tc := range []struct {
+		name, check string
+		want        string
+	}{
+		{"denylist check with throw", `if (id.includes("..")) {
+    throw new Error("no traversal");
+  }`, "needs_review"},
+		{"no check", `// nothing`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.check)}))
+			fs := categoryFindings(res, "path_traversal")
+			if len(fs) == 0 {
+				t.Fatalf("want a path_traversal finding, got %+v", res.Findings)
+			}
+			for _, f := range fs {
+				if string(f.Triage) != tc.want {
+					t.Fatalf("want triage %q, got %q (%s)", tc.want, f.Triage, f.TriageReason)
+				}
+			}
+		})
+	}
+}
+
+// exec on an API client's object is matched by name only; child_process.exec is not
+func TestExecOnAnotherObjectGoesToReview(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+%s
+const server = new McpServer({ name: "x", version: "1" });
+server.tool("run", "Runs a command in the session", async ({ cmd }: { cmd: string }) => {
+  const out = await %s("echo " + cmd);
+  return { content: [{ type: "text", text: String(out) }] };
+});
+`
+	for _, tc := range []struct {
+		name, imp, call, want string
+	}{
+		{"remote API client", `import { Client } from "@example/sdk";
+const client = new Client();`, "client.browsers.process.exec", "needs_review"},
+		{"child_process namespace", `import * as cp from "child_process";`, "cp.exec", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.imp, tc.call)}))
+			fs := categoryFindings(res, "command_injection")
+			if len(fs) == 0 {
+				t.Fatalf("want a command_injection finding, got %+v", res.Findings)
+			}
+			if string(fs[0].Triage) != tc.want {
+				t.Fatalf("want triage %q, got %q (%s)", tc.want, fs[0].Triage, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// A branch check followed by a plain return is not the guard; the containment check that throws is
+func TestGuard_PrefersTheCheckThatRejects(t *testing.T) {
+	src := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFile } from "fs/promises";
+import * as path from "path";
+const server = new McpServer({ name: "x", version: "1" });
+
+async function loadImage(source: string, root: string) {
+  const m = source.match(/^data:.*?;base64,(.+)$/);
+  if (m) {
+    return m[1];
+  }
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, source);
+  const relativePath = path.relative(resolvedRoot, resolvedPath);
+  const escapes = relativePath.startsWith("..") || path.isAbsolute(relativePath);
+  if (escapes) {
+    throw new Error("image source must be inside the working directory");
+  }
+  return (await readFile(resolvedPath)).toString("base64");
+}
+
+server.tool("image", "Creates an image", async ({ source }: { source: string }) => {
+  const data = await loadImage(source, process.cwd());
+  return { content: [{ type: "text", text: data }] };
+});
+`
+	res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": src}))
+	fs := categoryFindings(res, "path_traversal")
+	if len(fs) == 0 {
+		t.Fatalf("want a path_traversal finding to judge, got %+v", res.Findings)
+	}
+	for _, f := range fs {
+		if f.Triage == "needs_review" && !strings.Contains(f.TriageReason, "startsWith") {
+			t.Fatalf("the reason must cite the check that rejects, got %q", f.TriageReason)
+		}
+	}
+}
+
+// Query(**filters) with no receiver and no SQL text is a constructor, not a database handle's
+// method; db.Query(q) with the caller's value stays a plain finding
+func TestBareCallNamedLikeAMethodSinkGoesToReview(t *testing.T) {
+	tmpl := `from mcp.server.fastmcp import FastMCP
+from weave.query import Query
+mcp = FastMCP("x")
+
+@mcp.tool()
+def search(name: str) -> str:
+    """Searches traces"""
+    return str(%s)
+`
+	for _, tc := range []struct{ name, call, want string }{
+		{"constructor", `Query(expr={"$eq": [name]})`, "needs_review"},
+		{"method on a handle", `db.Query("SELECT * FROM t WHERE n = '" + name + "'")`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.call)}))
+			fs := categoryFindings(res, "sql_injection")
+			if len(fs) == 0 {
+				t.Fatalf("want a finding, got %+v", res.Findings)
+			}
+			if string(fs[0].Triage) != tc.want {
+				t.Fatalf("want triage %q, got %q (%s)", tc.want, fs[0].Triage, fs[0].TriageReason)
 			}
 		})
 	}

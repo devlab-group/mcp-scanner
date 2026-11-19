@@ -133,3 +133,35 @@ export function makeContext(server: McpServer) {
 		}
 	}
 }
+
+// registerTool("x", config, trackedTool("x", async () => ...)): the wrapper's inline function is
+// the handler; and the pair, a wrapper call with no function argument, still has none
+func TestDiscover_HandlerWrappedInACall(t *testing.T) {
+	g := buildGraph(t, map[language.ID]map[string]string{
+		language.TypeScript: {
+			"tools.ts": `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+export function register(server: McpServer, trackedTool: any) {
+  server.registerTool(
+    "list_tags",
+    { description: "List all tags" },
+    trackedTool("list_tags", async () => {
+      return { content: [{ type: "text", text: "tags" }] };
+    }),
+  );
+  server.registerTool("ping", { description: "Ping" }, makeDefault("ping"));
+}
+`,
+		},
+	})
+	Discover(g)
+	got := map[string]bool{}
+	for _, c := range g.Capabilities {
+		got[c.Name] = c.Handler != ""
+	}
+	if !got["list_tags"] {
+		t.Fatalf("want list_tags handled by the wrapped inline function, got %+v", g.Capabilities)
+	}
+	if got["ping"] {
+		t.Fatalf("a wrapper call with no function argument must not get a handler, got %+v", g.Capabilities)
+	}
+}

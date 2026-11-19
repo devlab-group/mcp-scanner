@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/devlab-group/mcp-scanner/internal/httpx"
@@ -170,7 +172,7 @@ func (c *HTTPClient) Query(ctx context.Context, coord Coordinate) ([]Vuln, error
 	if c.Client == nil {
 		return nil, fmt.Errorf("osv: no HTTP client configured (use NewHTTPClient, which sets a guarded one)")
 	}
-	resp, err := c.Client.Do(req)
+	resp, err := doWithRetry(c.Client, req)
 	if err != nil {
 		return nil, fmt.Errorf("osv: query %s: %w", coord, err)
 	}
@@ -287,16 +289,9 @@ func (c *HTTPClient) QueryBatch(ctx context.Context, coords []Coordinate) (map[C
 		}
 	}
 
-	full := make(map[string]Vuln, len(wantIDs))
-	for id := range wantIDs {
-		if err := ctx.Err(); err != nil {
-			return out, err
-		}
-		v, err := c.getVuln(ctx, id)
-		if err != nil {
-			return out, fmt.Errorf("osv: fetch advisory %s: %w", id, err)
-		}
-		full[id] = v
+	full, err := c.fetchAll(ctx, wantIDs)
+	if err != nil {
+		return out, err
 	}
 
 	for coord, ids := range idsByCoord {
@@ -332,7 +327,7 @@ func (c *HTTPClient) postQueryBatch(ctx context.Context, coords []Coordinate) ([
 	if c.Client == nil {
 		return nil, fmt.Errorf("osv: no HTTP client configured (use NewHTTPClient, which sets a guarded one)")
 	}
-	resp, err := c.Client.Do(req)
+	resp, err := doWithRetry(c.Client, req)
 	if err != nil {
 		return nil, fmt.Errorf("osv: batch query: %w", err)
 	}
@@ -362,7 +357,7 @@ func (c *HTTPClient) getVuln(ctx context.Context, id string) (Vuln, error) {
 	if c.Client == nil {
 		return Vuln{}, fmt.Errorf("osv: no HTTP client configured (use NewHTTPClient, which sets a guarded one)")
 	}
-	resp, err := c.Client.Do(req)
+	resp, err := doWithRetry(c.Client, req)
 	if err != nil {
 		return Vuln{}, fmt.Errorf("osv: fetch advisory %s: %w", id, err)
 	}
@@ -376,4 +371,106 @@ func (c *HTTPClient) getVuln(ctx context.Context, id string) (Vuln, error) {
 		return Vuln{}, fmt.Errorf("osv: could not parse advisory %s: %w", id, err)
 	}
 	return v, nil
+}
+
+// retryDelays are the waits before each retry of an OSV request. OSV is a public service that
+// sometimes drops a connection or answers 429/5xx; one such blip used to turn a whole scan's
+// dependency check into an analyzer ERROR.
+var retryDelays = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
+
+// doWithRetry sends req, retrying on a transport error or a 429/5xx answer. A canceled or expired
+// context, or any other status, is returned at once. The request body is replayed through
+// GetBody, which http.NewRequest sets for a bytes.Reader body.
+func doWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		r := req
+		if attempt > 0 {
+			r = req.Clone(req.Context())
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				r.Body = body
+			}
+		}
+		resp, err := client.Do(r)
+		retryable := false
+		switch {
+		case err != nil:
+			retryable = req.Context().Err() == nil
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+			retryable = true
+		}
+		if !retryable || attempt >= len(retryDelays) {
+			return resp, err
+		}
+		if resp != nil {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+			resp.Body.Close()
+		}
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-time.After(retryDelays[attempt]):
+		}
+	}
+}
+
+// advisoryWorkers is how many advisories are fetched at once. They were fetched one by one, so a
+// tree with a few hundred matches spent minutes on round trips, and a slow OSV made it many more.
+const advisoryWorkers = 8
+
+// fetchAll fetches every advisory id, advisoryWorkers at a time; the first failure cancels the rest
+func (c *HTTPClient) fetchAll(ctx context.Context, ids map[string]bool) (map[string]Vuln, error) {
+	list := make([]string, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	sort.Strings(list)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		full     = make(map[string]Vuln, len(list))
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	jobs := make(chan string)
+	for range min(advisoryWorkers, len(list)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				v, err := c.getVuln(ctx, id)
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("osv: fetch advisory %s: %w", id, err)
+						cancel()
+					}
+				} else {
+					full[id] = v
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+feed:
+	for _, id := range list {
+		select {
+		case jobs <- id:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return full, firstErr
+	}
+	if err := ctx.Err(); err != nil && len(full) < len(list) {
+		return full, err
+	}
+	return full, nil
 }

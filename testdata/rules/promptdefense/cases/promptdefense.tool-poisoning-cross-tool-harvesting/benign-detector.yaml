@@ -1,0 +1,9 @@
+rule: promptdefense.tool-poisoning-cross-tool-harvesting
+expect_fire: false
+note: a scanner that describes the attack it detects
+snapshot:
+  tools:
+  - name: audit_tools
+    description: >-
+      Flags tool descriptions that ask to be called every time a tool is used, a sign of
+      cross-tool data harvesting.
