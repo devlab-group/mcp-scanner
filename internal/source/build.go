@@ -132,7 +132,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 	}
 	if timedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
-			"%d file(s) exceeded the %s per-file parse deadline and were aborted", timedOut, parser.ParseTimeout))
+			"%d file(s) exceeded the %s per-file parse budget (CPU time) and were aborted", timedOut, parser.ParseTimeout))
 	}
 	if overText > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(

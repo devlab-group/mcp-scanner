@@ -63,7 +63,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 
 	var warnings []string
 	status := model.AnalyzerCompleted
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || tc.workLimitHit {
 		status = model.AnalyzerPartial
 	}
 	if walkCoverageMissing {
@@ -281,9 +281,14 @@ func taintCoverage(g *graph.Graph, tc *ctx) model.Coverage {
 			"%d file(s) reached by the taint walk exceeded the %d byte size limit and were read and parsed only up to it",
 			tc.sizeCapped, tc.sizeCap))
 	}
+	if tc.workLimitHit {
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"the taint walk visited more than %d syntax nodes and stopped between functions; the functions after that point in the tree's fixed order were not traced (the same on every machine)",
+			workLimit))
+	}
 	if tc.parseTimedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
-			"%d file(s) reached by the taint walk exceeded its own %s per-file parse deadline and were not traced",
+			"%d file(s) reached by the taint walk exceeded its own %s per-file parse budget (CPU time) and were not traced",
 			tc.parseTimedOut, parser.ParseTimeout))
 	}
 	// A file the walk reached and could not reopen, could not get a parser for, or could not
@@ -345,6 +350,22 @@ func (*Analyzer) Describe() analyzer.Description {
 	}
 }
 
+// TaintWorkLimit is how many syntax nodes the taint walk visits before it stops between symbols.
+// The largest trees in the regression set need about 7.5 million; the limit leaves room above that.
+// Counting work, not time, makes the cut point the same on any machine.
+const TaintWorkLimit = 25_000_000
+
+// workLimit defaults to TaintWorkLimit; tests lower it
+var workLimit uint64 = TaintWorkLimit
+
+// overWorkLimit records and reports that the walk has done its share of work
+func (c *ctx) overWorkLimit() bool {
+	if c.work > workLimit {
+		c.workLimitHit = true
+	}
+	return c.workLimitHit
+}
+
 // walkAll seeds every handler, then walks every function no handler reached
 func (c *ctx) walkAll(ctx context.Context) {
 	// Seed every handler from its own capability, even if another trace already reached it. That
@@ -353,7 +374,7 @@ func (c *ctx) walkAll(ctx context.Context) {
 	// stand for every later one, so map order would decide which handler a finding names
 	ordered := orderedSymbols(c.g)
 	for _, sym := range ordered {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || c.overWorkLimit() {
 			break
 		}
 		if seed := c.seedFor(sym); seed != nil {
@@ -364,7 +385,7 @@ func (c *ctx) walkAll(ctx context.Context) {
 	// own (an environment variable, a file, an HTTP response) and reach a
 	// sink entirely within itself, with no handler involved
 	for _, sym := range ordered {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || c.overWorkLimit() {
 			break
 		}
 		if c.visitedSyms[sym.ID] {

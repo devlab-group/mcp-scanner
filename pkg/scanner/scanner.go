@@ -62,6 +62,12 @@ type Options struct {
 	ScannerVersion string
 }
 
+// DefaultAnalyzerTimeout bounds one analyzer when nothing else is configured. It is set well
+// above what the largest trees take on an idle machine (about a minute), so that a loaded host -
+// where the same work takes longer on the clock - does not cut an analyzer short and change what
+// the scan reports. An analyzer that still reaches it is reported PARTIAL with a warning.
+const DefaultAnalyzerTimeout = 5 * time.Minute
+
 // DiscoveryFailedPrefix starts per-analyzer Scan errors when target preparation fails. API
 // frontends use it to recognize messages that may contain host or caller-supplied paths.
 const DiscoveryFailedPrefix = "target discovery failed:"
@@ -77,7 +83,7 @@ func (o *Options) defaults() {
 		o.Timeout = 10 * time.Minute
 	}
 	if o.AnalyzerTimeout <= 0 {
-		o.AnalyzerTimeout = 2 * time.Minute
+		o.AnalyzerTimeout = DefaultAnalyzerTimeout
 	}
 	if o.Concurrency < 1 {
 		o.Concurrency = 1

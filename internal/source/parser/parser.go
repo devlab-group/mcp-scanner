@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 )
 
-// ParseTimeout is the per-file deadline shared by parsing and extraction.
-// A progress callback checks it during cgo parsing, and tree-sitter queries use
-// the remaining time as their timeout because Go cannot preempt that C work.
-// Extraction also checks the deadline to bound work on hostile syntax trees.
+// ParseTimeout is the per-file CPU-time budget shared by parsing and extraction: the CPU time of
+// the thread doing the work, not the time on the clock. It bounds work on hostile syntax trees.
 const ParseTimeout = 5 * time.Second
+
+// ParseWallSafety is the wall-clock limit behind the CPU budget, far above it, for a host where
+// even the CPU budget would take too long; it also bounds tree-sitter queries
+const ParseWallSafety = 60 * time.Second
+
+// wallSafety defaults to ParseWallSafety; tests lower it
+var wallSafety = ParseWallSafety
 
 // CopiedTextFactor sets the size-dependent budget for copied call text;
 // collectCalls adds a fixed allowance. Source spans share the file buffer, but
@@ -43,12 +49,12 @@ const MaxTreeDepth = 1 << 15
 // by Build as a resource limit in Coverage.LimitsHit
 var ErrDepthLimit = errors.New("syntax tree exceeded the per-file depth limit")
 
-// parseDeadline defaults to ParseTimeout; tests shorten it to avoid depending on machine speed
+// parseDeadline defaults to ParseTimeout; tests shorten it
 var parseDeadline = ParseTimeout
 
 // ErrParseTimeout means parsing or extraction exceeded the per-file deadline
 // and is reported by Build as a resource limit in Coverage.LimitsHit
-var ErrParseTimeout = errors.New("parse exceeded its per-file deadline")
+var ErrParseTimeout = errors.New("parse exceeded its per-file CPU-time budget")
 
 // FileResult is what parsing one file produces, before cross-file resolution
 type FileResult struct {
@@ -82,18 +88,35 @@ type localSymbol struct {
 	end   uint
 }
 
-// budget shares one deadline across parsing and extraction. Extraction checks
-// elapsed time; parsing also checks the scan context, as Build does between files.
+// budget bounds the work spent on one file across parsing and extraction by the CPU time of the
+// thread doing it. CPU time does not grow while the thread waits for a busy machine, so the same
+// file is cut at about the same point under any load; wall-clock time was not, and a loaded host
+// dropped large files that an idle one parsed. Where thread CPU time is unavailable the budget is
+// wall-clock time. A wall-clock deadline far above the CPU budget stays as a safety net, and is
+// what bounds tree-sitter queries, which run in C and cannot report progress.
 type budget struct {
-	deadline time.Time
+	cpuStart time.Duration
+	cpuOK    bool
+	wallEnd  time.Time
+	start    time.Time
 }
 
 func newBudget() budget {
-	return budget{deadline: time.Now().Add(parseDeadline)}
+	cpu, ok := threadCPU()
+	now := time.Now()
+	return budget{cpuStart: cpu, cpuOK: ok, start: now, wallEnd: now.Add(wallSafety)}
 }
 
 func (b budget) spent() bool {
-	return time.Now().After(b.deadline)
+	if time.Now().After(b.wallEnd) {
+		return true
+	}
+	if b.cpuOK {
+		if cpu, ok := threadCPU(); ok {
+			return cpu-b.cpuStart > parseDeadline
+		}
+	}
+	return time.Since(b.start) > parseDeadline
 }
 
 func (b budget) err() error {
@@ -103,18 +126,53 @@ func (b budget) err() error {
 	return nil
 }
 
-// matches gives q the remaining wall-clock budget. Time spent by the caller
-// between Next calls counts toward the timeout; Next stops returning matches
-// after the timeout is detected.
+// maxLoadFactor caps how much longer on the clock than in CPU time a query may run
+const maxLoadFactor = 4
+
+// matches gives q a wall-clock timeout, since a query runs in C and the CPU budget cannot stop it:
+// the CPU budget left, times how much longer on the clock than in CPU time this file's work has
+// taken so far (1 on an idle machine, more on a loaded one, at most maxLoadFactor), within the
+// wall-clock safety limit. An idle host ends a hostile query where the CPU budget ends; a loaded
+// one does not cut an ordinary query short. The CPU budget is checked again by err.
 func (b budget) matches(qc *sitter.QueryCursor, q *sitter.Query, root *sitter.Node, src []byte) sitter.QueryMatches {
+	limit := time.Until(b.wallEnd)
+	if left, ok := b.cpuLeft(); ok {
+		limit = min(limit, time.Duration(float64(left)*b.loadFactor()))
+	}
 	// Zero would mean no timeout at all
-	qc.SetTimeoutMicros(uint64(max(time.Until(b.deadline).Microseconds(), 1)))
+	qc.SetTimeoutMicros(uint64(max(limit.Microseconds(), 1)))
 	return qc.Matches(q, root, src)
+}
+
+// loadFactor is wall-clock time over thread CPU time spent on this file so far, between 1 and
+// maxLoadFactor; 1 until enough CPU time has been spent to measure it
+func (b budget) loadFactor() float64 {
+	if !b.cpuOK {
+		return 1
+	}
+	cpu, ok := threadCPU()
+	used := cpu - b.cpuStart
+	if !ok || used < 20*time.Millisecond {
+		return 1
+	}
+	return min(max(float64(time.Since(b.start))/float64(used), 1), maxLoadFactor)
+}
+
+// cpuLeft is the CPU budget not used yet, or the wall-clock budget left where CPU time is unavailable
+func (b budget) cpuLeft() (time.Duration, bool) {
+	if b.cpuOK {
+		if cpu, ok := threadCPU(); ok {
+			return max(parseDeadline-(cpu-b.cpuStart), 0), true
+		}
+	}
+	return max(parseDeadline-time.Since(b.start), 0), true
 }
 
 // ParseTree returns a raw tree under ParseTimeout and context cancellation. The caller owns a
 // non-nil returned tree and must Close it.
 func ParseTree(ctx context.Context, adapter *language.Adapter, src []byte) (*sitter.Tree, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	return parseTree(ctx, newBudget(), adapter, src)
 }
 
@@ -186,6 +244,9 @@ func checkDepth(b budget, root *sitter.Node) error {
 // cancellation returns an error; local syntax damage may still return a result whose syntax-error
 // flag becomes a coverage gap.
 func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src []byte) (*FileResult, error) {
+	// the CPU budget reads this thread's CPU time, so the work must stay on it
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	b := newBudget()
 	tree, err := parseTree(ctx, b, adapter, src)
 	if err != nil {

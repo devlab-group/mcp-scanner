@@ -203,6 +203,10 @@ type ctx struct {
 
 	// runCtx carries cancellation into taint's own reparsing
 	runCtx context.Context
+	// work counts the syntax nodes the walk has visited; walkAll stops between symbols once it
+	// passes workLimit, so where a very large tree is cut depends on the tree, not on the machine
+	work         uint64
+	workLimitHit bool
 
 	// These counters describe taint's own capped, timed-out, or unreadable
 	// reparses. They become limits, not capability skips.
@@ -871,12 +875,13 @@ var branchKinds = map[string]bool{
 }
 
 func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n *sitter.Node, depth int, conditional bool) {
+	c.work++
 	grammar := pf.adapter.Grammar
 	if restore := blockScope(pf, tainted, n); restore != nil {
 		defer restore()
 	}
 	if c.retCapture != nil {
-		defer c.captureReturn(pf, n, tainted)
+		defer c.captureReturn(pf, file, n, tainted)
 	}
 	switch {
 	case slices.Contains(grammar.AssignKinds, n.Kind()):
@@ -945,6 +950,71 @@ func mappingGet(calleeText string, receiver parser.Receiver, args []graph.Arg, t
 	}
 	_, ok := mentionsAny(recv, tainted, "")
 	return ok
+}
+
+// httpRequestIn reports whether an expression or its receiver chain makes an HTTP request
+func (c *ctx) httpRequestIn(pf *parsedFile, n *sitter.Node) bool {
+	found := false
+	var visit func(x *sitter.Node, depth int)
+	visit = func(x *sitter.Node, depth int) {
+		if found || x == nil || depth > 6 || isFunctionLikeNode(x) {
+			return
+		}
+		if slices.Contains(pf.adapter.Grammar.CallKinds, x.Kind()) {
+			calleeText, _, _ := parser.CalleeAndArgs(pf.adapter.ID, x, pf.src)
+			if sink, ok := matchSink(sinkCallee(calleeText)); ok && sink.category == "ssrf" {
+				found = true
+				return
+			}
+		}
+		for i := range x.NamedChildCount() {
+			visit(x.NamedChild(i), depth+1)
+		}
+	}
+	visit(unwrapAwait(n), 0)
+	return found
+}
+
+func fixedHostAnswerReview(host string) string {
+	return fmt.Sprintf("the value is the answer of a request to a fixed host (%s); the caller chose only what was asked, so whether that service can return an address or path the caller controls decides between a real issue and noise", host)
+}
+
+// fixedHostRequestIn finds, in an expression or the receiver chain it starts from, an HTTP request
+// whose URL argument fixes the host before any tainted text, and returns that call's text
+func (c *ctx) fixedHostRequestIn(pf *parsedFile, file string, n *sitter.Node, tainted map[string]taintInfo) (string, bool) {
+	var found string
+	var visit func(x *sitter.Node, depth int)
+	visit = func(x *sitter.Node, depth int) {
+		if found != "" || x == nil || depth > 6 || isFunctionLikeNode(x) {
+			return
+		}
+		if slices.Contains(pf.adapter.Grammar.CallKinds, x.Kind()) {
+			calleeText, _, args := parser.CalleeAndArgs(pf.adapter.ID, x, pf.src)
+			if sink, ok := matchSink(sinkCallee(calleeText)); ok && sink.category == "ssrf" {
+				if a, ok := sinkArg(args, max(sink.argIndex, 0), "ssrf"); ok {
+					if an := argNode(x, a, pf.src); an != nil {
+						if _, hit := mentionsAny(a.Text, tainted, ""); hit && c.urlHostFixed(pf, file, an, tainted) {
+							found = calleeText
+							return
+						}
+					}
+				}
+			}
+		}
+		for i := range x.NamedChildCount() {
+			visit(x.NamedChild(i), depth+1)
+		}
+	}
+	visit(unwrapAwait(n), 0)
+	return found, found != ""
+}
+
+func isFunctionLikeNode(n *sitter.Node) bool {
+	switch n.Kind() {
+	case "function_definition", "function_declaration", "method_definition", "arrow_function", "function_expression", "func_literal", "lambda", "lambda_expression", "closure_expression":
+		return true
+	}
+	return false
 }
 
 // goDecoders write what they decode into the variable whose address they are given
@@ -1729,7 +1799,31 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		if !isSource && aliased {
 			detail, isSource = matchSource(maskLiteralText(matchText))
 		}
+		if isSource && c.summaryDepth > 0 {
+			// A summary follows one parameter: what an HTTP response, a file or the environment adds
+			// is not that parameter, so the call is only a call that may pass the parameter on
+			isSource = false
+		}
 		if isSource {
+			if _, from, hit := c.taintedArgOrReceiver(file, receiver, args, tainted, ""); hit && c.httpRequestIn(pf, rhs) {
+				// The caller's value went into the request, so the answer stays tied to it. From a fixed
+				// host - fetch(`https://api.figma.com/v1/images/${fileId}`) - it is that service's
+				// answer, for a person to judge; from a host the caller chose it is the caller's own
+				// content, as much under their control as the argument itself.
+				detail := "the answer of a request to an address the caller chose"
+				host, fixed := c.fixedHostRequestIn(pf, file, rhs, tainted)
+				if fixed {
+					detail = "the answer of a request to a fixed host"
+				}
+				info := from.extend(model.FlowStep{
+					Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true, Detail: detail,
+				}, 1)
+				if fixed && info.review == "" {
+					info.review = fixedHostAnswerReview(host)
+				}
+				setTaint(tainted, targets, info, conditional)
+				return
+			}
 			info := taintInfo{confidence: 1, chain: []model.FlowStep{{
 				Kind: "source", Symbol: calleeText, File: file, Line: line, Detail: detail, Resolved: true,
 			}}}
@@ -1741,6 +1835,12 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		if !ok {
 			clearTaint(tainted, targets, conditional)
 			return
+		}
+		if host, ok := c.fixedHostRequestIn(pf, file, rhs, tainted); ok && from.review == "" {
+			// r = await fetch(`https://api.figma.com/v1/images/${id}`), meta = requests.get(
+			// f"https://api.github.com/repos/{repo}").json(): the value is what that service
+			// answered; the caller chose only what to ask, not what comes back
+			from.review = fixedHostAnswerReview(host)
 		}
 
 		sym, resolved := c.resolveCallee(file, calleeText)
@@ -1843,7 +1943,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 	// Attribute, index, or member access can carry a source value without being a call itself,
 	// as in `requests.get(u).text`, `os.environ["JOB"]`, or `process.env.JOB`. String contents
 	// are blanked first: a description that says "fetch the next page" reads nothing
-	if detail, ok := matchSource(maskLiteralText(text)); ok {
+	if detail, ok := matchSource(maskLiteralText(text)); ok && c.summaryDepth == 0 {
 		setTaint(tainted, targets, taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: strings.TrimSpace(text), File: file, Line: line, Detail: detail, Resolved: true,
 		}}}, conditional)
@@ -2373,9 +2473,22 @@ func (c *ctx) fixedHostArgs(pf *parsedFile, file string, call *sitter.Node, sym 
 		if !ok {
 			continue
 		}
-		if an := argNode(call, a, pf.src); an != nil && c.urlHostFixed(pf, file, an, tainted) {
-			seed[sym.Params[i]] = info.clearFor("ssrf")
+		an := argNode(call, a, pf.src)
+		if an == nil {
+			continue
 		}
+		if c.urlHostFixed(pf, file, an, tainted) {
+			info = info.clearFor("ssrf")
+		}
+		if cats, rv, ok := c.exprSummary(pf, file, an, tainted); ok {
+			// write_state(state_path(sid), data): the argument is a project function's result, and
+			// that function's returns are cleared (or escaped) - the parameter starts that way
+			info.clearedFor = mergeClearedFor(info.clearedFor, cats)
+			if rv != "" && info.review == "" {
+				info.review = rv
+			}
+		}
+		seed[sym.Params[i]] = info
 	}
 	return seed
 }

@@ -137,13 +137,17 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
 func (d Duration) Std() time.Duration        { return time.Duration(d) }
 
+// DefaultAnalyzerTimeout is the per-analyzer limit used when nothing is configured; see
+// scanner.DefaultAnalyzerTimeout for why it sits well above an idle machine's longest run
+const DefaultAnalyzerTimeout = 5 * time.Minute
+
 // Defaults returns the configuration used when nothing is specified
 func Defaults() Config {
 	return Config{
 		BlockingSeverity: string(model.DefaultBlockingSeverity),
 		ActiveProbes:     string(analyzer.ProbeSafe),
 		Timeout:          Duration(10 * time.Minute),
-		AnalyzerTimeout:  Duration(2 * time.Minute),
+		AnalyzerTimeout:  Duration(DefaultAnalyzerTimeout),
 		Concurrency:      4,
 		Runtime: RuntimeConfig{
 			Backend:  "docker",

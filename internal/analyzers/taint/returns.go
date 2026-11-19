@@ -75,6 +75,9 @@ func (c *ctx) returnSummary(sym *graph.Symbol, param string) *retSummary {
 	c.retCapture, c.retFunc, c.retSeen = prevCapture, prevFunc, prevSeen
 
 	if len(captured) == 0 {
+		// The walk skips subtrees that mention nothing tainted, so it may never reach a return;
+		// count the function's own returns from its syntax tree as well
+		seen = max(seen, valueReturns(pf, def, body))
 		if seen == 0 || storesParam(body.Utf8Text(pf.src), param) {
 			return nil
 		}
@@ -184,7 +187,7 @@ func (c *ctx) callResultCleared(sym *graph.Symbol, args []graph.Arg, tainted map
 
 // captureReturn records the taint of a return statement's value while a summary is being built,
 // for returns of the summarized function itself
-func (c *ctx) captureReturn(pf *parsedFile, n *sitter.Node, tainted map[string]taintInfo) {
+func (c *ctx) captureReturn(pf *parsedFile, file string, n *sitter.Node, tainted map[string]taintInfo) {
 	if c.retCapture == nil || !slices.Contains(pf.adapter.Grammar.ReturnKinds, n.Kind()) {
 		return
 	}
@@ -211,8 +214,39 @@ func (c *ctx) captureReturn(pf *parsedFile, n *sitter.Node, tainted map[string]t
 			// return fmt.Sprintf("SHOW CREATE TABLE %s;", d.QuoteIdentifier(table))
 			info.review = escapedReview(why)
 		}
+		if cats, rv, ok := c.exprSummary(pf, file, v, tainted); ok {
+			// return STATE / ("skip." + re.sub(r"[^A-Za-z0-9_-]", "_", sid)), return base + clean(p):
+			// the value is used only through rebuilds or cleared project functions
+			info.clearedFor = mergeClearedFor(info.clearedFor, cats)
+			if rv != "" && info.review == "" {
+				info.review = rv
+			}
+		}
 		*c.retCapture = append(*c.retCapture, info)
 	}
+}
+
+// valueReturns counts the return statements with a value that belong to def itself, not to a
+// function nested in it
+func valueReturns(pf *parsedFile, def, body *sitter.Node) int {
+	n := 0
+	var visit func(x *sitter.Node)
+	visit = func(x *sitter.Node) {
+		if x == nil {
+			return
+		}
+		if x != body && x != def && isFunctionLikeNode(x) {
+			return
+		}
+		if slices.Contains(pf.adapter.Grammar.ReturnKinds, x.Kind()) && x.NamedChildCount() > 0 {
+			n++
+		}
+		for i := range x.NamedChildCount() {
+			visit(x.NamedChild(i))
+		}
+	}
+	visit(body)
+	return n
 }
 
 // storesParam reports whether a function body may hand param on other than by returning it: stores
@@ -258,6 +292,25 @@ func (c *ctx) exprSummary(pf *parsedFile, file string, an *sitter.Node, tainted 
 	var all map[string]bool
 	var visit func(n *sitter.Node)
 	visit = func(n *sitter.Node) {
+		if slices.Contains(pf.adapter.Grammar.CallKinds, n.Kind()) && allowlistRebuild(n.Utf8Text(pf.src)) != "" {
+			// "skip." + re.sub(r"[^A-Za-z0-9_-]", "_", sid): an allowlist rebuild inside the
+			// expression leaves no separator, dot or metacharacter of the value
+			spans = append(spans, span{n.StartByte() - base, n.EndByte() - base})
+			rebuilt := []string{"path_traversal", "command_injection", "sql_injection"}
+			if all == nil {
+				all = map[string]bool{}
+				for _, k := range rebuilt {
+					all[k] = true
+				}
+			} else {
+				for k := range all {
+					if !slices.Contains(rebuilt, k) {
+						delete(all, k)
+					}
+				}
+			}
+			return
+		}
 		if slices.Contains(pf.adapter.Grammar.CallKinds, n.Kind()) {
 			calleeText, _, args := parser.CalleeAndArgs(pf.adapter.ID, n, pf.src)
 			if cl, rv, good := c.summarizeCall(c.summaryCandidates(file, calleeText), args, tainted); good && (len(cl) > 0 || rv != "") {
