@@ -199,6 +199,9 @@ func titleCallee(text string) string {
 // as a shell command) and is prepended to the traced-path description
 // rather than replacing it
 func (c *ctx) emit(category string, severity model.Severity, calleeText string, info taintInfo, file string, line int, note string) {
+	if c.summaryDepth > 0 {
+		return
+	}
 	desc := describePath(info.chain)
 	if note != "" {
 		desc = note + ". Path: " + desc

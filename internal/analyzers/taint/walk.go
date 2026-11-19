@@ -240,6 +240,13 @@ type ctx struct {
 	// walked"
 	visitedSyms map[graph.SymbolID]bool
 
+	// Return-value summaries (returns.go): summaryDepth > 0 while a summary walk runs silently,
+	// retCapture collects the returned values' taint, retFunc is the function being summarized
+	summaryDepth int
+	retCapture   *[]taintInfo
+	retFunc      *sitter.Node
+	retSummaries map[retKey]*retSummary
+
 	// aliases maps local names bound directly to known sinks or promisify wrappers. Module aliases
 	// and sinks passed as values are the other two shapes that rewrite sink text before matching.
 	aliases map[fileAlias]string
@@ -290,6 +297,7 @@ func newCtx(runCtx context.Context, g *graph.Graph) *ctx {
 		replays:       map[seedKey]int{},
 		seedCounts:    map[graph.SymbolID]int{},
 		visitedSyms:   map[graph.SymbolID]bool{},
+		retSummaries:  map[retKey]*retSummary{},
 		seeded:        map[graph.SymbolID]bool{},
 		aliases:       map[fileAlias]string{},
 		moduleAliases: map[fileAlias]string{},
@@ -697,6 +705,20 @@ func (c *ctx) analyzeSymbol(sym *graph.Symbol, seed map[string]taintInfo, depth 
 		c.depthCapHit = true
 		return
 	}
+	if scalar := c.goScalarParams(sym); len(scalar) > 0 && len(seed) > 0 {
+		// func list(id string, withLast bool): Go's compiler guarantees a bool or a number in
+		// withLast, which carries no text into a query, a path or a command
+		kept := make(map[string]taintInfo, len(seed))
+		for k, v := range seed {
+			if !scalar[k] {
+				kept[k] = v
+			}
+		}
+		if len(kept) == 0 {
+			return
+		}
+		seed = kept
+	}
 	key := seedKeyFor(sym.ID, seed)
 	if c.visited[key] {
 		// The same shape was walked from another caller; its findings still hold for this one,
@@ -834,6 +856,9 @@ func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n 
 	grammar := pf.adapter.Grammar
 	if restore := blockScope(pf, tainted, n); restore != nil {
 		defer restore()
+	}
+	if c.retCapture != nil {
+		defer c.captureReturn(pf, n, tainted)
 	}
 	switch {
 	case slices.Contains(grammar.AssignKinds, n.Kind()):
@@ -1487,6 +1512,27 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			return
 		}
 	}
+	if info, ok := hexOnly(rhs.Utf8Text(pf.src), tainted); ok {
+		// key = name.encode().hex(), digest = sha256(x).hexdigest(): only hex digits remain
+		setTaint(tainted, targets, info.extend(model.FlowStep{
+			Kind: "sanitizer", Symbol: "hex encoding", File: file, Line: line, Resolved: true,
+			Detail: "the value is hex-encoded: only 0-9 and a-f remain",
+		}, 1), conditional)
+		return
+	}
+	if rebuilt := allowlistRebuild(rhs.Utf8Text(pf.src)); rebuilt != "" {
+		if info, ok := mentionsAny(rebuilt, tainted, ""); ok {
+			// "".join(c if c.isalnum() else "-" for c in name), re.sub(r"[^A-Za-z0-9_-]", "", name):
+			// only letters, digits, "_" and "-" survive
+			info = info.extend(model.FlowStep{
+				Kind: "sanitizer", Symbol: "allowlist rebuild", File: file, Line: line, Resolved: true,
+				Detail: "the value is rebuilt from letters, digits, \"_\" and \"-\" only",
+			}, 1)
+			info.clearedFor = mergeClearedFor(info.clearedFor, []string{"path_traversal", "command_injection", "sql_injection"})
+			setTaint(tainted, targets, info, conditional)
+			return
+		}
+	}
 	// Clear SSRF taint when a fixed prefix closes the URL's host before computed text begins
 	fixedHost := c.urlHostFixed(pf, file, rhs, tainted)
 
@@ -1593,10 +1639,28 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			info.clearedFor = withoutCategory(info.clearedFor, "path_traversal")
 			info.normalized = false
 		}
+		if resolved && kind == "transform" && c.goScalarResult(sym) {
+			// flag := boolArgument(req, "force"): a Go function declared to return a bool or a number
+			// hands back no text, whatever it was given
+			clearTaint(tainted, targets, conditional)
+			c.recurseInto(sym, c.fixedHostArgs(pf, file, rhs, sym, args, tainted, c.seedArgs(sym, args, tainted, step, mult)), depth)
+			return
+		}
+		if resolved && kind == "transform" {
+			if cats := c.callResultCleared(sym, args, tainted); len(cats) > 0 {
+				// resolve(name) returns name only after its own check: the result is cleared for
+				// what every return of the function clears
+				info = info.extend(model.FlowStep{
+					Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Resolved: true,
+					Detail: "the function returns the value only after checking or rebuilding it (" + strings.Join(cats, ", ") + ")",
+				}, 1)
+				info.clearedFor = mergeClearedFor(info.clearedFor, cats)
+			}
+		}
 		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 
 		if resolved {
-			c.recurseInto(sym, c.fixedHostArgs(pf, file, rhs, sym, args, tainted, seedFromArgs(sym, args, tainted, step, mult)), depth)
+			c.recurseInto(sym, c.fixedHostArgs(pf, file, rhs, sym, args, tainted, c.seedArgs(sym, args, tainted, step, mult)), depth)
 		}
 		return
 	}
@@ -1612,6 +1676,14 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		return
 	}
 	if info, ok := propagatedTaint(text, tainted); ok {
+		if cats, rv, sum := c.exprSummary(pf, file, rhs, tainted); sum {
+			// backup_id = f"{prefix(url_path)}{stamp}.json": the tainted value is used only through
+			// project functions whose returns are cleared (or escaped)
+			info.clearedFor = mergeClearedFor(info.clearedFor, cats)
+			if rv != "" && info.review == "" {
+				info.review = rv
+			}
+		}
 		if isComposition(pf, rhs) {
 			info = info.extend(model.FlowStep{
 				Kind: "transform", Symbol: titleCallee(text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
@@ -1829,6 +1901,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if sinkFound && sink.text == "exec" && pf.adapter.ID == language.Go && strings.TrimSpace(sinkText) != "exec" {
+		// exec.LookPath, exec.ExitError: Go's os/exec package name, not a shell exec. Go starts a
+		// process only through exec.Command(Context), which the argv rules handle
+		sinkFound = false
+	}
 	if sinkFound && sink.category == "command_injection" && parser.LastSegment(sinkText) == "exec" && sqlExecReceiver(sinkText) {
 		// this.sql.exec(query, ...bindings) and db.exec(sql) run SQL, not a process
 		sink = sinkPattern{text: "exec", category: "sql_injection", severity: model.SeverityHigh, argIndex: 0}
@@ -1900,6 +1977,16 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// literal is some other API: a URL or a query string is never a closure, while
 				// sync.Once.Do(func() {...}) and errgroup-style Do(fn) take exactly that
 				info, found = mentionsAny(a.Text, tainted, sink.category)
+				if found {
+					// open(locate(name)): the argument is a project function's result, and every
+					// return of that function is cleared for this sink's category - or escapes the
+					// value through the project's own function, which goes to review
+					if cl, rv := c.argCallVerdict(pf, file, argNode(n, a, pf.src), tainted, sink.category); cl {
+						found = false
+					} else if rv != "" && info.review == "" {
+						info.review = rv
+					}
+				}
 				if found && sink.category == "sql_injection" && pf.adapter.ID == language.Python && c.sqlalchemyStatement(file, a.Text, enclosingFunctionText(pf, n)) {
 					// session.execute(update(T).where(T.id == x)): a SQLAlchemy statement binds x as a
 					// parameter; only text(), literal_column() or a built string would make it SQL
@@ -1941,6 +2028,30 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		} else {
 			var idx int
 			idx, info, found = c.taintedArgOrReceiver(file, receiver, args, tainted, sink.category)
+			if found && idx >= 0 && idx < len(args) {
+				if _, rv := c.argCallVerdict(pf, file, argNode(n, args[idx], pf.src), tainted, sink.category); rv != "" && info.review == "" {
+					info.review = rv
+				}
+			}
+			if found && idx >= 0 && idx < len(args) && c.argCallClears(pf, file, argNode(n, args[idx], pf.src), tainted, sink.category) {
+				// open(locate(name)): the tainted argument is a project function's result, and every
+				// return of that function is cleared for this sink's category
+				found = false
+				for j, a := range args {
+					if j == idx {
+						continue
+					}
+					if i2, ok := mentionsAny(a.Text, tainted, sink.category); ok && !c.argCallClears(pf, file, argNode(n, a, pf.src), tainted, sink.category) {
+						info, found = i2, true
+						break
+					}
+				}
+			}
+			if found && idx < 0 && c.argCallClears(pf, file, receiverNode(n), tainted, sink.category) {
+				// locate(name).read_text(): the receiver is a project function's result, and every
+				// return of that function is cleared for this sink's category
+				found = false
+			}
 			composedReceiver := found && idx < 0 && receiverComposed(receiver)
 			if composedReceiver || (found && idx >= 0 && idx < len(args) && isComposition(pf, argNode(n, args[idx], pf.src))) {
 				what := receiver.Text
@@ -2021,7 +2132,9 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// imports; nothing else here can choose
 		if len(c.idx[parser.LastSegment(calleeText)]) > 1 {
 			if _, _, found := c.taintedArgOrReceiver(file, receiver, args, tainted, ""); found {
-				c.ambiguousCalls++
+				if c.summaryDepth == 0 {
+					c.ambiguousCalls++
+				}
 			}
 		}
 		return
@@ -2038,7 +2151,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
 		Detail: "passes tainted input into another function",
 	}
-	c.recurseInto(sym, c.fixedHostArgs(pf, file, n, sym, args, tainted, seedFromArgs(sym, args, tainted, step, 0.9)), depth)
+	c.recurseInto(sym, c.fixedHostArgs(pf, file, n, sym, args, tainted, c.seedArgs(sym, args, tainted, step, 0.9)), depth)
 }
 
 // fixedHostArgs clears SSRF from a parameter whose argument fixes the host before any computed
@@ -2136,6 +2249,89 @@ func seedFromArgs(sym *graph.Symbol, args []graph.Arg, tainted map[string]taintI
 	return seed
 }
 
+// seedArgs is seedFromArgs plus variadic parameters: CallProcedure(proc, "--soft", rev) with
+// func CallProcedure(proc string, args ...string), def run(cmd, *argv) or function f(a, ...rest)
+// sends every argument from the variadic position on to that one parameter
+func (c *ctx) seedArgs(sym *graph.Symbol, args []graph.Arg, tainted map[string]taintInfo, step model.FlowStep, mult float64) map[string]taintInfo {
+	seed := seedFromArgs(sym, args, tainted, step, mult)
+	if sym == nil || len(args) <= len(sym.Params) {
+		return seed
+	}
+	v := c.variadicParam(sym)
+	if v == "" {
+		return seed
+	}
+	for _, a := range args[len(sym.Params):] {
+		if info, ok := mentionsAny(a.Text, tainted, ""); ok {
+			if _, have := seed[v]; !have {
+				if seed == nil {
+					seed = map[string]taintInfo{}
+				}
+				seed[v] = info.extend(step, mult)
+			}
+		}
+	}
+	return seed
+}
+
+// variadicParam is the name of a function's trailing variadic parameter, or ""
+func (c *ctx) variadicParam(sym *graph.Symbol) string {
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil {
+		return ""
+	}
+	list := parser.ParamList(node)
+	if list == nil || list.NamedChildCount() == 0 {
+		return ""
+	}
+	last := list.NamedChild(list.NamedChildCount() - 1)
+	if last == nil {
+		return ""
+	}
+	switch last.Kind() {
+	case "variadic_parameter_declaration", "list_splat_pattern", "rest_pattern", "required_parameter", "rest_parameter":
+	default:
+		return ""
+	}
+	text := strings.TrimSpace(last.Utf8Text(pf.src))
+	if !strings.Contains(text, "...") && !strings.HasPrefix(text, "*") {
+		return ""
+	}
+	if strings.HasPrefix(text, "**") {
+		return ""
+	}
+	bs := parser.ParamBindings(pf.adapter.ID, last, pf.src)
+	if len(bs) != 1 {
+		return ""
+	}
+	return bs[0]
+}
+
+// goScalarResult reports whether a Go function's single result is a number or a bool
+func (c *ctx) goScalarResult(sym *graph.Symbol) bool {
+	if sym == nil || c.g.Files[sym.File] == nil || c.g.Files[sym.File].Language != string(language.Go) {
+		return false
+	}
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil {
+		return false
+	}
+	res := node.ChildByFieldName("result")
+	if res == nil {
+		return false
+	}
+	t := strings.TrimSpace(res.Utf8Text(pf.src))
+	if strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		// (int64, error): the value a caller assigns first is the number; an unnamed list only
+		parts := parser.SplitTopLevel(t[1 : len(t)-1])
+		if len(parts) == 0 || strings.Contains(strings.TrimSpace(parts[0]), " ") {
+			return false
+		}
+		t = strings.TrimSpace(parts[0])
+	}
+	return goScalarTypes[t]
+}
+
 // recurseInto walks sym's body with seed applied as its parameters' taint,
 // through analyzeSymbol's (symbol, seed) visited guard: a cycle or a
 // diamond in the call graph is walked at most once per distinct seed, so a
@@ -2143,7 +2339,7 @@ func seedFromArgs(sym *graph.Symbol, args []graph.Arg, tainted map[string]taintI
 // (bounded by maxSeedsPerSymbol), and analyzed only once for the same
 // caller shape encountered again
 func (c *ctx) recurseInto(sym *graph.Symbol, seed map[string]taintInfo, depth int) {
-	if sym == nil || len(seed) == 0 {
+	if sym == nil || len(seed) == 0 || c.summaryDepth > 0 {
 		return
 	}
 	c.analyzeSymbol(sym, seed, depth+1)
@@ -2383,7 +2579,7 @@ func mentionsAny(text string, tainted map[string]taintInfo, category string) (ta
 	found, foundCleared := false, false
 	for _, name := range taintedNames(tainted) {
 		info := tainted[name]
-		if !mentionsIdent(text, name) {
+		if !mentionsTaintedVar(text, name) {
 			continue
 		}
 		// A name some sanitizer already cleared for this category does not
@@ -2417,7 +2613,7 @@ func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool
 	found := false
 	for _, name := range taintedNames(tainted) {
 		info := tainted[name]
-		if !mentionsIdent(text, name) {
+		if !mentionsTaintedVar(text, name) {
 			continue
 		}
 		candidate := info
@@ -2427,7 +2623,7 @@ func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool
 		if strings.TrimSpace(text) != name {
 			candidate.normalized = false
 		}
-		if !mentionsIdent(fullyMasked, name) {
+		if !mentionsTaintedVar(fullyMasked, name) {
 			candidate.confidence *= 0.6
 			if covers := enclosingCoversIntersection(text, name); len(covers) > 0 {
 				candidate.clearedFor = mergeClearedFor(info.clearedFor, covers)
@@ -2984,6 +3180,29 @@ func mentionsIdent(text, name string) bool {
 	return false
 }
 
+// mentionsTaintedVar reports whether text uses the variable name: like mentionsIdent, except that a
+// plain name right after a "." is an attribute of something else - path in os.path.join, url in
+// request.url - and not the variable. A dotted name (args.path) is matched as written.
+func mentionsTaintedVar(text, name string) bool {
+	if strings.Contains(name, ".") {
+		return mentionsIdent(text, name)
+	}
+	for idx := strings.Index(text, name); idx != -1; {
+		before := idx == 0 || !isIdentByte(text[idx-1]) && text[idx-1] != '.'
+		end := idx + len(name)
+		after := end >= len(text) || !isIdentByte(text[end])
+		if before && after {
+			return true
+		}
+		next := strings.Index(text[idx+1:], name)
+		if next == -1 {
+			return false
+		}
+		idx += 1 + next
+	}
+	return false
+}
+
 func isIdentByte(b byte) bool {
 	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
@@ -3346,6 +3565,50 @@ func (c *ctx) annotationValidators(sym *graph.Symbol) map[string]string {
 		}
 		for _, b := range parser.ParamBindings(pf.adapter.ID, &param, pf.src) {
 			out[b] = parser.LastSegment(m[1])
+		}
+	}
+	return out
+}
+
+// goScalarTypes are the Go types that hold a number or a bool and nothing else
+var goScalarTypes = map[string]bool{
+	"bool": true, "int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"float32": true, "float64": true, "byte": true, "rune": true, "time.Duration": true,
+}
+
+// goScalarParams lists a Go function's parameters declared with a number or bool type. The
+// compiler enforces Go's types, so a value reaching such a parameter cannot be text. Other
+// languages' annotations are not enforced at run time and are not read here.
+func (c *ctx) goScalarParams(sym *graph.Symbol) map[string]bool {
+	if sym == nil || c.g.Files[sym.File] == nil || c.g.Files[sym.File].Language != string(language.Go) {
+		return nil
+	}
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil {
+		return nil
+	}
+	list := node.ChildByFieldName("parameters")
+	if list == nil {
+		return nil
+	}
+	var out map[string]bool
+	for i := range list.NamedChildCount() {
+		p := list.NamedChild(i)
+		if p == nil || p.Kind() != "parameter_declaration" {
+			continue
+		}
+		typ := p.ChildByFieldName("type")
+		if typ == nil || !goScalarTypes[typ.Utf8Text(pf.src)] {
+			continue
+		}
+		for j := range p.NamedChildCount() {
+			if n := p.NamedChild(j); n != nil && n.Kind() == "identifier" {
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[n.Utf8Text(pf.src)] = true
+			}
 		}
 	}
 	return out

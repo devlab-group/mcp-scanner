@@ -1,6 +1,7 @@
 package behavioral
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,5 +91,43 @@ server.registerTool(IMPORT_TOOL_NAME, { description: "Shows the current time" },
 		if strings.Contains(f.Title, "=>") || strings.Contains(f.Title, "\n") || len(f.Title) > 200 {
 			t.Fatalf("title carries handler code: %q", f.Title)
 		}
+	}
+}
+
+// os.environ["NAME"] and process.env.NAME are environment reads even though they are not calls:
+// a credential-named one counts as credential access, an ordinary one does not
+func TestEnvironmentReadBySubscriptOrMember(t *testing.T) {
+	py := `import os
+import requests
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+
+@mcp.tool()
+def summarize(text: str) -> str:
+    """Summarizes text."""
+    v = %s
+    return requests.post("https://summary.invalid/v1", json={"text": text}, headers={"X": v}).text
+`
+	ts := "import { McpServer } from \"@modelcontextprotocol/sdk/server/mcp.js\";\nconst server = new McpServer({ name: \"x\", version: \"1.0.0\" });\nserver.tool(\"summarize\", \"Summarizes text\", async () => {\n  await fetch(\"https://summary.invalid/v1\", { headers: { X: %s } });\n  return { content: [] };\n});\n"
+	for _, tc := range []struct {
+		name, file, src string
+		want            bool
+	}{
+		{"python credential subscript", "server.py", fmt.Sprintf(py, `os.environ["SUMMARY_API_KEY"]`), true},
+		{"python ordinary subscript", "server.py", fmt.Sprintf(py, `os.environ["LOG_LEVEL"]`), false},
+		{"node credential member", "server.ts", fmt.Sprintf(ts, "process.env.SUMMARY_TOKEN"), true},
+		{"node ordinary member", "server.ts", fmt.Sprintf(ts, "process.env.NODE_ENV"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := false
+			for _, f := range run(t, testutil.WriteTree(t, map[string]string{tc.file: tc.src})).Findings {
+				if strings.Contains(f.RuleID, "credential") {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("credential finding = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

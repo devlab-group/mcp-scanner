@@ -93,8 +93,24 @@ func (c *ctx) classifyArgv(file string, kind argvKind, chain string, args []grap
 	}
 
 	program, rest = unwrapEnvPrefix(program, rest)
+	if !program.Literal {
+		// SHELL = "/bin/sh"; subprocess.run([SHELL, "-c", cmd]): a same-file string constant is as
+		// good as the literal it holds
+		if f := c.g.Files[file]; f != nil {
+			if v, ok := f.Constants[strings.TrimSpace(program.Text)]; ok {
+				program = graph.Arg{Text: program.Text, Literal: true, Value: v}
+			}
+		}
+	}
 
 	if info, found := mentionsAny(program.Text, tainted, ""); found {
+		if spread := strings.TrimLeft(strings.TrimSpace(program.Text), "*."); spread != strings.TrimSpace(program.Text) && isPlainIdent(spread) {
+			// create_subprocess_exec(*cmd), spawn(...argv): the whole argv arrives as one list built
+			// elsewhere, so the tainted value may be the program, an option or a plain argument
+			info.review = fmt.Sprintf("the argv list %s is unpacked into this call and built elsewhere, so whether the tainted value is the program, an option or a plain argument is unknown", spread)
+			return "command_injection", model.SeverityHigh, 0.6,
+				"the argv list is not written out at this call site; treated conservatively", info, true
+		}
 		if kind == argvPython && !program.Literal && isPlainIdent(strings.TrimSpace(program.Text)) && !strings.HasPrefix(strings.TrimSpace(program.Text), "[") {
 			// subprocess.run(args) with args built where it could not be read: the tainted
 			// value is somewhere in the list - the program, an option or a plain argument -
@@ -163,6 +179,12 @@ func (c *ctx) classifyArgv(file string, kind argvKind, chain string, args []grap
 
 	if _, info, found := taintedArgIndex(rest, tainted, ""); found {
 		if !program.Literal {
+			// run(cmd, args) -> execFile(cmd, args): the program is a parameter or a variable the
+			// caller fills. A shell with -c makes the tainted element a command line, any other
+			// program an argument - which one decides the issue, and this call cannot tell
+			if info.review == "" {
+				info.review = fmt.Sprintf("the program %s is not written out at this call (a parameter or a variable): if it is a shell given -c, the tainted element is a command line, otherwise it is one argument to a program", strings.TrimSpace(program.Text))
+			}
 			return "command_injection", model.SeverityHigh, 0.6,
 				"the program name was not statically resolvable, so it could not be ruled out as a shell asked to run an inline command",
 				info, true

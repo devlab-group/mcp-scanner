@@ -58,14 +58,24 @@ def note(rel_path: str) -> str:
     """Returns a knowledge base note"""
     return resolve_note(rel_path).read_text()
 `
+	// The resolved path checked with is_relative_to is proven by the helper's return summary; a
+	// string-prefix check without a separator admits /srv/kb-other and stays a finding
 	for _, tc := range []struct{ name, check, want string }{
 		{"relative_to check", `    if not full.is_relative_to(BASE):
-        raise ValueError("path escapes kb_dir")`, "needs_review"},
+        raise ValueError("path escapes kb_dir")`, "none"},
+		{"unanchored string check", `    if not str(full).startswith(str(BASE)):
+        raise ValueError("path escapes kb_dir")`, ""},
 		{"no check", `    pass`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.check)}))
 			fs := categoryFindings(res, "path_traversal")
+			if tc.want == "none" {
+				if len(fs) != 0 {
+					t.Fatalf("want no finding, got %+v", fs)
+				}
+				return
+			}
 			if len(fs) == 0 || string(fs[0].Triage) != tc.want {
 				t.Fatalf("want triage %q, got %+v", tc.want, fs)
 			}
@@ -984,6 +994,669 @@ func main() {
 			}
 			if fs[0].Triage != tc.want {
 				t.Fatalf("triage %q, want %q (%s)", fs[0].Triage, tc.want, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// os.path.commonpath([root, p]) != root followed by an exit keeps p under root once p is normalized
+// (realpath, abspath, normpath); without normalization ".." still escapes and the finding stays
+func TestCommonpathContainmentGuard(t *testing.T) {
+	tmpl := `import os
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+BASE = "/var/lib/app/files"
+
+@mcp.tool()
+def fetch_file(rel: str) -> str:
+    """Returns a stored file."""
+    candidate = %s
+    if os.path.commonpath([BASE, candidate]) != BASE:
+        raise ValueError("outside")
+    with open(candidate) as fh:
+        return fh.read()
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"realpath", "os.path.realpath(os.path.join(BASE, rel))", false},
+		{"normpath", "os.path.normpath(os.path.join(BASE, rel))", false},
+		{"not normalized", "os.path.join(BASE, rel)", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A project function that returns its parameter only after a containment check clears the call's
+// result: open(resolve(name)) and p = resolve(name); open(p). A function that returns the
+// parameter unchecked, or checks it wrongly, does not.
+func TestReturnSummaryCarriesAContainmentCheck(t *testing.T) {
+	tmpl := `import os
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+BASE = os.path.realpath("/var/lib/app")
+
+def locate(rel):
+    full = os.path.realpath(os.path.join(BASE, rel))
+    %s
+    return full
+
+@mcp.tool()
+def load(rel: str) -> str:
+    """Loads a stored item."""
+    %s
+`
+	check := "if full != BASE and not full.startswith(BASE + os.sep):\n        raise ValueError(\"outside\")"
+	for _, tc := range []struct {
+		name, guard, use string
+		want             bool
+	}{
+		{"checked, used inline", check, "with open(locate(rel)) as fh:\n        return fh.read()", false},
+		{"checked, used through a variable", check, "p = locate(rel)\n    with open(p) as fh:\n        return fh.read()", false},
+		{"not checked", "pass", "with open(locate(rel)) as fh:\n        return fh.read()", true},
+		{"checked without a separator", "if not full.startswith(BASE):\n        raise ValueError(\"outside\")", "with open(locate(rel)) as fh:\n        return fh.read()", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.guard, tc.use)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// The Go form: a method returning (path, error) only after a root check, called as
+// abs, err := w.resolve(p); if err != nil { return }; os.ReadFile(abs)
+func TestReturnSummaryGoResolver(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+type space struct{ root string }
+
+func (w *space) resolve(rel string) (string, error) {
+	p := filepath.Clean(filepath.Join(w.root, rel))
+	if %s {
+		return "", errors.New("escapes the workspace")
+	}
+	return p, nil
+}
+
+type tools struct{ w *space }
+
+func (t *tools) read(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	abs, err := t.w.resolve(r.GetString("path", ""))
+	if err != nil {
+		return nil, err
+	}
+	b, _ := os.ReadFile(abs)
+	return mcp.NewToolResultText(string(b)), nil
+}
+
+func main() {
+	t := &tools{w: &space{root: "/srv"}}
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("show_note", mcp.WithDescription("Shows a note")), t.read)
+}
+`
+	for _, tc := range []struct {
+		name, cond string
+		want       bool
+	}{
+		{"prefix with a separator", `p != w.root && !strings.HasPrefix(p, w.root+string(filepath.Separator))`, false},
+		{"prefix without a separator", `!strings.HasPrefix(p, w.root)`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.cond)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A value rebuilt from an allowlist of letters, digits, "_" and "-" cannot carry a separator or a
+// dot; an allowlist that keeps "." or "/" still can
+func TestAllowlistRebuildClearsPath(t *testing.T) {
+	tmpl := `import re
+from pathlib import Path
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+STORE = Path("/var/lib/app/profiles")
+
+@mcp.tool()
+def drop_profile(label: str) -> str:
+    """Removes a saved profile."""
+    clean = %s
+    (STORE / f"{clean}.json").unlink()
+    return "removed"
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"join with a replacement", `"".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in label)`, false},
+		{"join with a filter", `"".join(ch for ch in label if ch.isalnum())`, false},
+		{"re.sub negated class", `re.sub(r"[^A-Za-z0-9_-]", "", label)`, false},
+		{"join that keeps dots", `"".join(ch for ch in label if ch.isalnum() or ch in "._")`, true},
+		{"re.sub that keeps slashes", `re.sub(r"[^A-Za-z0-9/_-]", "", label)`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+func TestAllowlistRebuildClearsPathTS(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { unlinkSync } from "node:fs";
+const server = new McpServer({ name: "x", version: "1" });
+server.tool("drop_profile", "Removes a saved profile", { label: z.string() }, async ({ label }) => {
+  const clean = %s;
+  unlinkSync("/var/lib/app/profiles/" + clean + ".json");
+  return { content: [{ type: "text", text: "removed" }] };
+});
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"negated class", `label.replace(/[^a-zA-Z0-9_-]/g, "")`, false},
+		{"class that keeps dots", `label.replace(/[^a-zA-Z0-9._-]/g, "")`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// The program of an argv call that is a parameter or a variable decides between a command line and
+// an argument, so the finding goes to review; a same-file constant counts as the literal it holds
+func TestArgvProgramNotWrittenOut(t *testing.T) {
+	tmpl := `import subprocess
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+SHELL = "/bin/sh"
+
+def run(program, argv):
+    return subprocess.run([program, *argv], capture_output=True, text=True).stdout
+
+@mcp.tool()
+def log_since(rev: str) -> str:
+    """Lists commits since a revision."""
+    %s
+`
+	for _, tc := range []struct {
+		name, body string
+		want       model.Triage
+	}{
+		{"program is a parameter", `return run("git", ["log", rev])`, model.TriageNeedsReview},
+		{"program is a same-file constant shell", `return subprocess.run([SHELL, "-c", "git log " + rev], capture_output=True, text=True).stdout`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.body)})), "command_injection")
+			if len(fs) == 0 {
+				t.Fatalf("want a command_injection finding")
+			}
+			got := fs[0].Triage
+			for _, f := range fs {
+				if f.Triage == "" {
+					got = ""
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("triage %q, want %q (%s)", got, tc.want, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// An argv unpacked into the call (create_subprocess_exec(*cmd)) was built elsewhere: whether the
+// tainted element is the program or an argument is unknown, so the finding goes to review
+func TestUnpackedArgvGoesToReview(t *testing.T) {
+	src := `import asyncio
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+
+async def execute(cmd):
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE)
+    out, _ = await proc.communicate()
+    return out.decode()
+
+@mcp.tool()
+async def describe(pkg: str) -> str:
+    """Describes a package."""
+    return await execute(["pip", "show", pkg])
+`
+	fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"server.py": src})), "command_injection")
+	if len(fs) == 0 {
+		t.Fatal("want a command_injection finding")
+	}
+	for _, f := range fs {
+		if f.Triage != model.TriageNeedsReview {
+			t.Fatalf("triage %q, want needs_review (%s)", f.Triage, f.TriageReason)
+		}
+	}
+}
+
+// A sink method called on a cleaned helper's result: entry_file(key).read_text()
+func TestReturnSummaryOnTheReceiver(t *testing.T) {
+	tmpl := `import re
+from pathlib import Path
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+CACHE = Path("/var/cache/app")
+
+def entry_file(key):
+    token = %s
+    return CACHE / f"{token}.bin"
+
+@mcp.tool()
+def cached(key: str) -> str:
+    """Returns a cached entry."""
+    return entry_file(key).read_text()
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"cleaned", `re.sub(r"[^A-Za-z0-9_-]", "", key)`, false},
+		{"not cleaned", `key.strip()`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// Go's os/exec package name is not a shell exec: exec.LookPath only searches PATH
+func TestGoExecPackageIsNotAShellExec(t *testing.T) {
+	src := `package main
+
+import (
+	"context"
+	"os/exec"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("which", mcp.WithDescription("Finds an indexer")), func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		p, _ := exec.LookPath("idx-" + r.GetString("lang", ""))
+		return mcp.NewToolResultText(p), nil
+	})
+}
+`
+	if fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"main.go": src})), "command_injection"); len(fs) != 0 {
+		t.Fatalf("exec.LookPath reported as command injection: %+v", fs)
+	}
+}
+
+// A Go parameter typed bool or numeric cannot carry text: a query built from it is not injectable.
+// The same flow into a string parameter still is.
+func TestGoScalarParameterCarriesNoText(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+var db *sql.DB
+
+func listChats(ctx context.Context, label string, %s) error {
+	q := fmt.Sprintf("SELECT * FROM chats WHERE %%v = 1", flag)
+	_, err := db.QueryContext(ctx, q+" AND label = ?", label)
+	return err
+}
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("chats", mcp.WithDescription("Lists chats")), func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, listChats(ctx, r.GetString("label", ""), %s)
+	})
+}
+`
+	for _, tc := range []struct {
+		name, param, arg string
+		want             bool
+	}{
+		{"bool parameter", "flag bool", `r.GetString("flag", "") != ""`, false},
+		{"string parameter", "flag string", `r.GetString("flag", "")`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.param, tc.arg)}))
+			if got := len(categoryFindings(res, "sql_injection")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A hex-encoded value holds only 0-9 and a-f: a file name built from it cannot leave its directory
+func TestHexEncodingClearsPath(t *testing.T) {
+	tmpl := `import hashlib
+import os
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+STORE = "/var/lib/app/snapshots"
+
+def snapshot_name(view):
+    return %s
+
+@mcp.tool()
+def save_snapshot(view: str, body: str) -> str:
+    """Stores a snapshot of a view."""
+    with open(os.path.join(STORE, snapshot_name(view)), "w") as fh:
+        fh.write(body)
+    return "saved"
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"hex of the bytes", `f"snap_{view.encode('utf-8').hex()}.json"`, false},
+		{"digest", `hashlib.sha256(view.encode()).hexdigest() + ".json"`, false},
+		{"hex beside the raw value", `f"{view}_{view.encode().hex()}.json"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// An interface method with one implementation per dialect, each quoting its arguments through the
+// project's own escaping function: the query is not proven safe, but it is not a plain injection
+// either, so it goes to review. Without the escaping it stays a finding.
+func TestEscapingInsideEveryImplementationGoesToReview(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+type Dialect interface{ Call(proc string, args ...string) string }
+type mysqlDialect struct{}
+type pgDialect struct{}
+
+func escapeLiteral(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+func (mysqlDialect) Call(proc string, args ...string) string {
+	q := make([]string, len(args))
+	for i, a := range args {
+		q[i] = %s
+	}
+	return fmt.Sprintf("CALL %%s(%%s);", proc, strings.Join(q, ", "))
+}
+
+func (pgDialect) Call(proc string, args ...string) string {
+	q := make([]string, len(args))
+	for i, a := range args {
+		q[i] = %s
+	}
+	return fmt.Sprintf("SELECT %%s(%%s);", proc, strings.Join(q, ", "))
+}
+
+var db *sql.DB
+var dialect Dialect = mysqlDialect{}
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("checkout", mcp.WithDescription("Checks out a branch")), func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		_, err := db.ExecContext(ctx, dialect.Call("DOLT_CHECKOUT", r.GetString("branch", "")))
+		return nil, err
+	})
+}
+`
+	esc, raw := `fmt.Sprintf("'%%s'", escapeLiteral(a))`, `fmt.Sprintf("'%%s'", a)`
+	for _, tc := range []struct {
+		name, a, b string
+		want       model.Triage
+	}{
+		{"every implementation escapes", esc, esc, model.TriageNeedsReview},
+		{"one implementation does not", esc, raw, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.a, tc.b)})), "sql_injection")
+			if len(fs) == 0 {
+				t.Fatal("want a sql_injection finding")
+			}
+			if fs[0].Triage != tc.want {
+				t.Fatalf("triage %q, want %q (%s)", fs[0].Triage, tc.want, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// Arguments past a variadic position reach the variadic parameter: run("git", "log", rev) with
+// def run(program, *argv), and call(proc, a, b) with func call(proc string, args ...string)
+func TestVariadicArgumentsReachTheirParameter(t *testing.T) {
+	py := `import subprocess
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+
+def run(program, *argv):
+    return subprocess.run(" ".join([program, *argv]), shell=True, capture_output=True, text=True).stdout
+
+@mcp.tool()
+def log_since(rev: str) -> str:
+    """Lists commits since a revision."""
+    return run("git", "log", rev)
+`
+	goSrc := `package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+var db *sql.DB
+
+func call(proc string, args ...string) string {
+	return fmt.Sprintf("CALL %s('%s');", proc, strings.Join(args, "','"))
+}
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("reset", mcp.WithDescription("Resets a branch")), func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		_, err := db.ExecContext(ctx, call("DOLT_RESET", "--soft", r.GetString("rev", "")))
+		return nil, err
+	})
+}
+`
+	for _, tc := range []struct{ name, file, src, category string }{
+		{"python *argv", "server.py", py, "command_injection"},
+		{"go ...string", "main.go", goSrc, "sql_injection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{tc.file: tc.src})), tc.category); len(fs) == 0 {
+				t.Fatalf("want a %s finding through the variadic parameter", tc.category)
+			}
+		})
+	}
+}
+
+// A Go function declared to return a bool or a number hands back no text
+func TestGoScalarResultCarriesNoText(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+var db *sql.DB
+
+func option(r mcp.CallToolRequest, name string) %s {
+	v, _ := r.GetArguments()[name].(%s)
+	return v%s
+}
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("kill", mcp.WithDescription("Stops a process")), func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		q%s := option(r, "query")
+		_, err := db.ExecContext(ctx, fmt.Sprintf("KILL %%v", q))
+		return nil, err
+	})
+}
+`
+	for _, tc := range []struct {
+		name, typ string
+		want      bool
+	}{
+		{"bool result", "bool", false},
+		{"string result", "string", true},
+		{"number and error", "(int64, error)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, ret, recv := tc.typ, "", ""
+			if tc.typ == "(int64, error)" {
+				base, ret, recv = "int64", ", nil", ", _"
+			}
+			res := analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.typ, base, ret, recv)}))
+			if got := len(categoryFindings(res, "sql_injection")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A function that returns the value only through the project's quoting function, written in the
+// return itself, sends the sink to review
+func TestEscapingInTheReturnGoesToReview(t *testing.T) {
+	src := `import sqlite3
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+db = sqlite3.connect("app.db")
+
+def quote_ident(name):
+    return '"' + name.replace('"', '""') + '"'
+
+def describe_sql(table):
+    return "PRAGMA table_info(" + quote_ident(table) + ")"
+
+@mcp.tool()
+def describe(table: str) -> list:
+    """Describes a table."""
+    return db.execute(describe_sql(table)).fetchall()
+`
+	fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"server.py": src})), "sql_injection")
+	if len(fs) == 0 || fs[0].Triage != model.TriageNeedsReview {
+		t.Fatalf("want a sql_injection finding in review, got %+v", fs)
+	}
+}
+
+// A summarized call inside a larger assigned expression: name = f"{prefix(path)}{stamp}.json"
+func TestReturnSummaryInsideAnAssignedExpression(t *testing.T) {
+	tmpl := `import os
+import time
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+BACKUPS = "/var/lib/app/backups"
+
+def prefix(path):
+    return %s
+
+@mcp.tool()
+def backup(path: str, body: str) -> str:
+    """Backs up a dashboard."""
+    name = f"{prefix(path)}{int(time.time())}.json"
+    with open(os.path.join(BACKUPS, name), "w") as fh:
+        fh.write(body)
+    return name
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"hex prefix", `f"dash_{path.encode('utf-8').hex()}_"`, false},
+		{"raw prefix", `f"dash_{path}_"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A plain name after a dot is another object's attribute: os.path in os.path.join is not the tool's
+// path parameter. The parameter itself is still found.
+func TestAttributeIsNotTheVariableOfTheSameName(t *testing.T) {
+	tmpl := `import os
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+STORE = "/var/lib/app"
+
+@mcp.tool()
+def archive(path: str) -> str:
+    """Archives an item."""
+    name = %s
+    with open(os.path.join(STORE, name)) as fh:
+        return fh.read()
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"name does not use path", `"latest.json"`, false},
+		{"name uses path", `path + ".json"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
 			}
 		})
 	}

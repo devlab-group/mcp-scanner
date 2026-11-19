@@ -30,6 +30,13 @@ def validate_table_name(name):
 
 def validate_file_path(path):
     real = os.path.realpath(path)
+    if not real.startswith("/tmp"):
+        raise ValueError("outside the allowed directories")
+    return real
+
+
+def validate_upload_path(path):
+    real = os.path.realpath(path)
     if not real.startswith("/tmp/"):
         raise ValueError("outside the allowed directories")
     return real
@@ -71,6 +78,8 @@ def count(table: str) -> int:
     cursor.execute(f"SELECT COUNT(*) FROM {table}")
     return cursor.fetchone()[0]
 `, "sql_injection", 1, model.TriageNeedsReview, false},
+		// The check is not anchored to a separator ("/tmp" also admits "/tmpevil"), so the scanner
+		// cannot prove it; the validator's name sends the finding to review
 		{"a returning validator sends the finding to review", py + `
 @mcp.tool()
 def upload_theme(file_path: str) -> bytes:
@@ -79,6 +88,16 @@ def upload_theme(file_path: str) -> bytes:
     with open(safe_path, "rb") as fh:
         return fh.read()
 `, "path_traversal", 1, model.TriageNeedsReview, false},
+		// realpath + startswith("/tmp/") is a containment check the scanner proves, and the
+		// function returns only what passed it
+		{"a validator whose root check is proven clears the path", py + `
+@mcp.tool()
+def upload_theme(file_path: str) -> bytes:
+    """Uploads a theme image"""
+    safe_path = validate_upload_path(file_path)
+    with open(safe_path, "rb") as fh:
+        return fh.read()
+`, "path_traversal", 0, "", false},
 		// An in-repo query() function makes client.query resolve in the tree; a generic client
 		// receiver keeps the SQL check when the path built a SQL string, as in a ClickHouse
 		// server inside a large monorepo

@@ -1,6 +1,9 @@
 package behavioral
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -69,6 +72,50 @@ var callCategories = []struct {
 // credential access only when its argument also looks like a credential-bearing variable.
 var envReadFuncs = []string{
 	"os.Getenv", "os.LookupEnv", "os.getenv", "os.environ", "System.getenv", "env::var", "process.env",
+}
+
+// envAccess matches environment reads that are not calls, so the call graph never sees them:
+// Python's os.environ["NAME"] and JavaScript's process.env.NAME / process.env["NAME"]
+var envAccess = regexp.MustCompile("\\bos\\.environ\\[\\s*[\"']([A-Za-z_]\\w*)[\"']\\s*\\]|\\bprocess\\.env\\.([A-Za-z_]\\w*)|\\bprocess\\.env\\[\\s*[\"'`]([A-Za-z_]\\w*)[\"'`]\\s*\\]")
+
+// sourceEnvReads lists the environment variables the reached functions read by subscript or
+// member access, from the lines of each function's own source
+func sourceEnvReads(g *graph.Graph, reached map[graph.SymbolID]bool) []string {
+	if g == nil || g.Root == "" {
+		return nil
+	}
+	files := map[string][]string{}
+	seen := map[string]bool{}
+	var out []string
+	for id := range reached {
+		sym := g.Symbols[id]
+		if sym == nil || sym.File == "" || sym.Line <= 0 {
+			continue
+		}
+		lines, ok := files[sym.File]
+		if !ok {
+			b, err := os.ReadFile(filepath.Join(g.Root, sym.File))
+			if err == nil {
+				lines = strings.Split(string(b), "\n")
+			}
+			files[sym.File] = lines
+		}
+		end := sym.EndLine
+		if end < sym.Line || end > len(lines) {
+			end = min(len(lines), sym.Line)
+		}
+		for i := sym.Line - 1; i < end && i < len(lines); i++ {
+			for _, m := range envAccess.FindAllStringSubmatch(lines[i], -1) {
+				name := m[1] + m[2] + m[3]
+				if name != "" && !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func isEnvRead(calleeText string) bool {
@@ -369,6 +416,12 @@ func Behavior(g *graph.Graph, handler graph.SymbolID) HandlerBehavior {
 	reached, _ := g.Reachable(handler)
 	reached[handler] = true
 	b.ReachedFunctions = len(reached)
+	for _, v := range sourceEnvReads(g, reached) {
+		if !seen["e:"+v] {
+			seen["e:"+v] = true
+			b.EnvVars = append(b.EnvVars, v)
+		}
+	}
 	for id := range reached {
 		for _, call := range g.CallsFrom(id) {
 			for _, a := range call.Args {

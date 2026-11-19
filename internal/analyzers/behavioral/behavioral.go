@@ -160,6 +160,13 @@ func actualCapabilities(g *graph.Graph, handler graph.SymbolID) (capSet, bool) {
 			}
 		}
 	}
+	// os.environ["API_KEY"] and process.env.API_KEY are reads too, though not calls
+	for _, name := range sourceEnvReads(g, reached) {
+		if credentialLikeName(name) {
+			cs.Credentials = true
+			cs.SensitiveHits = append(cs.SensitiveHits, "env:"+name)
+		}
+	}
 	return cs, sawUnknown
 }
 
