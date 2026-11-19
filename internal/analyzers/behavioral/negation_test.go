@@ -32,6 +32,10 @@ func TestDeclaredCapabilities_Negation(t *testing.T) {
 		// Another category word used plainly does not lift a denial: "api" here is past the
 		// negation window, but "network" is still explicitly denied
 		{"denial kept beside another plain category word", "Reads a local note; never contacts the network or any web api.", true, true},
+		// A negator in an earlier clause negates that clause, not the verb after the comma
+		{"negator in an earlier clause", "If refs is empty or not provided, fetches all resources of the application.", true, false},
+		// The pair: a denial in the same clause still counts
+		{"denial in the same clause after a comma", "Counts the words, and never fetches anything.", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

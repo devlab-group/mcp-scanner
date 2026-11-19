@@ -147,7 +147,9 @@ func (r *ScanResult) Aggregate(blocking Severity) {
 		blocking = DefaultBlockingSeverity
 	}
 
-	r.Findings = nil
+	// An empty slice, not nil: the schema documents findings as an array, and a nil slice
+	// serializes as null, which a consumer iterating over the field does not expect
+	r.Findings = []Finding{}
 	r.Coverage = Coverage{}
 	// Warnings is rebuilt with the rest. Appending here made a second call
 	// on the same result duplicate everything, which is exactly what a
@@ -171,6 +173,9 @@ func (r *ScanResult) Aggregate(blocking Severity) {
 			a.Findings[j].EnsureID(scope)
 			if a.Findings[j].Analyzer == "" {
 				a.Findings[j].Analyzer = a.Analyzer
+			}
+			if a.Findings[j].Triage == "" {
+				a.Findings[j].Triage, a.Findings[j].TriageReason = DefaultTriage(a.Findings[j])
 			}
 			// A finding without evidence or a severity is the analyzer's
 			// bug, and it is reported as one. Dropping it here would hide

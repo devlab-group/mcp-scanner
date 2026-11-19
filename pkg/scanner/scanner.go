@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -62,6 +63,12 @@ type Options struct {
 	ScannerVersion string
 }
 
+// DefaultAnalyzerTimeout bounds one analyzer when nothing else is configured. It is set well
+// above what the largest trees take on an idle machine (about a minute), so that a loaded host -
+// where the same work takes longer on the clock - does not cut an analyzer short and change what
+// the scan reports. An analyzer that still reaches it is reported PARTIAL with a warning.
+const DefaultAnalyzerTimeout = 5 * time.Minute
+
 // DiscoveryFailedPrefix starts per-analyzer Scan errors when target preparation fails. API
 // frontends use it to recognize messages that may contain host or caller-supplied paths.
 const DiscoveryFailedPrefix = "target discovery failed:"
@@ -77,7 +84,7 @@ func (o *Options) defaults() {
 		o.Timeout = 10 * time.Minute
 	}
 	if o.AnalyzerTimeout <= 0 {
-		o.AnalyzerTimeout = 2 * time.Minute
+		o.AnalyzerTimeout = DefaultAnalyzerTimeout
 	}
 	if o.Concurrency < 1 {
 		o.Concurrency = 1
@@ -310,7 +317,21 @@ func (s *Scanner) runOne(ctx context.Context, a analyzer.Analyzer, target model.
 	// UNAVAILABLE are overridden too, or the deadline excuses itself.
 	if actx.Err() != nil && (res.Status == model.AnalyzerCompleted || selfExcused(res.Status)) {
 		res.Status = model.AnalyzerPartial
-		res.Warnings = append(res.Warnings, "analyzer deadline reached before it finished")
+	}
+	// Say so whatever status the analyzer reported. An analyzer that was already PARTIAL for
+	// another limit used to carry no trace of the deadline, so a report never showed that its
+	// results were cut off by time - and how much it traced depends on how busy the machine was.
+	if actx.Err() != nil && res.Status != model.AnalyzerFailed {
+		if ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded) {
+			note := fmt.Sprintf("analyzer deadline (%s) reached before it finished: results are incomplete and can differ between runs on a slower or busier machine", timeout)
+			res.Warnings = append(res.Warnings, "analyzer deadline reached before it finished")
+			res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, note)
+		} else {
+			// the whole scan ran out of time or was cancelled: the per-analyzer limit is not
+			// the setting that cut it off
+			res.Warnings = append(res.Warnings, "scan stopped before this analyzer finished")
+			res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, "the scan was stopped (its overall timeout or a cancellation) before this analyzer finished: results are incomplete")
+		}
 	}
 	return res
 }

@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,7 @@ func TestFillAncestry_StopsWhenTheBudgetIsSpent(t *testing.T) {
 	if !fillAncestry(newBudget(), adapter.Grammar.ForKinds, tree.RootNode(), map[uintptr]callAncestry{}) {
 		t.Error("walk with time left reported the budget spent")
 	}
-	spent := budget{deadline: time.Now().Add(-time.Second)}
+	spent := budget{wallEnd: time.Now().Add(-time.Second)}
 	if fillAncestry(spent, adapter.Grammar.ForKinds, tree.RootNode(), map[uintptr]callAncestry{}) {
 		t.Error("walk of a tree with thousands of nodes finished on a spent budget")
 	}
@@ -105,5 +106,34 @@ func TestParseFile_TreePastTheDepthLimitIsALimit(t *testing.T) {
 	}
 	if _, err := ParseTree(context.Background(), language.ByID(language.JavaScript), src); !errors.Is(err, ErrDepthLimit) {
 		t.Errorf("ParseTree err = %v, want ErrDepthLimit", err)
+	}
+}
+
+// The budget counts the CPU time of the thread doing the work: time spent waiting - a loaded
+// machine, a sleep - does not use it up, while the same time spent computing does. That is what
+// keeps a scan's result the same on a busy host.
+func TestBudgetCountsCPUTimeNotWaiting(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if _, ok := threadCPU(); !ok {
+		t.Skip("thread CPU time is not available on this platform; the budget uses wall time here")
+	}
+	parseDeadline = 50 * time.Millisecond
+	t.Cleanup(func() { parseDeadline = ParseTimeout })
+
+	waiting := newBudget()
+	time.Sleep(200 * time.Millisecond)
+	if waiting.spent() {
+		t.Error("200ms of sleeping used up a 50ms CPU budget")
+	}
+
+	working := newBudget()
+	x := 0
+	for start := time.Now(); time.Since(start) < 200*time.Millisecond; {
+		x++
+	}
+	_ = x
+	if !working.spent() {
+		t.Error("200ms of computing did not use up a 50ms CPU budget")
 	}
 }

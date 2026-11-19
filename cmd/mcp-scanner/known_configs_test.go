@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -365,7 +366,7 @@ func TestKnownConfigsScanErrorIsSanitized(t *testing.T) {
 func TestDiscoverConfiguredServersReportsUnreadableConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	claudeDir := filepath.Join(home, ".config", "Claude")
+	claudeDir := filepath.Join(testConfigDir(t, home), "Claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +405,7 @@ func TestDiscoverConfiguredServersReportsUnreadableConfig(t *testing.T) {
 func TestDiscoverConfiguredServersReadsVSCodeJSONC(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	codeDir := filepath.Join(home, ".config", "Code", "User")
+	codeDir := filepath.Join(testConfigDir(t, home), "Code", "User")
 	if err := os.MkdirAll(codeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +437,7 @@ func TestDiscoverConfiguredServersReadsVSCodeJSONC(t *testing.T) {
 func TestDiscoverConfiguredServersDoesNotReportOrdinaryEmptyConfigAsSkipped(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	codeDir := filepath.Join(home, ".config", "Code", "User")
+	codeDir := filepath.Join(testConfigDir(t, home), "Code", "User")
 	if err := os.MkdirAll(codeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -533,4 +534,19 @@ func TestStripJSONCommentsRefusesToGuessAtAnUnterminatedString(t *testing.T) {
 	if err := json.Unmarshal(stripped, &v); err == nil {
 		t.Fatalf("a truncated config parsed clean after stripping: %s", stripped)
 	}
+}
+
+// testConfigDir is where candidateConfigPaths looks for client configs on this platform, under a
+// test's home: ~/Library/Application Support on macOS, %APPDATA% on Windows, ~/.config elsewhere
+func testConfigDir(t *testing.T, home string) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		dir := filepath.Join(home, "AppData", "Roaming")
+		t.Setenv("APPDATA", dir)
+		return dir
+	}
+	return filepath.Join(home, ".config")
 }

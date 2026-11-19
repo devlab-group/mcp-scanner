@@ -45,6 +45,63 @@ type Finding struct {
 	// verdict, so a baseline never makes evidence vanish
 	Suppressed        bool   `json:"suppressed,omitempty"`
 	SuppressionReason string `json:"suppression_reason,omitempty"`
+
+	// Triage says how far a reader can rely on the finding before checking it; TriageReason says
+	// why it landed there. An analyzer may set it; Aggregate fills it in from severity and
+	// evidence level otherwise.
+	Triage       Triage `json:"triage,omitempty"`
+	TriageReason string `json:"triage_reason,omitempty"`
+
+	// SourceClass, Reachability and ReachableFrom describe a dataflow finding's origin: who
+	// controls the value (mcp_input, external_content, environment), whether the function it
+	// enters in is reachable from an MCP handler (yes, possible, no, unknown), and through which
+	// capabilities
+	SourceClass   string   `json:"source_class,omitempty"`
+	Reachability  string   `json:"reachability,omitempty"`
+	ReachableFrom []string `json:"reachable_from,omitempty"`
+
+	// FindingKind separates a dangerous capability - a tool whose stated purpose is the risky
+	// action, such as running caller-supplied SQL - from a vulnerability; empty means a
+	// vulnerability. Capability names which one: process_execution, code_execution,
+	// file_access, network_request, sql_execution.
+	FindingKind FindingKind `json:"finding_kind,omitempty"`
+	Capability  string      `json:"capability,omitempty"`
+}
+
+// FindingKind is what sort of risk a finding describes
+type FindingKind string
+
+// FindingDangerousCapability marks a tool that does the risky thing by design
+const FindingDangerousCapability FindingKind = "dangerous_capability"
+
+// Triage is the reliance a finding supports before a person checks it
+type Triage string
+
+const (
+	// TriageConfirmed: running the target produced the predicted effect
+	TriageConfirmed Triage = "confirmed"
+	// TriagePotential: static evidence for a real issue; verify before acting on it
+	TriagePotential Triage = "potential"
+	// TriageNeedsReview: the impact would be high, but the evidence cannot tell a real issue from
+	// a scanner artefact - an attacker may or may not control the input, or a pattern matched
+	// prose. A person decides.
+	TriageNeedsReview Triage = "needs_review"
+	// TriageContext: low impact or not reachable from MCP input; useful background, not an issue
+	TriageContext Triage = "context"
+)
+
+// DefaultTriage is the triage for a finding whose analyzer did not set one
+func DefaultTriage(f Finding) (Triage, string) {
+	switch {
+	case f.EvidenceLevel == EvidenceConfirmed || f.EvidenceLevel == EvidenceDynamic:
+		return TriageConfirmed, "observed while running the target"
+	case f.Severity.Rank() <= SeverityLow.Rank():
+		return TriageContext, "low severity"
+	case f.Severity.AtLeast(SeverityHigh) && f.EvidenceLevel == EvidenceHeuristic:
+		return TriageNeedsReview, "high severity from a heuristic match; the matched text may be ordinary prose"
+	default:
+		return TriagePotential, "static evidence; verify before acting on it"
+	}
 }
 
 // Fingerprint returns a stable per-target finding ID. Scope prevents one target's baseline from

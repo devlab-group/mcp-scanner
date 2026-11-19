@@ -148,6 +148,13 @@ such as `--keyring` are unchanged. `MarshalJSON` calls
 | `taxonomy` | External identifiers: `CWE`, `OWASP-LLM`, `MITRE-ATLAS`, `CVE`, `GHSA`, `OSV`. `supplychain` findings always carry the OSV id and, when OSV lists them, the CVE/GHSA aliases. |
 | `suppressed` | True when a baseline matches the id. The finding stays visible but does not affect the verdict. |
 | `suppression_reason` | The reason string from the baseline entry, when suppressed. |
+| `triage` | How far the finding can be relied on before a person checks it: `confirmed` (running the target produced the predicted effect), `potential` (static evidence; verify before acting on it), `needs_review` (the impact would be high, but the evidence cannot tell a real issue from a scanner artefact), or `context` (low severity, or not reachable from MCP input). Severity says how bad a finding would be; triage says how sure the scanner is. Report `needs_review` findings apart from `potential` and `confirmed` ones. |
+| `triage_reason` | Why the finding has its triage, for example which source a dataflow path starts from and why severity was lowered. |
+| `source_class` | Dataflow findings only. Who controls the value the path starts from: `mcp_input` (a tool, prompt or resource argument), `external_content` (an HTTP response or file contents), or `environment` (an environment variable). |
+| `reachability` | Dataflow findings only. Whether the function the path starts in is reachable from an MCP handler: `yes` (through resolved calls), `possible` (only if unresolved calls are read as any function with that name), `no`, or `unknown` (no handler was resolved in the tree). |
+| `reachable_from` | Dataflow findings only. Up to three capabilities whose handlers reach the start of the path. |
+| `finding_kind` | `dangerous_capability` for a tool whose own name or description says it does the risky action - run a command, execute a query, read a path, fetch a URL - and whose argument reaches that action unchanged. Omitted for a vulnerability. Report the two apart: a capability is a risk to gate, not a defect to fix. |
+| `capability` | With `finding_kind`: `process_execution`, `code_execution`, `file_access`, `network_request`, or `sql_execution`. |
 
 ## Evidence
 

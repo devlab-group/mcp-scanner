@@ -104,6 +104,15 @@ type Capability struct {
 	Handler     SymbolID `json:"handler,omitempty"`
 	HandlerText string   `json:"handler_text,omitempty"`
 
+	// URI is a resource's URI or URI template when a literal argument spells one
+	// ("notes://{name}"); empty for tools and prompts
+	URI string `json:"uri,omitempty"`
+	// URIFixed is true when the registration spells a fixed resource URI with no URI-template
+	// variable: a literal ("notes://today") or a JavaScript template literal whose only
+	// substitutions are the server's own values (`${BASE}/llms.txt`). The SDK then calls the
+	// handler only for that URI. False when unknown (a variable, a ResourceTemplate object).
+	URIFixed bool `json:"uri_fixed,omitempty"`
+
 	// Form is how the registration was found: direct | decorator | wrapper |
 	// table | loop | factory | request_handler. request_handler is the
 	// low-level SDK's split form - a ListXRequestSchema/@app.list_x()
@@ -124,8 +133,15 @@ type File struct {
 	// limit: only the first MaxBytes bytes were read and parsed
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// Constants maps unambiguous same-file string constants to their values:
-	// Python module assignments, Java string fields and Rust const or static items
+	// Python module assignments, Java string fields, Rust const or static items,
+	// JavaScript/TypeScript top-level const declarations and Go package-level consts
 	Constants map[string]string `json:"constants,omitempty"`
+	// ObjectConstants maps unambiguous top-level JavaScript/TypeScript object-literal constants
+	// to their source text, such as a registerTool config object
+	ObjectConstants map[string]string `json:"object_constants,omitempty"`
+	// TemplateConstants maps unambiguous top-level JavaScript/TypeScript template-literal
+	// constants that are not fixed strings to their source text: API = `https://${DOMAIN}/v1/`
+	TemplateConstants map[string]string `json:"template_constants,omitempty"`
 }
 
 // Graph is the whole-tree symbol table, call graph and MCP capability list
@@ -135,6 +151,18 @@ type Graph struct {
 	Symbols      map[SymbolID]*Symbol `json:"symbols"`
 	Calls        []Call               `json:"calls"`
 	Capabilities []Capability         `json:"capabilities"`
+	// SkippedRegistrations are calls shaped like a registration that registration discovery set
+	// aside, with the reason, so a reviewer can check that none of them was a real capability
+	SkippedRegistrations []SkippedRegistration `json:"skipped_registrations,omitempty"`
+}
+
+// SkippedRegistration is a call that matched a registration name but was not counted as one
+type SkippedRegistration struct {
+	Kind       CapabilityKind `json:"kind"`
+	CalleeText string         `json:"callee_text"`
+	File       string         `json:"file"`
+	Line       int            `json:"line"`
+	Reason     string         `json:"reason"`
 }
 
 func New(root string) *Graph {

@@ -329,7 +329,75 @@ func collectCalls(b budget, adapter *language.Adapter, root *sitter.Node, path s
 			IsDecorator: a.decorator,
 		})
 	}
+	if adapter.ID == language.Go {
+		out = append(out, serverToolLiterals(root, path, src, locals)...)
+	}
 	return out, nil
+}
+
+// serverToolLiterals reads mcp-go's server.ServerTool{Tool: mcp.NewTool(...), Handler: fn} literals,
+// which a server hands to AddTools(tools...), as the AddTool(tool, handler) registrations they
+// are: each becomes a synthetic AddTool call with the two fields as its arguments
+func serverToolLiterals(root *sitter.Node, path string, src []byte, locals []localSymbol) []graph.Call {
+	var out []graph.Call
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Kind() == "composite_literal" {
+			if typ := n.ChildByFieldName("type"); typ != nil && LastSegment(nodeText(typ, src)) == "ServerTool" {
+				var tool, handler *sitter.Node
+				if body := n.ChildByFieldName("body"); body != nil {
+					for i := range body.NamedChildCount() {
+						el := body.NamedChild(i)
+						if el == nil || el.Kind() != "keyed_element" {
+							continue
+						}
+						key, val := el.ChildByFieldName("key"), el.ChildByFieldName("value")
+						if key != nil && key.NamedChildCount() > 0 {
+							key = key.NamedChild(0)
+						}
+						if val != nil && val.NamedChildCount() > 0 {
+							val = val.NamedChild(0)
+						}
+						if key == nil || val == nil {
+							continue
+						}
+						switch nodeText(key, src) {
+						case "Tool":
+							tool = val
+						case "Handler":
+							handler = val
+						}
+					}
+				}
+				if tool != nil && handler != nil {
+					args := []graph.Arg{exprArg(tool, src), exprArg(handler, src)}
+					for i, v := range []*sitter.Node{tool, handler} {
+						for _, l := range locals {
+							if l.start == v.StartByte() {
+								args[i].HandlerID = l.sym.ID
+								break
+							}
+						}
+					}
+					var caller graph.SymbolID
+					if enc := enclosing(n.StartByte(), locals); enc != nil {
+						caller = enc.sym.ID
+					}
+					out = append(out, graph.Call{
+						Caller: caller, CalleeText: nodeText(n.ChildByFieldName("type"), src) + ".AddTool",
+						File: path, Line: int(n.StartPosition().Row) + 1, Args: args,
+					})
+				}
+			}
+		}
+		for i := range n.NamedChildCount() {
+			if ch := n.NamedChild(i); ch != nil {
+				walk(ch)
+			}
+		}
+	}
+	walk(root)
+	return out
 }
 
 // callAncestry holds the loop and decorator context needed by collectCalls

@@ -1,6 +1,14 @@
 package behavioral
 
-import "strings"
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+)
 
 // category is one of the deterministic signals a handler's reachable calls
 // are checked against, and the same vocabulary a description is checked
@@ -40,6 +48,8 @@ var callCategories = []struct {
 	{"readFileSync", catFilesystem}, {"writeFileSync", catFilesystem}, {"fs.readFile", catFilesystem},
 	{"Files.readAllBytes", catFilesystem}, {"Files.write", catFilesystem},
 	{"std::fs::read", catFilesystem}, {"std::fs::write", catFilesystem}, {"open", catFilesystem},
+	// pathlib.Path methods: names no other common library uses for something else
+	{".read_text", catFilesystem}, {".read_bytes", catFilesystem}, {".write_text", catFilesystem}, {".write_bytes", catFilesystem},
 
 	{"http.Get", catNetwork}, {"http.Post", catNetwork}, {"http.NewRequest", catNetwork},
 	{"requests.get", catNetwork}, {"requests.post", catNetwork}, {"requests.put", catNetwork},
@@ -62,6 +72,50 @@ var callCategories = []struct {
 // credential access only when its argument also looks like a credential-bearing variable.
 var envReadFuncs = []string{
 	"os.Getenv", "os.LookupEnv", "os.getenv", "os.environ", "System.getenv", "env::var", "process.env",
+}
+
+// envAccess matches environment reads that are not calls, so the call graph never sees them:
+// Python's os.environ["NAME"] and JavaScript's process.env.NAME / process.env["NAME"]
+var envAccess = regexp.MustCompile("\\bos\\.environ\\[\\s*[\"']([A-Za-z_]\\w*)[\"']\\s*\\]|\\bprocess\\.env\\.([A-Za-z_]\\w*)|\\bprocess\\.env\\[\\s*[\"'`]([A-Za-z_]\\w*)[\"'`]\\s*\\]")
+
+// sourceEnvReads lists the environment variables the reached functions read by subscript or
+// member access, from the lines of each function's own source
+func sourceEnvReads(g *graph.Graph, reached map[graph.SymbolID]bool) []string {
+	if g == nil || g.Root == "" {
+		return nil
+	}
+	files := map[string][]string{}
+	seen := map[string]bool{}
+	var out []string
+	for id := range reached {
+		sym := g.Symbols[id]
+		if sym == nil || sym.File == "" || sym.Line <= 0 {
+			continue
+		}
+		lines, ok := files[sym.File]
+		if !ok {
+			b, err := os.ReadFile(filepath.Join(g.Root, sym.File))
+			if err == nil {
+				lines = strings.Split(string(b), "\n")
+			}
+			files[sym.File] = lines
+		}
+		end := sym.EndLine
+		if end < sym.Line || end > len(lines) {
+			end = min(len(lines), sym.Line)
+		}
+		for i := sym.Line - 1; i < end && i < len(lines); i++ {
+			for _, m := range envAccess.FindAllStringSubmatch(lines[i], -1) {
+				name := m[1] + m[2] + m[3]
+				if name != "" && !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func isEnvRead(calleeText string) bool {
@@ -107,14 +161,46 @@ var sensitivePathFragments = []string{
 	"169.254.169.254", "metadata.google.internal",
 }
 
+// dotfileFragments name a file or directory by its whole dotted name, so the dot must start a path
+// component: ".env" in "./.env" or ".env.local", not in process.env, os.environ or import.meta.env,
+// which read environment variables rather than a file
+var dotfileFragments = map[string]bool{".env": true, ".netrc": true, ".npmrc": true, ".gcloud": true}
+
+// extensionFragments are file extensions, so they must end a name: "server.pem", not ".pembroke"
+var extensionFragments = map[string]bool{".pem": true}
+
 func sensitiveFragment(text string) (string, bool) {
 	lower := strings.ToLower(text)
 	for _, frag := range sensitivePathFragments {
-		if strings.Contains(lower, strings.ToLower(frag)) {
-			return frag, true
+		f := strings.ToLower(frag)
+		for from := 0; ; {
+			i := strings.Index(lower[from:], f)
+			if i < 0 {
+				break
+			}
+			i += from
+			end := i + len(f)
+			ok := true
+			if dotfileFragments[frag] && i > 0 && isNameByte(lower[i-1]) {
+				ok = false
+			}
+			if dotfileFragments[frag] && end < len(lower) && isNameByte(lower[end]) {
+				ok = false
+			}
+			if extensionFragments[frag] && end < len(lower) && isNameByte(lower[end]) {
+				ok = false
+			}
+			if ok {
+				return frag, true
+			}
+			from = i + 1
 		}
 	}
 	return "", false
+}
+
+func isNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // declaredWords is the controlled vocabulary a description is matched
@@ -175,6 +261,11 @@ func sentences(text string) []string {
 // words at the end of head, the sentence text before one occurrence of a
 // category word
 func negatedBefore(head string) bool {
+	// A negator in an earlier clause negates that clause: "if refs is empty or not provided,
+	// fetches all resources" does not deny fetching
+	if i := strings.LastIndexAny(head, ",;:"); i >= 0 {
+		head = head[i+1:]
+	}
 	before := strings.Fields(head)
 	if len(before) > negationWindow {
 		before = before[len(before)-negationWindow:]
@@ -286,4 +377,68 @@ func claimsLocalOnly(description string) bool {
 	narrow := containsAny(d, []string{"local", "project", "metadata", "offline", "workspace", "machine", "computer", "device"})
 	declaredNetwork, _ := matchCategory(description, declaredWords[catNetwork], false)
 	return narrow && !declaredNetwork
+}
+
+// Declared reports which capability categories a description affirmatively claims, with the
+// same vocabulary and negation handling the mismatch checks use. Other analyzers use it to tell a
+// tool's stated purpose from an injection into it.
+func Declared(description string) (filesystem, network, process bool) {
+	d, _ := declaredCapabilities(description)
+	return d.Filesystem, d.Network, d.Process
+}
+
+// HandlerBehavior is what a capability's handler can reach through the call graph: the categories
+// the behavioral checks compare against the description, and the concrete evidence behind them
+type HandlerBehavior struct {
+	Network           bool     `json:"network"`
+	Filesystem        bool     `json:"filesystem"`
+	Process           bool     `json:"process"`
+	Credentials       bool     `json:"credentials"`
+	SensitivePaths    []string `json:"sensitive_paths,omitempty"`
+	EnvVars           []string `json:"env_vars,omitempty"`
+	URLs              []string `json:"urls,omitempty"`
+	ReachedFunctions  int      `json:"reached_functions"`
+	ReachesUnresolved bool     `json:"reaches_unresolved_calls"`
+}
+
+// Behavior summarizes what handler can reach, with the same reachability and catalogue the
+// mismatch checks use
+func Behavior(g *graph.Graph, handler graph.SymbolID) HandlerBehavior {
+	cs, unknown := actualCapabilities(g, handler)
+	b := HandlerBehavior{Network: cs.Network, Filesystem: cs.Filesystem, Process: cs.Process, Credentials: cs.Credentials, ReachesUnresolved: unknown}
+	seen := map[string]bool{}
+	for _, h := range cs.SensitiveHits {
+		if !seen["s:"+h] {
+			seen["s:"+h] = true
+			b.SensitivePaths = append(b.SensitivePaths, h)
+		}
+	}
+	reached, _ := g.Reachable(handler)
+	reached[handler] = true
+	b.ReachedFunctions = len(reached)
+	for _, v := range sourceEnvReads(g, reached) {
+		if !seen["e:"+v] {
+			seen["e:"+v] = true
+			b.EnvVars = append(b.EnvVars, v)
+		}
+	}
+	for id := range reached {
+		for _, call := range g.CallsFrom(id) {
+			for _, a := range call.Args {
+				v := a.Value
+				if isEnvRead(call.CalleeText) && a.Literal && v != "" && !seen["e:"+v] {
+					seen["e:"+v] = true
+					b.EnvVars = append(b.EnvVars, v)
+				}
+				if a.Literal && (strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "ws://") || strings.HasPrefix(v, "wss://")) && !seen["u:"+v] && len(b.URLs) < 50 {
+					seen["u:"+v] = true
+					b.URLs = append(b.URLs, v)
+				}
+			}
+		}
+	}
+	sort.Strings(b.EnvVars)
+	sort.Strings(b.URLs)
+	sort.Strings(b.SensitivePaths)
+	return b
 }

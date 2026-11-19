@@ -209,6 +209,10 @@ func Register(s *mcp.Server) {
 			if found.Severity != model.SeverityHigh {
 				t.Errorf("want HIGH severity, got %s", found.Severity)
 			}
+			// Read from the description's words, so a question for review, not a result
+			if found.Triage != model.TriageNeedsReview || found.TriageReason == "" {
+				t.Errorf("want needs_review with a reason, got %q %q", found.Triage, found.TriageReason)
+			}
 			for _, f := range res.Findings {
 				if f.RuleID == "behavioral.undeclared_network" {
 					t.Errorf("contradicted_network should supersede undeclared_network, got both: %+v", res.Findings)

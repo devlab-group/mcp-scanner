@@ -1,0 +1,8 @@
+rule: promptdefense.credential-harvesting
+expect_fire: false
+note: the tool issues a token itself; it does not ask anyone for one
+snapshot:
+  tools:
+  - name: get_data_api_token
+    description: >-
+      Mint and return an IoT Data API bearer token plus the resolved domain context.

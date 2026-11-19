@@ -48,7 +48,9 @@ The scanner recognizes these forms:
 
 - direct SDK calls such as `AddTool`, `registerTool`, and prompt/resource
   equivalents;
-- Python, Java, and Rust decorators or annotations;
+- Python, Java, and Rust decorators or annotations, including a decorator applied by a plain
+  call, `mcp.tool()(fn)` or `mcp.tool(name="x", description="...")(fn)`;
+- the Go SDK's `server.AddTools(mcp.NewServerTool(name, description, handler, ...))`;
 - wrapper helpers that forward names and handlers to an SDK;
 - registration inside tables and loops, recorded as one unresolved capability
   per loop site;

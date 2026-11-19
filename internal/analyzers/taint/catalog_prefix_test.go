@@ -35,6 +35,7 @@ var knownSinkPatternPrefixPairs = map[[2]string]bool{
 	{"exec", "execSync"}:                               true,
 	{"exec", "execa"}:                                  true,
 	{"exec", "execaCommand"}:                           true,
+	{"exec", "exec_run"}:                               true,
 	{"execa", "execaCommand"}:                          true,
 	{"os.spawnl", "os.spawnle"}:                        true,
 	{"os.spawnl", "os.spawnlp"}:                        true,

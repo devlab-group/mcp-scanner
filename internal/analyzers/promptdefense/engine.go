@@ -74,19 +74,36 @@ func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 			continue
 		}
 		var downgraded *model.Finding
+		var spans [][2]int // earlier patterns' matches in this unit
 		for _, p := range r.patterns {
-			loc := p.FindStringIndex(u.text)
+			loc := r.firstMatch(p, u.text)
 			if loc == nil {
 				continue
 			}
 			start, end := loc[0], loc[1]
+			inside := false
+			for _, sp := range spans {
+				if start >= sp[0] && end <= sp[1] {
+					inside = true
+					break
+				}
+			}
+			spans = append(spans, [2]int{start, end})
+			if inside {
+				// the host inside a URL another pattern already judged is the same match, and
+				// judging it again without the qualifier that came before the URL would undo that
+				continue
+			}
 			lo, hi := r.windowBounds(u.text, start, end)
 			window := u.text[lo:hi]
 			before := u.text[lo:start]
 
 			level := model.EvidenceLevel(strings.ToUpper(r.Evidence))
 			kind := "pattern_match"
-			if r.PromoteIfStructural != "" && structuralHit(r.PromoteIfStructural, u.text) {
+			if r.PromoteIfStructural != "" && structuralHit(r.PromoteIfStructural, u.text) &&
+				(!r.ContextIsPremise || len(r.requireContext) == 0 || anyMatch(r.requireContext, sentenceBefore(u.text, start))) {
+				// For a rule whose context is half of its claim (a send verb for a URL), the structure
+				// promotes only the match that verb governs: one in the same sentence, before it
 				level = model.EvidenceStatic
 				kind = "pattern_match+structural"
 			}
@@ -124,6 +141,25 @@ func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 		}
 	}
 	return out
+}
+
+// firstMatch returns the first match of p in text that no exclude_match expression covers. The
+// expressions see the match together with the token it is attached to on the left, so a host
+// matched inside "user@example.com" is checked as the whole address.
+func (r *compiledRule) firstMatch(p *regexp.Regexp, text string) []int {
+	if len(r.excludeMatch) == 0 {
+		return p.FindStringIndex(text)
+	}
+	for _, loc := range p.FindAllStringIndex(text, -1) {
+		lo := loc[0]
+		for lo > 0 && !strings.ContainsRune(" \t\r\n\"'`(<[,;", rune(text[lo-1])) {
+			lo--
+		}
+		if !anyMatch(r.excludeMatch, text[lo:loc[1]]) {
+			return loc
+		}
+	}
+	return nil
 }
 
 // suppressedConfidence is the confidence given to a downgraded finding. It
@@ -419,19 +455,52 @@ func hiddenCharNote(r rune) (string, bool) {
 
 func findHiddenChars(s string) []span {
 	var out []span
+	runes := []rune(s)
 	i := 0
-	for _, r := range s {
+	for k, r := range runes {
 		w := utf8.RuneLen(r)
 		if r == '\uFEFF' && i == 0 {
 			i += w
 			continue
 		}
-		if note, ok := hiddenCharNote(r); ok {
+		if note, ok := hiddenCharNote(r); ok && !partOfEmoji(runes, k) {
 			out = append(out, span{i, i + w, note})
 		}
 		i += w
 	}
 	return out
+}
+
+// partOfEmoji reports whether the invisible rune at runes[k] is ordinary emoji syntax rather than
+// hidden content: a text or emoji presentation selector (U+FE0E, U+FE0F) right after a symbol, as
+// in "⚠️", or after a keycap base before U+20E3, as in "1️⃣"; or a zero-width joiner between two
+// emoji, as in "👩‍💻". Every other selector or joiner is still reported.
+func partOfEmoji(runes []rune, k int) bool {
+	r := runes[k]
+	prev, next := rune(-1), rune(-1)
+	if k > 0 {
+		prev = runes[k-1]
+	}
+	if k+1 < len(runes) {
+		next = runes[k+1]
+	}
+	switch r {
+	case '\uFE0E', '\uFE0F':
+		if isEmojiSymbol(prev) {
+			return true
+		}
+		return (prev >= '0' && prev <= '9' || prev == '#' || prev == '*') && next == '\u20E3'
+	case '\u200D':
+		left := isEmojiSymbol(prev) || prev == '\uFE0F' || (prev >= 0x1F3FB && prev <= 0x1F3FF)
+		return left && isEmojiSymbol(next)
+	}
+	return false
+}
+
+// isEmojiSymbol reports whether r is a pictographic symbol a presentation selector or joiner
+// legitimately follows
+func isEmojiSymbol(r rune) bool {
+	return r >= 0 && (unicode.Is(unicode.So, r) || r >= 0x1F300 && r <= 0x1FAFF)
 }
 
 // minDecodedTagRun is the shortest decoded tag-block run worth
@@ -642,9 +711,12 @@ func (r *compiledRule) matchOversizedDescription(units []unit) []model.Finding {
 		}
 		n := utf8.RuneCountInString(u.text)
 		params := countSchemaProperties(u.inputSchema)
+		// A tool without a visible input schema - every tool in a source-tree snapshot - has an
+		// unknown parameter count, not zero parameters, so only the absolute limit applies
+		schemaKnown := u.inputSchema != nil
 		switch {
 		case n > max:
-		case n > maxLowParams && params <= 1:
+		case n > maxLowParams && schemaKnown && params <= 1:
 		default:
 			continue
 		}
@@ -659,7 +731,11 @@ func (r *compiledRule) matchOversizedDescription(units []unit) []model.Finding {
 		}
 		f := r.finding(u, 0, end, level)
 		f.Evidence[0].Kind = "description_length"
-		f.Evidence[0].Description = fmt.Sprintf("%s: %d characters, %d declared input parameter(s)", r.ID, n, params)
+		if schemaKnown {
+			f.Evidence[0].Description = fmt.Sprintf("%s: %d characters, %d declared input parameter(s)", r.ID, n, params)
+		} else {
+			f.Evidence[0].Description = fmt.Sprintf("%s: %d characters, input schema not visible", r.ID, n)
+		}
 		out = append(out, f)
 	}
 	return out
@@ -720,4 +796,22 @@ func readOnlyHint(ann map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// sentenceBefore returns the text from the start of the sentence that contains position i up to
+// i. A sentence ends at ". ", "! ", "? " or a newline, so the dots inside a URL or a file name do
+// not end one.
+func sentenceBefore(text string, i int) string {
+	j := i
+	for j > 0 {
+		c := text[j-1]
+		if c == '\n' {
+			break
+		}
+		if (c == ' ' || c == '\t') && j >= 2 && strings.ContainsRune(".!?", rune(text[j-2])) {
+			break
+		}
+		j--
+	}
+	return text[j:i]
 }

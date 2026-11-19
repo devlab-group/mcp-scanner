@@ -64,6 +64,14 @@ type sinkPattern struct {
 }
 
 var sinkPatterns = []sinkPattern{
+	// The Docker SDKs start a process inside a container: docker-py's client.containers.run(image,
+	// command) and create(...), a running container's exec_run(cmd), dockerode's
+	// docker.createContainer({ Image, Cmd }). With the daemon's socket that is code execution the
+	// project never spells as a shell or an exec call.
+	{"containers.run", "command_injection", model.SeverityHigh, -1},
+	{"containers.create", "command_injection", model.SeverityHigh, -1},
+	{"exec_run", "command_injection", model.SeverityHigh, 0},
+	{"createContainer", "command_injection", model.SeverityHigh, 0},
 	// exec.Command, subprocess.run/Popen/call, Command::new and
 	// ProcessBuilder take their command as separate argv elements rather
 	// than one shell string; see argvSinks below for why they are not
@@ -486,6 +494,40 @@ type argvSink struct {
 	kind argvKind
 }
 
+// argvLanguages names the languages an argv entry belongs to. The bare Node names are ordinary
+// words elsewhere - Rust's tokio::spawn starts an async task, not a process - so an entry only
+// matches in its own language. os.execv/os.execvp share the Node (file, argv) shape but are Python.
+var argvLanguages = map[string][]language.ID{
+	"os.execv":  {language.Python},
+	"os.execvp": {language.Python},
+}
+
+// appliesTo reports whether the entry is a process API in language id. An unknown language keeps
+// the match, so a caller without a language loses nothing.
+func (s argvSink) appliesTo(id language.ID) bool {
+	if id == "" {
+		return true
+	}
+	langs, ok := argvLanguages[s.text]
+	if !ok {
+		switch s.kind {
+		case argvGo:
+			langs = []language.ID{language.Go}
+		case argvJava:
+			langs = []language.ID{language.Java}
+		case argvPython, argvPythonExec:
+			langs = []language.ID{language.Python}
+		case argvRustNew, argvRustArg:
+			langs = []language.ID{language.Rust}
+		case argvNodeFile:
+			langs = []language.ID{language.JavaScript, language.TypeScript}
+		default:
+			return true
+		}
+	}
+	return slices.Contains(langs, id)
+}
+
 // argvSinks build commands from separate argv elements. They need positional classification so a
 // tainted program, shell command, and later option value do not receive the same severity.
 var argvSinks = []argvSink{
@@ -533,7 +575,7 @@ func matchArgvSink(id language.ID, calleeText string, args []graph.Arg) (argvSin
 		return argvSink{text: calleeText, kind: argvGo}, rest, true
 	}
 	for _, s := range argvSinks {
-		if mentionsIdent(calleeText, s.text) {
+		if mentionsIdent(calleeText, s.text) && s.appliesTo(id) {
 			return s, args, true
 		}
 	}
@@ -605,6 +647,12 @@ var methodSanitizerPatterns = []sanitizerPattern{
 	{"replace", true, nil, "a string replace does not stop command injection", false},
 	{"normalize", true, nil, "normalize does not stop traversal outside the base directory", true},
 	{"toRealPath", true, nil, "toRealPath does not stop traversal outside the base directory", true},
+	// pathlib's Path(p).expanduser(), os.path.expanduser(p), .absolute(): the same path with a
+	// leading ~, environment variables or the working directory filled in - known calls that
+	// pass the value on, not unknown ones
+	{"expanduser", true, nil, "expanduser only replaces a leading ~ with a home directory; it does not limit the path", false},
+	{"expandvars", true, nil, "expandvars only fills in environment variables; it does not limit the path", false},
+	{"absolute", true, nil, "absolute only prefixes the working directory; it does not limit the path", false},
 }
 
 func matchSanitizer(calleeText string) (sanitizerPattern, bool) {

@@ -1,6 +1,7 @@
 package taint
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -129,6 +130,9 @@ type containmentPredicate struct {
 var containmentPredicates = []containmentPredicate{
 	{"is_relative_to", true},
 	{"startsWith", true},
+	// Python's str.startswith: only with a root anchored to a separator (ROOT + os.sep) and a
+	// normalized subject, like the other character-wise prefixes
+	{"startswith", true},
 	{"starts_with", true},
 	{"HasPrefix", false},
 }
@@ -140,12 +144,44 @@ func (c *ctx) containmentSubject(pf *parsedFile, n *sitter.Node, condText string
 	if subject := c.relContainmentSubject(pf, n, condText); subject != "" {
 		return subject, false
 	}
+	if pf.adapter.ID == language.Python {
+		if subject := commonpathSubject(condText); subject != "" {
+			// commonpath compares path components but does not resolve "..": the subject must
+			// already be normalized (realpath, abspath, normpath)
+			return subject, true
+		}
+	}
 	for _, p := range containmentPredicates {
 		if subject, ok := p.subjectIn(pf.adapter.ID, condText); ok {
 			return subject, true
 		}
 	}
 	return "", false
+}
+
+// commonpathCheck matches Python's os.path.commonpath([a, b]) != c, the guard that holds when the
+// common path of a root and a candidate is not the root itself
+var commonpathCheck = regexp.MustCompile(`^\(?\s*(?:os\.path\.|posixpath\.|ntpath\.)?commonpath\(\s*[\[(]\s*([A-Za-z_][\w.]*)\s*,\s*([A-Za-z_][\w.]*)\s*[\])]\s*\)\s*!=\s*([A-Za-z_][\w.]*)\s*\)?$`)
+
+// commonpathSubject returns the candidate of a commonpath containment test - the list element
+// that is not the root compared against - or "" when condText is not exactly that test
+func commonpathSubject(condText string) string {
+	m := commonpathCheck.FindStringSubmatch(strings.TrimSpace(condText))
+	if m == nil {
+		return ""
+	}
+	a, b, root := m[1], m[2], m[3]
+	switch root {
+	case a:
+		if isPlainIdent(b) {
+			return b
+		}
+	case b:
+		if isPlainIdent(a) {
+			return a
+		}
+	}
+	return ""
 }
 
 // subjectIn finds p's own call in condText and returns the subject it checks, or "" (and

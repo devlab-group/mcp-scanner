@@ -2,7 +2,10 @@ package taint
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+
+	sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
@@ -12,8 +15,14 @@ import (
 // classifyArgv distinguishes tainted program names, shell execution, and
 // separate arguments. Unknown programs or option bags stay conservative at
 // reduced confidence. A literal "--" protects later non-shell arguments.
-func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted map[string]taintInfo) (category string, severity model.Severity, mult float64, note string, hit taintInfo, ok bool) {
+func (c *ctx) classifyArgv(file string, kind argvKind, chain string, args []graph.Arg, tainted map[string]taintInfo) (category string, severity model.Severity, mult float64, note string, hit taintInfo, ok bool) {
 	if kind == argvRustArg {
+		// Command::new("markitdown").arg(source): when this call's own receiver chain starts at
+		// Command::new with a literal program, the whole argv is readable here and is classified
+		// like any other argv
+		if argv, found := rustBuilderArgv(chain, args); found {
+			return c.classifyArgv(file, argvGo, "", argv, tainted)
+		}
 		// The program that started this builder chain is a different call
 		// node and is not visible from here
 		if _, info, found := taintedArgIndex(args, tainted, ""); found {
@@ -84,8 +93,32 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 	}
 
 	program, rest = unwrapEnvPrefix(program, rest)
+	if !program.Literal {
+		// SHELL = "/bin/sh"; subprocess.run([SHELL, "-c", cmd]): a same-file string constant is as
+		// good as the literal it holds
+		if f := c.g.Files[file]; f != nil {
+			if v, ok := f.Constants[strings.TrimSpace(program.Text)]; ok {
+				program = graph.Arg{Text: program.Text, Literal: true, Value: v}
+			}
+		}
+	}
 
 	if info, found := mentionsAny(program.Text, tainted, ""); found {
+		if spread := strings.TrimLeft(strings.TrimSpace(program.Text), "*."); spread != strings.TrimSpace(program.Text) && isPlainIdent(spread) {
+			// create_subprocess_exec(*cmd), spawn(...argv): the whole argv arrives as one list built
+			// elsewhere, so the tainted value may be the program, an option or a plain argument
+			info.review = fmt.Sprintf("the argv list %s is unpacked into this call and built elsewhere, so whether the tainted value is the program, an option or a plain argument is unknown", spread)
+			return "command_injection", model.SeverityHigh, 0.6,
+				"the argv list is not written out at this call site; treated conservatively", info, true
+		}
+		if kind == argvPython && !program.Literal && isPlainIdent(strings.TrimSpace(program.Text)) && !strings.HasPrefix(strings.TrimSpace(program.Text), "[") {
+			// subprocess.run(args) with args built where it could not be read: the tainted
+			// value is somewhere in the list - the program, an option or a plain argument -
+			// and which decides the issue
+			info.review = fmt.Sprintf("the argv list %s is built where this call cannot read it, so whether the tainted value is the program, an option or a plain argument is unknown", strings.TrimSpace(program.Text))
+			return "command_injection", model.SeverityHigh, 0.6,
+				"the argv list is not written out at this call site; treated conservatively", info, true
+		}
 		return "command_injection", model.SeverityHigh, 1,
 			"the program name itself is attacker-controlled", info, true
 	}
@@ -113,6 +146,30 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 		}
 	}
 
+	if program.Literal && programBasename(program.Value) == "adb" {
+		// adb [-s serial] shell <args...>: adb joins what follows "shell" into a command line for the
+		// device's shell, the way ssh does on a remote host
+		for i, a := range rest {
+			if a.Literal && a.Value == "shell" {
+				if _, info, found := taintedArgIndex(rest[i+1:], tainted, ""); found {
+					return "command_injection", model.SeverityHigh, 1,
+						"adb shell runs the arguments after it as a command line in the device's shell", info, true
+				}
+				break
+			}
+		}
+	}
+
+	if program.Literal && programBasename(program.Value) == "ssh" {
+		// ssh joins every argument after the destination into one string and hands it to a shell
+		// on the remote host: those arguments are shell text there, whatever they look like here
+		if _, info, found := taintedArgIndex(rest, tainted, ""); found {
+			return "command_injection", model.SeverityHigh, 1,
+				"ssh runs the arguments after the destination as a command line in a shell on the remote host", info, true
+		}
+		return "", "", 0, "", taintInfo{}, false
+	}
+
 	// A literal "--" ends option parsing for every POSIX-conventional program: nothing after it
 	// can be read as a flag, no matter what it starts with, so a tainted value placed after one
 	// cannot change the command's behavior by looking like one
@@ -122,6 +179,12 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 
 	if _, info, found := taintedArgIndex(rest, tainted, ""); found {
 		if !program.Literal {
+			// run(cmd, args) -> execFile(cmd, args): the program is a parameter or a variable the
+			// caller fills. A shell with -c makes the tainted element a command line, any other
+			// program an argument - which one decides the issue, and this call cannot tell
+			if info.review == "" {
+				info.review = fmt.Sprintf("the program %s is not written out at this call (a parameter or a variable): if it is a shell given -c, the tainted element is a command line, otherwise it is one argument to a program", strings.TrimSpace(program.Text))
+			}
 			return "command_injection", model.SeverityHigh, 0.6,
 				"the program name was not statically resolvable, so it could not be ruled out as a shell asked to run an inline command",
 				info, true
@@ -131,6 +194,79 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 			info, true
 	}
 	return "", "", 0, "", taintInfo{}, false
+}
+
+// rustCommandNew matches a builder chain that starts at Command::new with a literal program:
+// Command::new("git"), std::process::Command::new("git"), tokio::process::Command::new("git")
+var rustCommandNew = regexp.MustCompile(`^\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*Command::new\(`)
+
+// rustBuilderArgv reads the argv of a Rust Command builder from the callee text of one of its
+// .arg()/.args() calls - `Command::new("sh").arg("-c").arg` - plus that call's own arguments. It
+// returns the program, every earlier .arg/.args element and this call's elements, in order. Other
+// builder methods (current_dir, env, stdout, ...) add nothing to the argv and are skipped. It
+// reports false when the chain does not start at Command::new with a literal program on this
+// call's own receiver - a Command held in a variable, or a chain it cannot read.
+func rustBuilderArgv(chain string, args []graph.Arg) ([]graph.Arg, bool) {
+	loc := rustCommandNew.FindStringIndex(chain)
+	if loc == nil {
+		return nil, false
+	}
+	open := loc[1] - 1
+	inner := bracketedParen(chain, open)
+	prog, ok := parser.UnquoteString(strings.TrimSpace(inner))
+	if !ok || prog == "" {
+		return nil, false
+	}
+	argv := []graph.Arg{{Text: strings.TrimSpace(inner), Literal: true, Value: prog}}
+	elems := func(method, text string) []graph.Arg {
+		text = strings.TrimSpace(text)
+		if method == "arg" {
+			if v, ok := parser.UnquoteString(text); ok {
+				return []graph.Arg{{Text: text, Literal: true, Value: v}}
+			}
+			return []graph.Arg{{Text: text}}
+		}
+		list := strings.TrimPrefix(strings.TrimPrefix(text, "&"), "vec!")
+		if es := bracketedListElements(list); es != nil {
+			return es
+		}
+		return []graph.Arg{{Text: text}}
+	}
+	// skip ")" closing Command::new(...)
+	rest := chain[open+len(inner)+2:]
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if rest == "" {
+			return nil, false
+		}
+		if rest[0] != '.' {
+			return nil, false
+		}
+		i := 1
+		for i < len(rest) && (rest[i] == '_' || rest[i] >= 'a' && rest[i] <= 'z' || rest[i] >= 'A' && rest[i] <= 'Z' || rest[i] >= '0' && rest[i] <= '9') {
+			i++
+		}
+		method := rest[1:i]
+		tail := strings.TrimLeft(rest[i:], " \t\r\n")
+		if tail == "" {
+			// the call this callee text belongs to: its own arguments end the argv
+			if method != "arg" && method != "args" {
+				return nil, false
+			}
+			for _, a := range args {
+				argv = append(argv, elems(method, a.Text)...)
+			}
+			return argv, true
+		}
+		if tail[0] != '(' {
+			return nil, false
+		}
+		in := bracketedParen(tail, 0)
+		if method == "arg" || method == "args" {
+			argv = append(argv, elems(method, in)...)
+		}
+		rest = tail[len(in)+2:]
+	}
 }
 
 // programBasename reduces a program path to the bare name classification matches
@@ -313,4 +449,147 @@ func (c *ctx) looksLikeOptionsBag(file string, a graph.Arg) bool {
 		}
 	}
 	return len(t) >= 2 && t[0] == '{' && t[len(t)-1] == '}'
+}
+
+// expandArgvVar reads a Python argv list handed to subprocess as a variable from the statements
+// that build it earlier in the same function: args = [prog, "-x"], then args += [...],
+// args.append(x), args.extend([...]). A literal "--" added inside a block deeper than the call is
+// conditional, so it is not trusted to end option parsing. Anything else that changes the list
+// (insert, a reassignment that is not a list literal) leaves the call as written.
+func (c *ctx) expandArgvVar(pf *parsedFile, call *sitter.Node, kind argvKind, args []graph.Arg) []graph.Arg {
+	if kind != argvPython || len(args) == 0 || call == nil {
+		return args
+	}
+	name := strings.TrimSpace(args[0].Text)
+	if !isPlainIdent(name) {
+		return args
+	}
+	fn := call.Parent()
+	for fn != nil && fn.Kind() != "function_definition" {
+		fn = fn.Parent()
+	}
+	if fn == nil {
+		return args
+	}
+	src := pf.src
+	body := string(src[fn.StartByte():call.StartByte()])
+	callLine := strings.LastIndexByte(string(src[:call.StartByte()]), '\n')
+	callIndent := indentOf(string(src[callLine+1 : call.StartByte()]))
+	q := regexp.QuoteMeta(name)
+	stmt := regexp.MustCompile(`(?m)^([ \t]*)` + q + `\s*(=|\+=)\s*\[|^([ \t]*)` + q + `\.(append|extend|insert)\(|^[ \t]*` + q + `\s*=`)
+	var elems []graph.Arg
+	started := false
+	for _, m := range stmt.FindAllStringSubmatchIndex(body, -1) {
+		text := body[m[0]:m[1]]
+		indent := ""
+		if m[2] >= 0 {
+			indent = body[m[2]:m[3]]
+		} else if m[6] >= 0 {
+			indent = body[m[6]:m[7]]
+		}
+		conditional := len(indent) > len(callIndent)
+		switch {
+		case strings.HasSuffix(strings.TrimSpace(text), "[") && strings.Contains(text, "+="):
+			if !started {
+				return args
+			}
+			list := bracketed(body, m[1]-1)
+			if list == "" {
+				return args
+			}
+			elems = append(elems, guardDashDash(bracketedListElements(list), conditional)...)
+		case strings.HasSuffix(strings.TrimSpace(text), "["):
+			list := bracketed(body, m[1]-1)
+			if list == "" || conditional {
+				return args
+			}
+			elems, started = bracketedListElements(list), true
+		case strings.HasSuffix(text, ".append("):
+			inner := bracketedParen(body, m[1]-1)
+			if !started || inner == "" {
+				return args
+			}
+			elems = append(elems, guardDashDash(bracketedListElements("["+inner+"]"), conditional)...)
+		case strings.HasSuffix(text, ".extend("):
+			inner := strings.TrimSpace(bracketedParen(body, m[1]-1))
+			if !started || !strings.HasPrefix(inner, "[") {
+				return args
+			}
+			elems = append(elems, guardDashDash(bracketedListElements(inner), conditional)...)
+		default:
+			// insert, or a reassignment that is not a list literal: the order is not readable
+			return args
+		}
+	}
+	if !started || len(elems) == 0 {
+		return args
+	}
+	return append([]graph.Arg{{Text: "[" + joinArgText(elems) + "]"}}, args[1:]...)
+}
+
+func indentOf(s string) string {
+	return s[:len(s)-len(strings.TrimLeft(s, " \t"))]
+}
+
+// guardDashDash drops a conditional "--": it may not be there when the call runs
+func guardDashDash(es []graph.Arg, conditional bool) []graph.Arg {
+	if !conditional {
+		return es
+	}
+	out := es[:0:0]
+	for _, e := range es {
+		if e.Literal && e.Value == "--" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func joinArgText(es []graph.Arg) string {
+	parts := make([]string, len(es))
+	for i, e := range es {
+		parts[i] = e.Text
+	}
+	return strings.Join(parts, ", ")
+}
+
+// bracketed returns the text of the [...] starting at open, or "" when it does not close
+func bracketed(s string, open int) string { return balanced(s, open, '[', ']', true) }
+
+// bracketedParen returns the text inside the (...) starting at open
+func bracketedParen(s string, open int) string { return balanced(s, open, '(', ')', false) }
+
+func balanced(s string, open int, l, r byte, keep bool) string {
+	if open < 0 || open >= len(s) || s[open] != l {
+		return ""
+	}
+	depth := 0
+	var quote byte
+	for i := open; i < len(s); i++ {
+		ch := s[i]
+		if quote != 0 {
+			if ch == '\\' {
+				i++
+			} else if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			quote = ch
+		case l:
+			depth++
+		case r:
+			depth--
+			if depth == 0 {
+				if keep {
+					return s[open : i+1]
+				}
+				return s[open+1 : i]
+			}
+		}
+	}
+	return ""
 }

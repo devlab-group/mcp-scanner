@@ -1,0 +1,7 @@
+rule: promptdefense.hidden-chars
+expect_fire: true
+note: a variation selector after a letter and a joiner inside a word hide nothing a reader can see
+snapshot:
+  tools:
+  - name: read_notes
+    description: "Reads notes️ from the work‍space."

@@ -1,6 +1,8 @@
 package registration
 
 import (
+	"path"
+	"regexp"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
@@ -113,13 +115,16 @@ func callsLocalHelper(g *graph.Graph, idx index, c graph.Call) bool {
 // the receiver signal covers helpers handed a server object without importing its SDK.
 // localHelper (see callsLocalHelper) rules the generic names out for the project's own functions.
 func classifyCall(c graph.Call, inMCPTree, localHelper bool) (graph.CapabilityKind, bool) {
-	seg := parser.LastSegment(c.CalleeText)
+	seg := strings.TrimPrefix(parser.LastSegment(c.CalleeText), "new ")
 	switch normalize(seg) {
-	case "addtool", "registertool":
+	case "addtool", "registertool", "newservertool",
+		// the Java SDK's new SyncToolSpecification(tool, handler) / AsyncToolSpecification
+		"synctoolspecification", "asynctoolspecification":
 		return graph.CapabilityTool, true
-	case "addprompt", "registerprompt":
+	case "addprompt", "registerprompt", "syncpromptspecification", "asyncpromptspecification":
 		return graph.CapabilityPrompt, true
-	case "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate":
+	case "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate",
+		"syncresourcespecification", "asyncresourcespecification":
 		return graph.CapabilityResource, true
 	}
 	if localHelper || !bareRegistration(inMCPTree, c.CalleeText, len(c.Args)) {
@@ -147,11 +152,12 @@ func classifyDecorator(dec string) (graph.CapabilityKind, bool) {
 	// "#[tool(...)]" and "@Tool(...)" carry the wrapping punctuation in
 	// their callee slice; strip it before reducing to the final segment
 	switch normalize(parser.LastSegment(strings.Trim(callee, "#[]@ "))) {
-	case "tool", "addtool", "registertool":
+	// mcptool, mcpprompt, mcpresource: Spring AI's @McpTool, @McpPrompt and @McpResource
+	case "tool", "addtool", "registertool", "mcptool":
 		return graph.CapabilityTool, true
-	case "prompt", "addprompt", "registerprompt":
+	case "prompt", "addprompt", "registerprompt", "mcpprompt":
 		return graph.CapabilityPrompt, true
-	case "resource", "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate":
+	case "resource", "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate", "mcpresource":
 		return graph.CapabilityResource, true
 	}
 	return "", false
@@ -249,4 +255,114 @@ func functionalOptionFields(callText string) (name string, nameOK bool, fields m
 		}
 	}
 	return name, nameOK, fields
+}
+
+// Reasons a call shaped like a registration is set aside. Both are facts about the call itself,
+// not guesses from names; each skipped call is kept in graph.SkippedRegistrations for review.
+const (
+	// SkipLibraryModule: the receiver is a third-party Python module bound by a plain
+	// `import boto3`, so `boto3.resource("s3")` calls that module's own function
+	SkipLibraryModule = "receiver is an imported third-party module, not a server object"
+	// SkipNoHandler: every argument is a string literal, so the call supplies no handler and no
+	// content - `api.root.add_resource("v1")` in an infrastructure library
+	SkipNoHandler = "only string literal arguments: no handler or content to register"
+)
+
+func notARegistration(g *graph.Graph, c graph.Call) string {
+	if len(c.Args) > 0 {
+		allLiteral := true
+		for _, a := range c.Args {
+			if !a.Literal || a.Keyword != "" {
+				allLiteral = false
+				break
+			}
+		}
+		if allLiteral {
+			return SkipNoHandler
+		}
+	}
+	if strings.HasSuffix(c.File, ".py") {
+		root, _, ok := strings.Cut(c.CalleeText, ".")
+		if ok && isIdentifierText(root) && importsThirdPartyModule(g, c.File, root) {
+			return SkipLibraryModule
+		}
+	}
+	return ""
+}
+
+// importsThirdPartyModule reports whether file binds name with a plain `import name` of a top-level
+// package that is neither an MCP SDK nor a module of this tree. A plain import of a single name can
+// only bind a module; `from app import mcp` binds an object and is recorded as "app.mcp".
+func importsThirdPartyModule(g *graph.Graph, file, name string) bool {
+	f := g.Files[file]
+	if f == nil {
+		return false
+	}
+	found := false
+	for _, imp := range f.Imports {
+		if imp.Path == name && imp.Alias == "" {
+			found = true
+		}
+		if imp.Alias == name || strings.HasSuffix(imp.Path, "."+name) {
+			return false // the same name is also bound some other way
+		}
+	}
+	if !found || FileImportsMCPSDK(&graph.File{Imports: []graph.Import{{Path: name}}}) {
+		return false
+	}
+	for p := range g.Files {
+		base := path.Base(p)
+		if base == name+".py" || strings.HasPrefix(p, name+"/") || strings.Contains(p, "/"+name+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+// uriLiteral finds a URI with a scheme inside a quoted literal: "notes://{name}", 'file:///{path}'
+var uriLiteral = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^"'\x60\s]*`)
+
+// fixedResourceURI reports whether a registration's arguments spell a fixed resource URI: a
+// literal URI with no "{" (no URI-template variable), or a JavaScript template literal whose
+// text outside its ${...} substitutions holds a "/" (a scheme or a path) and no "{". A substitution is
+// evaluated by the server when it registers the resource, so it is not a client-chosen part.
+// Python f-strings are not read: there {BASE} and a template's {id} look the same.
+func fixedResourceURI(args []graph.Arg) bool {
+	for _, a := range args {
+		if a.Literal {
+			if m := uriLiteral.FindString(a.Value); m != "" && m == a.Value {
+				return !strings.Contains(m, "{")
+			}
+			continue
+		}
+		t := strings.TrimSpace(a.Text)
+		if len(t) < 2 || t[0] != '`' || t[len(t)-1] != '`' {
+			continue
+		}
+		rest, ok := parser.TemplateWithSubstitutions(t[1:len(t)-1], "")
+		if !ok || !strings.Contains(t, "${") {
+			continue
+		}
+		if strings.Contains(rest, "/") { // a scheme or a path
+			return !strings.Contains(rest, "{")
+		}
+	}
+	return false
+}
+
+// resourceURI returns the first URI a registration's arguments spell, from a string literal or a
+// descriptor literal (`&mcp.Resource{URI: "notes://today"}`), or "" when none is literal
+func resourceURI(args []graph.Arg) string {
+	for _, a := range args {
+		if a.Literal {
+			if m := uriLiteral.FindString(a.Value); m != "" && m == a.Value {
+				return m
+			}
+			continue
+		}
+		if m := uriLiteral.FindString(a.Text); m != "" && strings.ContainsAny(a.Text, `"'`+"`") {
+			return m
+		}
+	}
+	return ""
 }

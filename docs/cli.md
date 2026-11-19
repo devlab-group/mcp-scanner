@@ -77,6 +77,23 @@ never read outside it.
 mcp-scanner source ./my-mcp-server --analyzers supplychain,taint
 ```
 
+## `mcp-scanner inventory <path>`
+
+Prints a JSON inventory of a source tree without scanning it: languages, package manifests with
+their dependencies and the MCP SDK version, declared server names and versions, MCP imports, the
+start of the README, and for each tool, prompt and resource its name and description, how it is
+registered, its handler's location, parameters and source text (up to 8000 characters), and what
+the handler can reach through the call graph (network, filesystem, process, credentials,
+environment variables, literal URLs). Under `review_hints` it lists what static analysis left
+open - dynamic registrations, resource template parameters, the project's own validators, files it
+could not parse - each with the question to answer and how to check it; see
+[Review hints](review-hints.md). It runs no analyzer and reports no findings; keep it next to a
+scan report for a later review of the same tree.
+
+```sh
+mcp-scanner inventory ./my-server > inventory.json
+```
+
 ## `mcp-scanner package (<npm|pypi> <name> [version] | <npm|pypi>:<name>[@version])`
 
 Download, extract, and scan a published package without running install

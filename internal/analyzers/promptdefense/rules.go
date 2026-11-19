@@ -53,6 +53,11 @@ type Rule struct {
 	ContextIsPremise bool `yaml:"context_is_premise,omitempty"`
 	// NegateBefore regexes are only checked against the text before the pattern match
 	NegateBefore []string `yaml:"negate_before,omitempty"`
+	// ExcludeMatch regexes are checked against the matched text joined to the token it is attached
+	// to on the left: a match they cover is skipped and the next match of the same pattern is
+	// tried. It removes values that cannot be what the rule describes, such as an example email
+	// address showing the format of an argument.
+	ExcludeMatch []string `yaml:"exclude_match,omitempty"`
 	// Proximity further narrows the window negate/negateBefore/
 	// require_context search to this many characters around the match. The
 	// window never crosses a sentence boundary regardless of Proximity;
@@ -95,6 +100,7 @@ type compiledRule struct {
 	requireContext []*regexp.Regexp
 	negate         []*regexp.Regexp
 	negateBefore   []*regexp.Regexp
+	excludeMatch   []*regexp.Regexp
 }
 
 func compileRule(r Rule) (*compiledRule, error) {
@@ -111,6 +117,9 @@ func compileRule(r Rule) (*compiledRule, error) {
 	}
 	if cr.negateBefore, err = compileAll(r.NegateBefore); err != nil {
 		return nil, fmt.Errorf("rule %s: negate_before: %w", r.ID, err)
+	}
+	if cr.excludeMatch, err = compileAll(r.ExcludeMatch); err != nil {
+		return nil, fmt.Errorf("rule %s: exclude_match: %w", r.ID, err)
 	}
 	return cr, nil
 }

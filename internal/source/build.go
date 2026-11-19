@@ -127,12 +127,12 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 			}
 			g.Symbols[s.ID] = s
 		}
-		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants}
+		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants, ObjectConstants: res.ObjectConstants, TemplateConstants: res.TemplateConstants}
 		g.Calls = append(g.Calls, res.Calls...)
 	}
 	if timedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
-			"%d file(s) exceeded the %s per-file parse deadline and were aborted", timedOut, parser.ParseTimeout))
+			"%d file(s) exceeded the %s per-file parse budget (CPU time) and were aborted", timedOut, parser.ParseTimeout))
 	}
 	if overText > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(

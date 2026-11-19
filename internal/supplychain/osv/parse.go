@@ -395,3 +395,67 @@ func parseTOMLPackageBlocks(data []byte, table, kind string) ([]nameVersion, err
 	flush()
 	return out, nil
 }
+
+// PackageLockDevOnly returns the coordinates an npm package-lock.json marks "dev": true at every
+// place they appear. npm leaves those out of a production install (npm ci --omit=dev), so they are
+// not part of a server installed that way. "devOptional" is not dev-only: it may be installed.
+func PackageLockDevOnly(data []byte) map[Coordinate]bool {
+	var doc struct {
+		Packages map[string]struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Dev     bool   `json:"dev"`
+		} `json:"packages"`
+		Dependencies map[string]lockDevDep `json:"dependencies"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	dev, prod := map[Coordinate]bool{}, map[Coordinate]bool{}
+	if len(doc.Packages) > 0 {
+		for path, pkg := range doc.Packages {
+			if path == "" || pkg.Version == "" {
+				continue
+			}
+			name := pkg.Name
+			if name == "" {
+				name = packageNameFromPath(path)
+			}
+			c := Coordinate{Ecosystem: "npm", Name: name, Version: pkg.Version}
+			if pkg.Dev {
+				dev[c] = true
+			} else {
+				prod[c] = true
+			}
+		}
+	} else {
+		collectLegacyDev(doc.Dependencies, dev, prod)
+	}
+	out := map[Coordinate]bool{}
+	for c := range dev {
+		if !prod[c] {
+			out[c] = true
+		}
+	}
+	return out
+}
+
+type lockDevDep struct {
+	Version      string                `json:"version"`
+	Dev          bool                  `json:"dev"`
+	Dependencies map[string]lockDevDep `json:"dependencies"`
+}
+
+func collectLegacyDev(deps map[string]lockDevDep, dev, prod map[Coordinate]bool) {
+	for name, d := range deps {
+		if d.Version != "" {
+			c := Coordinate{Ecosystem: "npm", Name: name, Version: d.Version}
+			if d.Dev {
+				dev[c] = true
+			} else {
+				prod[c] = true
+			}
+		}
+		collectLegacyDev(d.Dependencies, dev, prod)
+	}
+}

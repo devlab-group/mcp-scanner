@@ -8,6 +8,7 @@ package behavioral
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 	// saying it could not compare this capability at all, which leaves it unaccounted so
 	// Coverage.Gaps() reports it and the scan downgrades. A skip would balance the arithmetic
 	// and let one uncomparable capability alongside one ordinary one report full coverage.
+	var hits [][]string // the sensitive sources behind each finding, index-aligned with findings
 	for _, cap := range g.Capabilities {
 		if ctx.Err() != nil {
 			break
@@ -77,8 +79,12 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		}
 		cov.CapabilitiesAnalyzed++
 		actual, sawUnknown := actualCapabilities(g, cap.Handler)
-		findings = append(findings, mismatches(cap, actual, sawUnknown)...)
+		for _, f := range mismatches(cap, actual, sawUnknown) {
+			findings = append(findings, f)
+			hits = append(hits, actual.SensitiveHits)
+		}
 	}
+	findings = collapseSharedCredential(findings, hits)
 
 	model.SortFindings(findings)
 
@@ -152,6 +158,13 @@ func actualCapabilities(g *graph.Graph, handler graph.SymbolID) (capSet, bool) {
 					cs.SensitiveHits = append(cs.SensitiveHits, frag)
 				}
 			}
+		}
+	}
+	// os.environ["API_KEY"] and process.env.API_KEY are reads too, though not calls
+	for _, name := range sourceEnvReads(g, reached) {
+		if credentialLikeName(name) {
+			cs.Credentials = true
+			cs.SensitiveHits = append(cs.SensitiveHits, "env:"+name)
 		}
 	}
 	return cs, sawUnknown
@@ -251,14 +264,12 @@ func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Fi
 			"description does not mention file access, but the handler reaches the filesystem",
 			model.SeverityLow, 0.5, actual, sawUnknown))
 	}
-	return findings
+	return reviewWordBased(findings)
 }
 
 func mkFinding(cap graph.Capability, ruleID, why string, severity model.Severity, confidence float64, actual capSet, sawUnknown bool) model.Finding {
-	name := cap.Name
-	if name == "" {
-		name = cap.HandlerText
-	}
+	// Never the inline handler's source text, which used to land in titles verbatim
+	name := source.DisplayName(cap)
 	desc := fmt.Sprintf("%s %q: %s. Declared description: %q.", cap.Kind, name, why, cap.Description)
 	if len(actual.SensitiveHits) > 0 {
 		desc += fmt.Sprintf(" Sensitive path pattern(s) reached: %s.", strings.Join(actual.SensitiveHits, ", "))
@@ -311,4 +322,88 @@ func (*Analyzer) Describe() analyzer.Description {
 			"the local-scope check reads a fixed, still-incomplete vocabulary (local/project/metadata/offline/workspace/machine/computer/device); a paraphrase using none of them (\"kept on this laptop\", say) is invisible to behavioral.undeclared_network and behavioral.undeclared_filesystem_access, though not to behavioral.contradicted_network, which does not depend on this list at all",
 		},
 	}
+}
+
+// wordBasedReasons say why a high-severity mismatch is a question, not a result. Every mismatch
+// compares what the handler reaches with words in its description - present, absent or negated -
+// and words cannot prove what a description promises, nor where a credential is sent. The finding
+// keeps its severity, for how bad it would be, and goes to needs_review.
+var wordBasedReasons = map[string]string{
+	"behavioral.credential_exfiltration_mismatch": "the handler reads a credential and makes a network call, and the description names neither; the scanner does not trace where the credential is sent, and a server that authenticates to its own service looks the same as one that leaks the credential",
+	"behavioral.contradicted_network":             "the denial is read from a negator a few words before a network word, not from a parse of the sentence; whether the description really promises no network access decides between a real issue and noise",
+	"behavioral.undeclared_network":               "the description reads as local-only because of a scope word (local, project, workspace, metadata) and no network word; whether the tool's purpose implies a remote service decides between a real issue and noise",
+	"behavioral.contradicted_credential_access":   "the denial is read from a negator near a credential word, not from a parse of the sentence",
+	"behavioral.contradicted_process_execution":   "the denial is read from a negator near a process word, not from a parse of the sentence",
+	"behavioral.undeclared_process_execution":     "the description has none of the words that declare running something; whether the tool's stated purpose implies it decides between a real issue and noise",
+	"behavioral.contradicted_filesystem_access":   "the denial is read from a negator near a filesystem word, not from a parse of the sentence",
+}
+
+func reviewWordBased(fs []model.Finding) []model.Finding {
+	for i := range fs {
+		if !fs[i].Severity.AtLeast(model.SeverityHigh) {
+			continue
+		}
+		reason, ok := wordBasedReasons[fs[i].RuleID]
+		if !ok {
+			reason = "the mismatch is read from the description's wording, which cannot prove what the tool promises"
+		}
+		fs[i].Triage, fs[i].TriageReason = model.TriageNeedsReview, reason
+	}
+	return fs
+}
+
+// collapseAt is how many tools must share one credential finding before it is reported once
+const collapseAt = 3
+
+// collapseSharedCredential reports a credential mismatch once when many tools reach the same
+// credential sources: a shared helper that attaches the server's own token to every request makes
+// each tool's finding the same fact. The kept finding names every tool that shares it.
+func collapseSharedCredential(fs []model.Finding, hits [][]string) []model.Finding {
+	type key struct{ rule, hits string }
+	groups := map[key][]int{}
+	for i, f := range fs {
+		if !strings.Contains(f.RuleID, "credential") || len(hits[i]) == 0 {
+			continue
+		}
+		h := append([]string(nil), hits[i]...)
+		sort.Strings(h)
+		k := key{f.RuleID, strings.Join(h, ",")}
+		groups[k] = append(groups[k], i)
+	}
+	drop := map[int]bool{}
+	for k, idx := range groups {
+		if len(idx) < collapseAt {
+			continue
+		}
+		sort.Slice(idx, func(a, b int) bool { return fs[idx[a]].Tool < fs[idx[b]].Tool })
+		var tools []string
+		for _, i := range idx {
+			tools = append(tools, fs[i].Tool)
+		}
+		keep := &fs[idx[0]]
+		shown := tools
+		if len(shown) > 12 {
+			shown = append(append([]string(nil), shown[:12]...), fmt.Sprintf("and %d more", len(tools)-12))
+		}
+		keep.Title = fmt.Sprintf("%d tools reach the same credential source (%s); one finding for all of them", len(tools), k.hits)
+		keep.Description = fmt.Sprintf("%d tools share this finding through the same credential source (%s): %s. %s", len(tools), k.hits, strings.Join(shown, ", "), keep.Description)
+		keep.Evidence = append(keep.Evidence, model.Evidence{
+			Level: model.EvidenceStatic, Kind: "shared_credential_source",
+			Description: "tools sharing this finding: " + strings.Join(tools, ", "),
+			File:        keep.File, Line: keep.Line,
+		})
+		for _, i := range idx[1:] {
+			drop[i] = true
+		}
+	}
+	if len(drop) == 0 {
+		return fs
+	}
+	out := fs[:0:0]
+	for i, f := range fs {
+		if !drop[i] {
+			out = append(out, f)
+		}
+	}
+	return out
 }

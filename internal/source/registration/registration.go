@@ -6,6 +6,7 @@
 package registration
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -33,7 +34,7 @@ func classifyArgs(args []graph.Arg) argRoles {
 		case "description":
 			r.Desc = a
 			continue
-		case "handler", "fn", "callback", "func", "handlerfunc":
+		case "handler", "fn", "callback", "func", "handlerfunc", "method", "function":
 			r.Handler = a
 			continue
 		}
@@ -162,7 +163,7 @@ type template struct {
 	innerCall                    graph.Call
 }
 
-func asTemplate(kind graph.CapabilityKind, roles argRoles, sym *graph.Symbol) (template, bool) {
+func asTemplate(kind graph.CapabilityKind, roles argRoles, args []graph.Arg, sym *graph.Symbol) (template, bool) {
 	t := template{kind: kind, nameIdx: -1, descIdx: -1, handlerIdx: -1}
 	if roles.Name == nil || roles.Name.Literal {
 		return t, false
@@ -180,6 +181,27 @@ func asTemplate(kind graph.CapabilityKind, roles argRoles, sym *graph.Symbol) (t
 	if roles.Handler != nil {
 		if hi, ok := paramIndex(sym, roles.Handler.Text); ok {
 			t.handlerIdx = hi
+		}
+	}
+	if t.handlerIdx < 0 {
+		// server.add_tool(offload_to_thread(method), ...) and registerTool(name, config,
+		// trackTool(name, callback)): the handler reaches the SDK through a call that receives one
+		// of the wrapper's own parameters; that parameter is the handler
+		for _, a := range args {
+			if a.Literal || !looksLikeCall(a.Text) || (roles.Name != nil && a.Text == roles.Name.Text) {
+				continue
+			}
+			open := strings.IndexByte(a.Text, '(')
+			for _, inner := range parser.SplitTopLevel(a.Text[open+1 : len(a.Text)-1]) {
+				inner = strings.TrimSpace(inner)
+				if hi, ok := paramIndex(sym, inner); ok && hi != t.nameIdx && hi != t.descIdx {
+					t.handlerIdx = hi
+					break
+				}
+			}
+			if t.handlerIdx >= 0 {
+				break
+			}
 		}
 	}
 	return t, true
@@ -203,8 +225,22 @@ func argAt(args []graph.Arg, i int) *graph.Arg {
 func Discover(g *graph.Graph) {
 	idx := buildIndex(g)
 	mcpTree := TreeImportsMCPSDK(g)
+	callsByFile := map[string][]int{}
+	for i, c := range g.Calls {
+		callsByFile[c.File] = append(callsByFile[c.File], i)
+	}
 	templates := map[graph.SymbolID]template{}
 	reqHandlers := newRequestHandlerState()
+
+	// mcp.tool()(fn) and mcp.tool(name="x")(fn): a decorator applied by a plain call. The inner
+	// mcp.tool(...) call on the same line is part of the same registration and is skipped below.
+	decoratorCalls := map[string]bool{}
+	for _, c := range g.Calls {
+		if kind, inner, ok := decoratorCall(c, mcpTree); ok {
+			decoratorCalls[fmt.Sprintf("%s:%d:%s", c.File, c.Line, inner)] = true
+			emitDecoratorCall(g, idx, kind, c)
+		}
+	}
 
 	for _, c := range g.Calls {
 		if c.IsDecorator {
@@ -214,22 +250,38 @@ func Discover(g *graph.Graph) {
 			// the same registration pattern
 			continue
 		}
+		if decoratorCalls[fmt.Sprintf("%s:%d:%s", c.File, c.Line, c.CalleeText)] {
+			continue
+		}
+		if _, _, ok := decoratorCall(c, mcpTree); ok {
+			continue
+		}
 		reqHandlers.addCall(g, idx, c)
 		kind, ok := classifyCall(c, mcpTree, callsLocalHelper(g, idx, c))
 		if !ok {
 			continue
 		}
+		if why := notARegistration(g, c); why != "" {
+			g.SkippedRegistrations = append(g.SkippedRegistrations, graph.SkippedRegistration{
+				Kind: kind, CalleeText: c.CalleeText, File: c.File, Line: c.Line, Reason: why})
+			continue
+		}
 		roles := classifyArgs(c.Args)
+		if normalize(parser.LastSegment(c.CalleeText)) == "newservertool" && len(c.Args) >= 3 {
+			// The Go SDK's mcp.NewServerTool(name, description, handler, options...): the handler is
+			// the third argument, not the last
+			roles.Handler = &c.Args[2]
+		}
 		if c.Caller != "" {
 			if sym := g.Symbols[c.Caller]; sym != nil {
-				if t, isTemplate := asTemplate(kind, roles, sym); isTemplate {
+				if t, isTemplate := asTemplate(kind, roles, c.Args, sym); isTemplate {
 					t.innerCall = c
 					templates[c.Caller] = t
 					continue
 				}
 			}
 		}
-		emitDirect(g, idx, kind, c, roles)
+		emitDirect(g, idx, callsByFile, kind, c, roles)
 	}
 
 	called := map[graph.SymbolID]bool{}
@@ -247,14 +299,22 @@ func Discover(g *graph.Graph) {
 	// A wrapper nobody calls through a resolved call is still a real
 	// registration the source discovered; record it once, unresolved,
 	// rather than dropping it because no call site was found
-	for id, t := range templates {
+	// Map order would decide the order of g.Capabilities, and taint seeds a handler from the first
+	// capability naming it: walk templates and symbols in a fixed order
+	templateIDs := make([]graph.SymbolID, 0, len(templates))
+	for id := range templates {
+		templateIDs = append(templateIDs, id)
+	}
+	slices.Sort(templateIDs)
+	for _, id := range templateIDs {
+		t := templates[id]
 		if called[id] {
 			continue
 		}
-		emitDirect(g, idx, t.kind, t.innerCall, classifyArgs(t.innerCall.Args))
+		emitDirect(g, idx, callsByFile, t.kind, t.innerCall, classifyArgs(t.innerCall.Args))
 	}
 
-	for _, sym := range g.Symbols {
+	for _, sym := range sortedSymbols(g) {
 		for i, dec := range sym.Decorators {
 			if role, ok := classifyRequestHandlerDecorator(dec); ok {
 				reqHandlers.addDecorator(role, sym)
@@ -273,6 +333,7 @@ func Discover(g *graph.Graph) {
 	}
 
 	reqHandlers.emit(g)
+	discoverJSONRPC(g, idx, callsByFile)
 
 	sort.SliceStable(g.Capabilities, func(i, j int) bool {
 		a, b := g.Capabilities[i], g.Capabilities[j]
@@ -283,7 +344,7 @@ func Discover(g *graph.Graph) {
 	})
 }
 
-func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Call, roles argRoles) {
+func emitDirect(g *graph.Graph, idx index, callsByFile map[string][]int, kind graph.CapabilityKind, c graph.Call, roles argRoles) {
 	form := "direct"
 	if c.InLoop {
 		form = "loop"
@@ -322,12 +383,45 @@ func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Ca
 	if !cap.DescriptionResolved {
 		cap.Description, cap.DescriptionResolved = argValue(g, c.File, roles.Desc)
 	}
+	// registerTool(name, config, handler) with `const config = { title, description }` declared in
+	// the same file: the config-object rule in classifyArgs only sees an inline object literal
+	if roles.Desc != nil && !roles.Desc.Literal && isIdentifierText(roles.Desc.Text) {
+		if f := g.Files[c.File]; f != nil {
+			if fields := objectLiteralFields(f.ObjectConstants[roles.Desc.Text]); fields != nil {
+				if !cap.DescriptionResolved {
+					if v, ok := literalField(fields, "description"); ok {
+						cap.Description, cap.DescriptionResolved = v, true
+					}
+				}
+				if !cap.NameResolved && (roles.Name == nil || roles.Name == roles.Desc) {
+					if v, ok := literalField(fields, "title"); ok {
+						cap.Name, cap.NameResolved = v, true
+					}
+				}
+			}
+		}
+	}
+	if roles.Handler == nil {
+		roles.Handler = wrappedHandler(g, idx, callsByFile, c)
+	}
 	if roles.Handler != nil {
 		cap.HandlerText = roles.Handler.Text
 		if roles.Handler.HandlerID != "" {
 			cap.Handler = roles.Handler.HandlerID
 		} else if id, ok := idx.resolve(roles.Handler.Text); ok {
 			cap.Handler = id
+		}
+	}
+	if roles.Desc == nil {
+		docstringDescription(g, &cap)
+	}
+	if kind == graph.CapabilityResource {
+		cap.URI = resourceURI(c.Args)
+		cap.URIFixed = fixedResourceURI(c.Args)
+		// server.resource("notes", "notes://{name}", cb): the second literal is the URI, not a
+		// description
+		if cap.URI != "" && cap.DescriptionResolved && cap.Description == cap.URI {
+			cap.Description, cap.DescriptionResolved = "", false
 		}
 	}
 	g.Capabilities = append(g.Capabilities, cap)
@@ -337,7 +431,27 @@ func emitWrapper(g *graph.Graph, idx index, t template, c graph.Call) {
 	cap := graph.Capability{Kind: t.kind, Form: "wrapper", File: c.File, Line: c.Line}
 	cap.Name, cap.NameResolved = argValue(g, c.File, argAt(c.Args, t.nameIdx))
 	cap.Description, cap.DescriptionResolved = argValue(g, c.File, argAt(c.Args, t.descIdx))
-	if a := argAt(c.Args, t.handlerIdx); a != nil {
+	if !cap.DescriptionResolved {
+		// accountTool("x", { description: "..." }, handler): the wrapper spreads the config it is
+		// given into the SDK call, so the call site's own config literal carries the description
+		for _, a := range c.Args {
+			if v, ok := literalField(objectLiteralFields(a.Text), "description"); ok {
+				cap.Description, cap.DescriptionResolved = v, true
+				break
+			}
+		}
+	}
+	if argAt(c.Args, t.descIdx) == nil {
+		defer func() { docstringDescription(g, &g.Capabilities[len(g.Capabilities)-1]) }()
+	}
+	a := argAt(c.Args, t.handlerIdx)
+	if a == nil {
+		// The wrapper builds the SDK handler from a local value (accountTool turning its handler
+		// parameter into a callback first); the function the call site passes is still the
+		// capability's handler
+		a = classifyArgs(c.Args).Handler
+	}
+	if a != nil {
 		cap.HandlerText = a.Text
 		if a.HandlerID != "" {
 			cap.Handler = a.HandlerID
@@ -380,6 +494,10 @@ func emitDecorator(g *graph.Graph, kind graph.CapabilityKind, dec string, args [
 		// Python without a docstring has a known empty description. Rust doc comments and
 		// Java framework fallbacks are not read here, so those descriptions stay unresolved.
 		cap.DescriptionResolved = true
+	}
+	if kind == graph.CapabilityResource {
+		cap.URI = resourceURI(args)
+		cap.URIFixed = fixedResourceURI(args)
 	}
 	g.Capabilities = append(g.Capabilities, cap)
 }
@@ -515,4 +633,140 @@ func factoryReturn(g *graph.Graph, idx index, callText string) []graph.Arg {
 		return nil
 	}
 	return sym.ReturnLiteral
+}
+
+// decoratorCall recognizes a registration decorator applied by a plain call: mcp.tool()(fn) or
+// mcp.tool(name="x", description="...")(fn). It returns the kind and the inner call's callee text.
+func decoratorCall(c graph.Call, inMCPTree bool) (graph.CapabilityKind, string, bool) {
+	t := strings.TrimSpace(c.CalleeText)
+	if !inMCPTree || !strings.HasSuffix(t, ")") || len(c.Args) != 1 || !isIdentifierText(c.Args[0].Text) {
+		return "", "", false
+	}
+	open := strings.IndexByte(t, '(')
+	if open <= 0 {
+		return "", "", false
+	}
+	inner := t[:open]
+	if !strings.Contains(inner, ".") {
+		return "", "", false
+	}
+	switch parser.LastSegment(inner) {
+	case "tool":
+		return graph.CapabilityTool, inner, true
+	case "prompt":
+		return graph.CapabilityPrompt, inner, true
+	case "resource":
+		return graph.CapabilityResource, inner, true
+	}
+	return "", "", false
+}
+
+// emitDecoratorCall records mcp.tool(...)(fn): the name and description come from the inner
+// call's arguments when given, otherwise from the function's own name and docstring, as with the
+// @mcp.tool() decorator
+func emitDecoratorCall(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Call) {
+	cap := graph.Capability{Kind: kind, Form: "decorator_call", File: c.File, Line: c.Line, HandlerText: c.Args[0].Text}
+	var sym *graph.Symbol
+	if id, ok := idx.resolve(c.Args[0].Text); ok {
+		cap.Handler = id
+		sym = g.Symbols[id]
+	}
+	if v, ok := decoratorArg(c.CalleeText, "name"); ok {
+		cap.Name, cap.NameResolved = v, true
+	} else if sym != nil {
+		cap.Name, cap.NameResolved = sym.Name, true
+	}
+	if v, ok := decoratorArg(c.CalleeText, "description"); ok {
+		cap.Description, cap.DescriptionResolved = v, true
+	} else if sym != nil && sym.Doc != "" {
+		cap.Description, cap.DescriptionResolved = sym.Doc, true
+	}
+	if kind == graph.CapabilityResource {
+		cap.URI = uriLiteral.FindString(c.CalleeText)
+	}
+	g.Capabilities = append(g.Capabilities, cap)
+}
+
+// docstringDescription applies the Python SDKs' rule for a direct registration with no
+// description argument: add_tool(fn) and Tool.from_function(fn) describe the tool with fn's
+// docstring. It changes nothing for other languages or when a description argument was given.
+func docstringDescription(g *graph.Graph, cap *graph.Capability) {
+	if cap.DescriptionResolved || cap.Handler == "" {
+		return
+	}
+	sym := g.Symbols[cap.Handler]
+	f := g.Files[cap.File]
+	if sym == nil || sym.Doc == "" || f == nil || language.ID(f.Language) != language.Python {
+		return
+	}
+	cap.Description, cap.DescriptionResolved = sym.Doc, true
+}
+
+// wrappedHandler finds a handler the registration passes through a wrapping call as its last
+// argument - registerTool("x", config, trackedTool("x", async () => {...})) or
+// server.tool("x", withAuth(handler)): the wrapper's own function argument is the code that runs.
+// It reads the wrapping call's arguments from the graph's record of that call.
+func wrappedHandler(g *graph.Graph, idx index, callsByFile map[string][]int, c graph.Call) *graph.Arg {
+	var last *graph.Arg
+	for i := range c.Args {
+		if c.Args[i].Keyword == "" {
+			last = &c.Args[i]
+		}
+	}
+	if last == nil || last.Literal || !looksLikeCall(last.Text) {
+		return nil
+	}
+	open := strings.IndexByte(last.Text, '(')
+	if open <= 0 {
+		return nil
+	}
+	callee := strings.TrimSpace(last.Text[:open])
+	for _, i := range callsByFile[c.File] {
+		w := &g.Calls[i]
+		if w.CalleeText != callee || w.Line < c.Line || !strings.HasPrefix(last.Text, w.CalleeText) {
+			continue
+		}
+		// The recorded call must be this argument: its arguments appear in the argument's text
+		match := true
+		for _, a := range w.Args {
+			if !strings.Contains(last.Text, a.Text) {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		for j := len(w.Args) - 1; j >= 0; j-- {
+			a := &w.Args[j]
+			if a.HandlerID != "" {
+				return a
+			}
+			if !a.Literal && isIdentifierText(a.Text) {
+				if _, ok := idx.resolve(a.Text); ok {
+					return a
+				}
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// sortedSymbols is every symbol of g by file, line and id
+func sortedSymbols(g *graph.Graph) []*graph.Symbol {
+	out := make([]*graph.Symbol, 0, len(g.Symbols))
+	for _, s := range g.Symbols {
+		out = append(out, s)
+	}
+	slices.SortFunc(out, func(a, b *graph.Symbol) int {
+		if a.File != b.File {
+			return strings.Compare(a.File, b.File)
+		}
+		if a.Line != b.Line {
+			return a.Line - b.Line
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
+	return out
 }

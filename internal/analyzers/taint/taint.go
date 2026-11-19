@@ -6,6 +6,8 @@ package taint
 import (
 	"context"
 	"fmt"
+	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,34 +58,13 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 	tc := newCtx(ctx, g)
 	defer tc.closeAll()
 
-	// Seed every handler from its own capability, even if another trace already reached it. That
-	// trace carried different arguments; the (symbol, seed) guard still prevents duplicate work.
-	for _, sym := range g.Symbols {
-		if ctx.Err() != nil {
-			break
-		}
-		if seed := tc.seedFor(sym); seed != nil {
-			tc.analyzeSymbol(sym, seed, 0)
-		}
-	}
-	// Everything else: a plain function can still introduce taint on its
-	// own (an environment variable, a file, an HTTP response) and reach a
-	// sink entirely within itself, with no handler involved
-	for _, sym := range g.Symbols {
-		if ctx.Err() != nil {
-			break
-		}
-		if tc.visitedSyms[sym.ID] {
-			continue
-		}
-		tc.analyzeSymbol(sym, nil, 0)
-	}
+	tc.walkAll(ctx)
 
 	model.SortFindings(tc.findings)
 
 	var warnings []string
 	status := model.AnalyzerCompleted
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || tc.workLimitHit {
 		status = model.AnalyzerPartial
 	}
 	if walkCoverageMissing {
@@ -108,7 +89,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		Status:    status,
 		Required:  true,
 		Coverage:  cov,
-		Findings:  tc.findings,
+		Findings:  dedupeFindings(classify(g, tc.findings)),
 		Warnings:  warnings,
 		StartedAt: started,
 	}
@@ -117,11 +98,117 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 	return res
 }
 
+// dedupeFindings keeps one finding per identity - the fields a finding ID is computed from. Every
+// path that reaches a sink is emitted, and two seeds or two routes into the same call produced the
+// same finding twice under the same ID. It runs after classification so the kept path is the one
+// that matters most (see better); order follows first emission.
+func dedupeFindings(fs []model.Finding) []model.Finding {
+	type key struct {
+		rule, category, file, tool, title string
+		line                              int
+	}
+	index := make(map[key]int, len(fs))
+	out := fs[:0:0]
+	for _, f := range fs {
+		k := key{f.RuleID, f.Category, f.File, f.Tool, f.Title, f.Line}
+		i, seen := index[k]
+		if !seen {
+			index[k] = len(out)
+			out = append(out, f)
+			continue
+		}
+		if better(f, out[i]) {
+			out[i] = f
+		}
+	}
+	return out
+}
+
+// better picks the path that matters most once paths are classified: the higher severity, then the
+// one that is not background context, then the one that is not sent to review, then confidence,
+// then the shorter path. Picking by
+// confidence alone kept an environment-variable path, classified INFO, over a file-contents path
+// to the same sink that needed review.
+func better(a, b model.Finding) bool {
+	if a.Severity.Rank() != b.Severity.Rank() {
+		return a.Severity.Rank() > b.Severity.Rank()
+	}
+	if ac, bc := a.Triage == model.TriageContext, b.Triage == model.TriageContext; ac != bc {
+		return !ac
+	}
+	// One route with no check is enough for the sink to be reachable unchecked: a route that went
+	// to review must not hide it
+	if ar, br := a.Triage == model.TriageNeedsReview, b.Triage == model.TriageNeedsReview; ar != br {
+		return !ar
+	}
+	if a.Confidence != b.Confidence {
+		return a.Confidence > b.Confidence
+	}
+	if pathLen(a) != pathLen(b) {
+		return pathLen(a) < pathLen(b)
+	}
+	// Equal on everything that matters: a fixed order, so repeated scans keep the same path
+	return pathKey(a) < pathKey(b)
+}
+
+func pathKey(f model.Finding) string {
+	if len(f.Evidence) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, st := range f.Evidence[0].Path {
+		fmt.Fprintf(&b, "%s|%s|%s|%d;", st.Kind, st.Symbol, st.File, st.Line)
+	}
+	return b.String()
+}
+
+// orderedSymbols lists the graph's symbols by file, line and id
+func orderedSymbols(g *graph.Graph) []*graph.Symbol {
+	out := make([]*graph.Symbol, 0, len(g.Symbols))
+	for _, s := range g.Symbols {
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.ID < b.ID
+	})
+	return out
+}
+
+func pathLen(f model.Finding) int {
+	if len(f.Evidence) == 0 {
+		return 0
+	}
+	return len(f.Evidence[0].Path)
+}
+
+// maxTitleCallee bounds the callee text a title quotes. The callee is arbitrary source text - a
+// chained call can carry a whole template literal - and the full flow stays in the evidence path.
+const maxTitleCallee = 120
+
+// titleCallee collapses whitespace so a title stays on one line, and shortens a long callee
+func titleCallee(text string) string {
+	t := strings.Join(strings.Fields(text), " ")
+	if r := []rune(t); len(r) > maxTitleCallee {
+		t = string(r[:maxTitleCallee]) + "..."
+	}
+	return t
+}
+
 // emit records one finding. note, when set, is a specific explanation for
 // this particular verdict (why an argv-style call was or was not treated
 // as a shell command) and is prepended to the traced-path description
 // rather than replacing it
 func (c *ctx) emit(category string, severity model.Severity, calleeText string, info taintInfo, file string, line int, note string) {
+	if c.summaryDepth > 0 {
+		return
+	}
 	desc := describePath(info.chain)
 	if note != "" {
 		desc = note + ". Path: " + desc
@@ -131,7 +218,7 @@ func (c *ctx) emit(category string, severity model.Severity, calleeText string, 
 	c.findings = append(c.findings, model.Finding{
 		RuleID:        "taint." + category,
 		Category:      category,
-		Title:         fmt.Sprintf("tainted data reaches %s (%s)", calleeText, category),
+		Title:         fmt.Sprintf("tainted data reaches %s (%s)", titleCallee(calleeText), category),
 		Severity:      severity,
 		Confidence:    max(0, min(info.confidence, 1)),
 		EvidenceLevel: model.EvidenceDataflow,
@@ -147,6 +234,10 @@ func (c *ctx) emit(category string, severity model.Severity, calleeText string, 
 			Path:        info.chain,
 		}},
 	})
+	if info.review != "" {
+		f := &c.findings[len(c.findings)-1]
+		f.Triage, f.TriageReason = model.TriageNeedsReview, info.review
+	}
 }
 
 func describePath(chain []model.FlowStep) string {
@@ -191,9 +282,14 @@ func taintCoverage(g *graph.Graph, tc *ctx) model.Coverage {
 			"%d file(s) reached by the taint walk exceeded the %d byte size limit and were read and parsed only up to it",
 			tc.sizeCapped, tc.sizeCap))
 	}
+	if tc.workLimitHit {
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"the taint walk visited more than %d syntax nodes and stopped between functions; the functions after that point in the tree's fixed order were not traced (the same on every machine)",
+			workLimit))
+	}
 	if tc.parseTimedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
-			"%d file(s) reached by the taint walk exceeded its own %s per-file parse deadline and were not traced",
+			"%d file(s) reached by the taint walk exceeded its own %s per-file parse budget (CPU time) and were not traced",
 			tc.parseTimedOut, parser.ParseTimeout))
 	}
 	// A file the walk reached and could not reopen, could not get a parser for, or could not
@@ -252,5 +348,71 @@ func (*Analyzer) Describe() analyzer.Description {
 			"a value appended to a collection taints the collection only when the receiver is a plain local name: cmd.append(v) and args.push(v) are followed, self.items.append(v) and registry[key].push(v) are not, so a command assembled through a field or a nested element is not traced",
 			"an argv array handed to a child process as a variable rather than written out at the call site cannot be read element by element; it is checked as one argument, so the position of the tainted value is unknown - which means a terminator or an option boundary inside such an array does not clear the flow, and a shell given an unreadable argv is reported as command injection rather than the weaker category",
 		},
+	}
+}
+
+// TaintWorkLimit is how many syntax nodes the taint walk visits before it stops between symbols.
+// The largest trees in the regression set need about 7.5 million; the limit leaves room above that.
+// Counting work, not time, makes the cut point the same on any machine.
+const TaintWorkLimit = 25_000_000
+
+// workLimit defaults to TaintWorkLimit; tests lower it
+var workLimit uint64 = TaintWorkLimit
+
+// overWorkLimit records and reports that the walk has done its share of work
+func (c *ctx) overWorkLimit() bool {
+	if c.work > workLimit {
+		c.workLimitHit = true
+	}
+	return c.workLimitHit
+}
+
+// walkAll seeds every handler, then walks every function no handler reached
+func (c *ctx) walkAll(ctx context.Context) {
+	// Seed every handler from its own capability, even if another trace already reached it. That
+	// trace carried different arguments; the (symbol, seed) guard still prevents duplicate work,
+	// and replay carries what the first walk found to the later callers. Walk in a fixed order: the (symbol, seed) guard lets the first trace into a shared helper
+	// stand for every later one, so map order would decide which handler a finding names
+	ordered := orderedSymbols(c.g)
+	for _, sym := range ordered {
+		if ctx.Err() != nil || c.overWorkLimit() {
+			break
+		}
+		if seed := c.seedFor(sym); seed != nil {
+			c.analyzeSymbol(sym, seed, 0)
+		}
+	}
+	// A handler that reads what another call stored - run_jobs over the jobs add_job queued - is
+	// walked again with the stored taint added to its own arguments
+	for _, sym := range ordered {
+		if ctx.Err() != nil || c.overWorkLimit() || len(c.stored) == 0 {
+			break
+		}
+		seed := c.seedFor(sym)
+		if seed == nil {
+			continue
+		}
+		if stored := c.storedSeed(sym); stored != nil {
+			merged := make(map[string]taintInfo, len(seed)+len(stored))
+			maps.Copy(merged, seed)
+			maps.Copy(merged, stored)
+			c.analyzeSymbol(sym, merged, 0)
+		}
+	}
+	// Everything else: a plain function can still introduce taint on its
+	// own (an environment variable, a file, an HTTP response) and reach a
+	// sink entirely within itself, with no handler involved - and it can
+	// read what a handler stored (a scheduler loop over queued commands)
+	for _, sym := range ordered {
+		if ctx.Err() != nil || c.overWorkLimit() {
+			break
+		}
+		if c.visitedSyms[sym.ID] {
+			continue
+		}
+		c.analyzeSymbol(sym, nil, 0)
+		if stored := c.storedSeed(sym); stored != nil {
+			c.analyzeSymbol(sym, stored, 0)
+		}
 	}
 }
