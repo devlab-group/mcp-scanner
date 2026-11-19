@@ -63,8 +63,12 @@ type FileResult struct {
 	// rest of the file
 	HasSyntaxErrors bool
 
-	// Constants holds unambiguous same-file string constants from Python, Java or Rust
+	// Constants holds unambiguous same-file string constants from Python, Java, Rust,
+	// JavaScript/TypeScript and Go
 	Constants map[string]string
+	// ObjectConstants holds the source text of unambiguous top-level JavaScript/TypeScript
+	// `const NAME = { ... }` object literals, for callers that read fields such as description
+	ObjectConstants map[string]string
 }
 
 // localSymbol tracks a symbol's byte range so calls and decorators found later
@@ -223,6 +227,10 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 		res.Constants = javaConstants(root, src)
 	case language.Rust:
 		res.Constants = rustConstants(root, src)
+	case language.JavaScript, language.TypeScript:
+		res.Constants, res.ObjectConstants = jsModuleConstants(root, src)
+	case language.Go:
+		res.Constants = goFileConstants(root, src)
 	}
 	// A timed-out query ends like an exhausted one, so check the budget before returning.
 	// Constant extraction does not check the deadline during its walks.

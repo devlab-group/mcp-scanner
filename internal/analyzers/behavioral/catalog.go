@@ -107,14 +107,46 @@ var sensitivePathFragments = []string{
 	"169.254.169.254", "metadata.google.internal",
 }
 
+// dotfileFragments name a file or directory by its whole dotted name, so the dot must start a path
+// component: ".env" in "./.env" or ".env.local", not in process.env, os.environ or import.meta.env,
+// which read environment variables rather than a file
+var dotfileFragments = map[string]bool{".env": true, ".netrc": true, ".npmrc": true, ".gcloud": true}
+
+// extensionFragments are file extensions, so they must end a name: "server.pem", not ".pembroke"
+var extensionFragments = map[string]bool{".pem": true}
+
 func sensitiveFragment(text string) (string, bool) {
 	lower := strings.ToLower(text)
 	for _, frag := range sensitivePathFragments {
-		if strings.Contains(lower, strings.ToLower(frag)) {
-			return frag, true
+		f := strings.ToLower(frag)
+		for from := 0; ; {
+			i := strings.Index(lower[from:], f)
+			if i < 0 {
+				break
+			}
+			i += from
+			end := i + len(f)
+			ok := true
+			if dotfileFragments[frag] && i > 0 && isNameByte(lower[i-1]) {
+				ok = false
+			}
+			if dotfileFragments[frag] && end < len(lower) && isNameByte(lower[end]) {
+				ok = false
+			}
+			if extensionFragments[frag] && end < len(lower) && isNameByte(lower[end]) {
+				ok = false
+			}
+			if ok {
+				return frag, true
+			}
+			from = i + 1
 		}
 	}
 	return "", false
+}
+
+func isNameByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // declaredWords is the controlled vocabulary a description is matched

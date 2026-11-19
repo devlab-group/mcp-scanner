@@ -15,6 +15,11 @@ rules:
       - "\\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:com|net|org|io|dev|app|co|info|biz|xyz|me|ai|cloud|tech|site|online|link|gg|to)\\b(?:/[^\\s\"'<>)]*)?"
       - "encode\\S* .{0,40}(into|in) (the )?url"
       - "append\\S* .{0,40}(to|into) (the )?(url|query string)"
+    # An email address at a reserved domain (RFC 2606, RFC 6761) shows the format of an argument:
+    # "such as user@example.com" names no recipient. A URL at a reserved domain still fires, and so
+    # does an address at any other domain
+    exclude_match:
+      - "^[^\\s@]+@(?:[a-z0-9-]+\\.)*(?:example\\.(?:com|net|org)|[a-z0-9-]+\\.(?:example|test|invalid|localhost))$"
     # A URL mention requires a nearby handover verb. A documentation link alone does not claim
     # that data should be sent there.
     context_is_premise: true

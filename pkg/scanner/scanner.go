@@ -310,7 +310,14 @@ func (s *Scanner) runOne(ctx context.Context, a analyzer.Analyzer, target model.
 	// UNAVAILABLE are overridden too, or the deadline excuses itself.
 	if actx.Err() != nil && (res.Status == model.AnalyzerCompleted || selfExcused(res.Status)) {
 		res.Status = model.AnalyzerPartial
+	}
+	// Say so whatever status the analyzer reported. An analyzer that was already PARTIAL for
+	// another limit used to carry no trace of the deadline, so a report never showed that its
+	// results were cut off by time - and how much it traced depends on how busy the machine was.
+	if actx.Err() != nil && res.Status != model.AnalyzerFailed {
+		note := fmt.Sprintf("analyzer deadline (%s) reached before it finished: results are incomplete and can differ between runs on a slower or busier machine", timeout)
 		res.Warnings = append(res.Warnings, "analyzer deadline reached before it finished")
+		res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, note)
 	}
 	return res
 }

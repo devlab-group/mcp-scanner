@@ -1098,9 +1098,9 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		// either way.
 		matchText, aliased := c.rewriteModuleAlias(file, calleeText)
 
-		detail, isSource := matchSource(calleeText)
+		detail, isSource := matchSource(maskLiteralText(calleeText))
 		if !isSource && aliased {
-			detail, isSource = matchSource(matchText)
+			detail, isSource = matchSource(maskLiteralText(matchText))
 		}
 		if isSource {
 			info := taintInfo{confidence: 1, chain: []model.FlowStep{{
@@ -1164,8 +1164,9 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 
 	text := rhs.Utf8Text(pf.src)
 	// Attribute, index, or member access can carry a source value without being a call itself,
-	// as in `requests.get(u).text`, `os.environ["JOB"]`, or `process.env.JOB`
-	if detail, ok := matchSource(text); ok {
+	// as in `requests.get(u).text`, `os.environ["JOB"]`, or `process.env.JOB`. String contents
+	// are blanked first: a description that says "fetch the next page" reads nothing
+	if detail, ok := matchSource(maskLiteralText(text)); ok {
 		setTaint(tainted, targets, taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: strings.TrimSpace(text), File: file, Line: line, Detail: detail, Resolved: true,
 		}}}, conditional)
@@ -1208,14 +1209,15 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	// sinkText is what the sink tables are asked about. It is the callee as written everywhere
 	// except three rewritten shapes: local sink aliases, module aliases, and a sink handed to
 	// something like asyncio.to_thread as a value.
-	sinkText := calleeText
+	sinkText := sinkCallee(calleeText)
+	asWritten := true
 	if aliased, ok := c.aliasedSinkText(file, calleeText); ok {
-		sinkText = aliased
-	} else if rewritten, ok := c.rewriteModuleAlias(file, calleeText); ok && !isSinkText(pf.adapter.ID, calleeText) {
-		sinkText = rewritten
+		sinkText, asWritten = aliased, false
+	} else if rewritten, ok := c.rewriteModuleAlias(file, calleeText); ok && !isSinkText(pf.adapter.ID, sinkCallee(calleeText)) {
+		sinkText, asWritten = sinkCallee(rewritten), false
 	}
 	if fnText, rest, ok := sinkValueArg(pf.adapter.ID, calleeText, args); ok {
-		sinkText, args, receiver = fnText, rest, parser.Receiver{}
+		sinkText, args, receiver, asWritten = fnText, rest, parser.Receiver{}, false
 	}
 
 	if argv, argvArgs, ok := matchArgvSink(pf.adapter.ID, sinkText, args); ok {
@@ -1243,15 +1245,17 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
-	if sinkFound && sink.text == "exec" && sinkText == calleeText && c.regExpReceiver(pf, file, n) {
+	if sinkFound && sink.text == "exec" && asWritten && c.regExpReceiver(pf, file, n) {
 		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
 		sinkFound = false
 	}
+	byMethodName := false
 	if !sinkFound && !resolvedInRepo {
 		// methodSinkPatterns matches by method name alone, which a plain in-repo function sharing
 		// that name would also match - a helper named execute() is not cursor.execute just because
 		// they share a name
 		sink, sinkFound = matchMethodSink(sinkText)
+		byMethodName = sinkFound
 	}
 	if !sinkFound && !resolvedInRepo {
 		recv := receiver
@@ -1269,7 +1273,10 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		var info taintInfo
 		var found bool
 		if sink.argIndex >= 0 {
-			if a, ok := sinkArg(args, sink.argIndex, sink.category); ok {
+			if a, ok := sinkArg(args, sink.argIndex, sink.category); ok && !(byMethodName && isFunctionLiteralText(a.Text)) {
+				// A sink matched by method name alone whose checked argument is a function
+				// literal is some other API: a URL or a query string is never a closure, while
+				// sync.Once.Do(func() {...}) and errgroup-style Do(fn) take exactly that
 				info, found = mentionsAny(a.Text, tainted, sink.category)
 				if found && sink.category == "ssrf" && c.hostFixed(pf, file, argNode(n, a, pf.src)) {
 					found = false
@@ -1292,7 +1299,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		}
 		return
 	}
-	if _, ok := matchSource(calleeText); ok {
+	if _, ok := matchSource(maskLiteralText(calleeText)); ok {
 		return
 	}
 	if _, ok := sanitizerFor(calleeText, resolvedInRepo); ok {
@@ -2015,6 +2022,56 @@ func maskLiteralText(text string) string {
 		return text
 	}
 	return string(out)
+}
+
+// isFunctionLiteralText reports whether an argument is written as a function literal in one of
+// the supported languages: a Go func literal, a JavaScript function or arrow function, a Python
+// lambda, or a Rust closure
+func isFunctionLiteralText(text string) bool {
+	t := strings.TrimSpace(text)
+	t = strings.TrimPrefix(t, "async ")
+	t = strings.TrimPrefix(t, "move ")
+	switch {
+	case strings.HasPrefix(t, "func(") || strings.HasPrefix(t, "func ("):
+		return true
+	case strings.HasPrefix(t, "function"), strings.HasPrefix(t, "lambda ") || strings.HasPrefix(t, "lambda:"):
+		return true
+	case strings.HasPrefix(t, "|"):
+		return true
+	}
+	// An arrow function: a parameter list or a single identifier, then =>
+	if i := strings.Index(t, "=>"); i > 0 {
+		head := strings.TrimSpace(t[:i])
+		if strings.HasPrefix(head, "(") && strings.HasSuffix(head, ")") || isPlainIdent(head) {
+			return true
+		}
+	}
+	return false
+}
+
+// sinkCallee is the part of callee text that names the function actually being called. String
+// contents are blanked, and everything up to the last closing bracket is an earlier call or
+// expression whose result is only the receiver: in `execSync(cmd).toString().trim` the call is
+// trim, and in `expect(fs.rmSync).not.toHaveBeenCalled` it is toHaveBeenCalled. The inner call
+// is its own call node and is matched there. A compiled `(0, child_process.exec)` indirection
+// names the function inside its parentheses, after the last comma.
+func sinkCallee(text string) string {
+	masked := maskLiteralText(text)
+	i := strings.LastIndexAny(masked, ")]")
+	if i < 0 {
+		return masked
+	}
+	if tail := masked[i+1:]; strings.TrimSpace(tail) != "" || masked[i] != ')' {
+		return tail
+	}
+	trimmed := strings.TrimSpace(masked)
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		inner := trimmed[1 : len(trimmed)-1]
+		if j := strings.LastIndexByte(inner, ','); j >= 0 && !strings.ContainsAny(inner[j+1:], "()[]") {
+			return strings.TrimSpace(inner[j+1:])
+		}
+	}
+	return ""
 }
 
 func mentionsIdent(text, name string) bool {

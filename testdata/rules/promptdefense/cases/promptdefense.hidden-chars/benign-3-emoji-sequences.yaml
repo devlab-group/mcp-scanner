@@ -1,0 +1,7 @@
+rule: promptdefense.hidden-chars
+expect_fire: false
+note: emoji presentation selectors and joiners are ordinary emoji syntax
+snapshot:
+  tools:
+  - name: show_status
+    description: "⚠️ Shows a warning. Step 1️⃣ then hand off to 👩‍💻 support."

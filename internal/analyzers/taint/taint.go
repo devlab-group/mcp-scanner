@@ -108,13 +108,66 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		Status:    status,
 		Required:  true,
 		Coverage:  cov,
-		Findings:  tc.findings,
+		Findings:  dedupeFindings(tc.findings),
 		Warnings:  warnings,
 		StartedAt: started,
 	}
 	res.FinishedAt = time.Now().UTC()
 	res.Duration = res.FinishedAt.Sub(started)
 	return res
+}
+
+// dedupeFindings keeps one finding per identity - the fields a finding ID is computed from. Every
+// path that reaches a sink is emitted, and two seeds or two routes into the same call produced the
+// same finding twice under the same ID. The kept path has the highest confidence, then the
+// fewest steps; order follows first emission.
+func dedupeFindings(fs []model.Finding) []model.Finding {
+	type key struct {
+		rule, category, file, tool, title string
+		line                              int
+	}
+	index := make(map[key]int, len(fs))
+	out := fs[:0:0]
+	for _, f := range fs {
+		k := key{f.RuleID, f.Category, f.File, f.Tool, f.Title, f.Line}
+		i, seen := index[k]
+		if !seen {
+			index[k] = len(out)
+			out = append(out, f)
+			continue
+		}
+		if better(f, out[i]) {
+			out[i] = f
+		}
+	}
+	return out
+}
+
+func better(a, b model.Finding) bool {
+	if a.Confidence != b.Confidence {
+		return a.Confidence > b.Confidence
+	}
+	return pathLen(a) < pathLen(b)
+}
+
+func pathLen(f model.Finding) int {
+	if len(f.Evidence) == 0 {
+		return 0
+	}
+	return len(f.Evidence[0].Path)
+}
+
+// maxTitleCallee bounds the callee text a title quotes. The callee is arbitrary source text - a
+// chained call can carry a whole template literal - and the full flow stays in the evidence path.
+const maxTitleCallee = 120
+
+// titleCallee collapses whitespace so a title stays on one line, and shortens a long callee
+func titleCallee(text string) string {
+	t := strings.Join(strings.Fields(text), " ")
+	if r := []rune(t); len(r) > maxTitleCallee {
+		t = string(r[:maxTitleCallee]) + "..."
+	}
+	return t
 }
 
 // emit records one finding. note, when set, is a specific explanation for
@@ -131,7 +184,7 @@ func (c *ctx) emit(category string, severity model.Severity, calleeText string, 
 	c.findings = append(c.findings, model.Finding{
 		RuleID:        "taint." + category,
 		Category:      category,
-		Title:         fmt.Sprintf("tainted data reaches %s (%s)", calleeText, category),
+		Title:         fmt.Sprintf("tainted data reaches %s (%s)", titleCallee(calleeText), category),
 		Severity:      severity,
 		Confidence:    max(0, min(info.confidence, 1)),
 		EvidenceLevel: model.EvidenceDataflow,

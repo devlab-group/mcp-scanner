@@ -201,8 +201,14 @@ func displayName(c graph.Capability) string {
 	if c.NameResolved {
 		return c.Name
 	}
-	if c.HandlerText != "" {
+	// A named handler identifies the capability well enough. An inline function literal does not:
+	// its whole source text would stand in for the name, and analyzers that read declared text
+	// would then scan handler code as if the server had declared it
+	if c.HandlerText != "" && isHandlerName(c.HandlerText) {
 		return c.HandlerText
+	}
+	if c.File != "" {
+		return fmt.Sprintf("<unresolved at %s:%d>", c.File, c.Line)
 	}
 	return "<unresolved>"
 }
@@ -240,4 +246,21 @@ func LoadGraph(ctx context.Context, ac *analyzer.AnalysisContext, root string) (
 	}
 	g, cov, err = Build(ctx, root)
 	return g, cov, false, err
+}
+
+// isHandlerName reports whether handler text is a plain or dotted name rather than a function
+// literal or another expression
+func isHandlerName(text string) bool {
+	if text == "" || len(text) > 200 {
+		return false
+	}
+	for _, r := range text {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '.', r == ':', r == '$':
+		default:
+			return false
+		}
+	}
+	return true
 }

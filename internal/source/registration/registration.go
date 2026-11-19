@@ -322,6 +322,24 @@ func emitDirect(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Ca
 	if !cap.DescriptionResolved {
 		cap.Description, cap.DescriptionResolved = argValue(g, c.File, roles.Desc)
 	}
+	// registerTool(name, config, handler) with `const config = { title, description }` declared in
+	// the same file: the config-object rule in classifyArgs only sees an inline object literal
+	if roles.Desc != nil && !roles.Desc.Literal && isIdentifierText(roles.Desc.Text) {
+		if f := g.Files[c.File]; f != nil {
+			if fields := objectLiteralFields(f.ObjectConstants[roles.Desc.Text]); fields != nil {
+				if !cap.DescriptionResolved {
+					if v, ok := literalField(fields, "description"); ok {
+						cap.Description, cap.DescriptionResolved = v, true
+					}
+				}
+				if !cap.NameResolved && (roles.Name == nil || roles.Name == roles.Desc) {
+					if v, ok := literalField(fields, "title"); ok {
+						cap.Name, cap.NameResolved = v, true
+					}
+				}
+			}
+		}
+	}
 	if roles.Handler != nil {
 		cap.HandlerText = roles.Handler.Text
 		if roles.Handler.HandlerID != "" {

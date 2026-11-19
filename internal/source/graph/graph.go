@@ -124,8 +124,12 @@ type File struct {
 	// limit: only the first MaxBytes bytes were read and parsed
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 	// Constants maps unambiguous same-file string constants to their values:
-	// Python module assignments, Java string fields and Rust const or static items
+	// Python module assignments, Java string fields, Rust const or static items,
+	// JavaScript/TypeScript top-level const declarations and Go package-level consts
 	Constants map[string]string `json:"constants,omitempty"`
+	// ObjectConstants maps unambiguous top-level JavaScript/TypeScript object-literal constants
+	// to their source text, such as a registerTool config object
+	ObjectConstants map[string]string `json:"object_constants,omitempty"`
 }
 
 // Graph is the whole-tree symbol table, call graph and MCP capability list

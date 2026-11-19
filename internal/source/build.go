@@ -127,7 +127,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 			}
 			g.Symbols[s.ID] = s
 		}
-		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants}
+		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants, ObjectConstants: res.ObjectConstants}
 		g.Calls = append(g.Calls, res.Calls...)
 	}
 	if timedOut > 0 {

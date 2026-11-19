@@ -147,7 +147,9 @@ func (r *ScanResult) Aggregate(blocking Severity) {
 		blocking = DefaultBlockingSeverity
 	}
 
-	r.Findings = nil
+	// An empty slice, not nil: the schema documents findings as an array, and a nil slice
+	// serializes as null, which a consumer iterating over the field does not expect
+	r.Findings = []Finding{}
 	r.Coverage = Coverage{}
 	// Warnings is rebuilt with the rest. Appending here made a second call
 	// on the same result duplicate everything, which is exactly what a
