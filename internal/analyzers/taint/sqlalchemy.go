@@ -46,7 +46,11 @@ func (c *ctx) sqlalchemyStatement(file, arg, scope string) bool {
 			if strings.HasPrefix(rhs, t+".") {
 				continue
 			}
-			if !c.sqlalchemyStatement(file, rhs, "") {
+			if isPlainIdent(rhs) {
+				// stmt = other: an alias is not followed
+				return false
+			}
+			if !c.sqlalchemyStatement(file, rhs, scope) {
 				return false
 			}
 			built = true
@@ -61,10 +65,10 @@ func (c *ctx) sqlalchemyStatement(file, arg, scope string) bool {
 	if i <= 0 {
 		return false
 	}
-	return c.sqlalchemyConstruct(file, strings.TrimSpace(t[:i]), true)
+	return c.sqlalchemyConstruct(file, strings.TrimSpace(t[:i]), true, scope)
 }
 
-func (c *ctx) sqlalchemyConstruct(file, name string, followWrapper bool) bool {
+func (c *ctx) sqlalchemyConstruct(file, name string, followWrapper bool, scope string) bool {
 	f := c.g.Files[file]
 	if f == nil || name == "" {
 		return false
@@ -100,6 +104,17 @@ func (c *ctx) sqlalchemyConstruct(file, name string, followWrapper bool) bool {
 	if !followWrapper {
 		return false
 	}
+	if scope != "" && isPlainIdent(name) {
+		// insert_stmt = sqlite_insert if dialect == "sqlite" else pg_insert: a local name bound to
+		// one of two constructors
+		re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(name) + `\s*=\s*([A-Za-z_][\w.]*)(?:\s+if\s+.+?\s+else\s+([A-Za-z_][\w.]*))?\s*$`)
+		if ms := re.FindAllStringSubmatch(scope, -1); len(ms) == 1 {
+			m := ms[0]
+			if c.sqlalchemyConstruct(file, m[1], false, "") && (m[2] == "" || c.sqlalchemyConstruct(file, m[2], false, "")) {
+				return true
+			}
+		}
+	}
 	// A same-file function of that name whose only return calls a SQLAlchemy constructor
 	for _, id := range c.idx[name] {
 		sym := c.g.Symbols[id]
@@ -115,7 +130,7 @@ func (c *ctx) sqlalchemyConstruct(file, name string, followWrapper bool) bool {
 			return false
 		}
 		fn := ret.ChildByFieldName("function")
-		return fn != nil && c.sqlalchemyConstruct(file, fn.Utf8Text(hpf.src), false)
+		return fn != nil && c.sqlalchemyConstruct(file, fn.Utf8Text(hpf.src), false, "")
 	}
 	return false
 }

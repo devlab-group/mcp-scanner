@@ -47,6 +47,17 @@ var requestHandlerDecorators = map[string]requestHandlerRole{
 	"readresource":  {graph.CapabilityResource, false},
 }
 
+// serverKeywordRoles maps the Python SDK 2.x low-level Server's handler keywords to the roles the
+// decorator form selects
+var serverKeywordRoles = map[string]requestHandlerRole{
+	"on_list_tools":     {graph.CapabilityTool, true},
+	"on_call_tool":      {graph.CapabilityTool, false},
+	"on_list_prompts":   {graph.CapabilityPrompt, true},
+	"on_get_prompt":     {graph.CapabilityPrompt, false},
+	"on_list_resources": {graph.CapabilityResource, true},
+	"on_read_resource":  {graph.CapabilityResource, false},
+}
+
 // classifySetRequestHandlerCall reports whether c is a
 // `server.setRequestHandler(XRequestSchema, handler)` call, and which role
 // it plays, keyed on the first argument's own text rather than the callee
@@ -120,6 +131,23 @@ func newRequestHandlerState() *requestHandlerState {
 // registration's handler: an inline function literal's own HandlerID when
 // there is one, a named reference otherwise
 func (st *requestHandlerState) addCall(g *graph.Graph, idx index, c graph.Call) {
+	if parser.LastSegment(c.CalleeText) == "Server" {
+		// The Python SDK 2.x low-level server takes its handlers as constructor keywords:
+		// Server("name", on_list_tools=list_tools, on_call_tool=call_tool)
+		for i := range c.Args {
+			role, ok := serverKeywordRoles[c.Args[i].Keyword]
+			if !ok {
+				continue
+			}
+			sym, id := resolveHandlerArg(g, idx, &c.Args[i])
+			if role.list {
+				st.sites = append(st.sites, listSite{kind: role.kind, sym: sym, file: c.File, line: c.Line})
+			} else if id != "" {
+				st.dispatch[role.kind] = id
+			}
+		}
+		return
+	}
 	role, ok := classifySetRequestHandlerCall(c)
 	if !ok {
 		return

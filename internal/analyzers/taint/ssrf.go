@@ -73,6 +73,20 @@ func (c *ctx) urlHostFixed(pf *parsedFile, file string, n *sitter.Node, tainted 
 		return false
 	}
 	n = unwrapAwait(n)
+	if _, ok := parser.LiteralValue(n, pf.src); ok {
+		// a string literal is the server's own constant
+		return true
+	}
+	if branches, ok := conditionalBranches(n); ok {
+		// ns ? `/api/collection?namespace=${ns}` : "/api/collection": the URL is one of the
+		// branches, so it keeps its host when each of them does
+		for _, br := range branches {
+			if !c.urlHostFixed(pf, file, br, tainted) {
+				return false
+			}
+		}
+		return true
+	}
 	if inner, base, ok := newURLArgs(pf, n); ok {
 		if base == nil {
 			return c.urlHostFixed(pf, file, inner, tainted)

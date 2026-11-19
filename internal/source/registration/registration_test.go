@@ -365,3 +365,50 @@ function setup(server: McpServer): void {
 		})
 	}
 }
+
+// mcp-go's server.ServerTool{Tool: ..., Handler: ...} literal, handed to AddTools(tools...), is a
+// tool registration of its own, with an inline handler or a named one
+func TestDiscover_GoServerToolLiteral(t *testing.T) {
+	g := buildGraph(t, map[language.ID]map[string]string{
+		language.Go: {
+			"tools.go": `package main
+
+func statusHandler(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return nil, nil
+}
+
+func statusTool() server.ServerTool {
+	return server.ServerTool{
+		Tool:    mcp.NewTool("status", mcp.WithDescription("Reports the current service status")),
+		Handler: statusHandler,
+	}
+}
+
+func echoTool() server.ServerTool {
+	return server.ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithDescription("Echoes input back")),
+		Handler: func(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return nil, nil
+		},
+	}
+}
+
+func register(s *server.MCPServer) {
+	s.AddTools(statusTool(), echoTool())
+}
+`,
+		},
+	})
+	Discover(g)
+	got := map[string]graph.Capability{}
+	for _, c := range g.Capabilities {
+		got[c.Name] = c
+	}
+	st, ok := got["status"]
+	if !ok || st.Description != "Reports the current service status" || st.Handler == "" || g.Symbols[st.Handler].Name != "statusHandler" {
+		t.Fatalf("want status with its description and statusHandler, got %+v", g.Capabilities)
+	}
+	if e, ok := got["echo"]; !ok || e.Handler == "" {
+		t.Fatalf("want echo with its inline handler, got %+v", g.Capabilities)
+	}
+}

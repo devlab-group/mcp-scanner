@@ -115,13 +115,16 @@ func callsLocalHelper(g *graph.Graph, idx index, c graph.Call) bool {
 // the receiver signal covers helpers handed a server object without importing its SDK.
 // localHelper (see callsLocalHelper) rules the generic names out for the project's own functions.
 func classifyCall(c graph.Call, inMCPTree, localHelper bool) (graph.CapabilityKind, bool) {
-	seg := parser.LastSegment(c.CalleeText)
+	seg := strings.TrimPrefix(parser.LastSegment(c.CalleeText), "new ")
 	switch normalize(seg) {
-	case "addtool", "registertool", "newservertool":
+	case "addtool", "registertool", "newservertool",
+		// the Java SDK's new SyncToolSpecification(tool, handler) / AsyncToolSpecification
+		"synctoolspecification", "asynctoolspecification":
 		return graph.CapabilityTool, true
-	case "addprompt", "registerprompt":
+	case "addprompt", "registerprompt", "syncpromptspecification", "asyncpromptspecification":
 		return graph.CapabilityPrompt, true
-	case "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate":
+	case "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate",
+		"syncresourcespecification", "asyncresourcespecification":
 		return graph.CapabilityResource, true
 	}
 	if localHelper || !bareRegistration(inMCPTree, c.CalleeText, len(c.Args)) {

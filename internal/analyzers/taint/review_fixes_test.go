@@ -794,3 +794,197 @@ server.tool("get", { url: z.string() }, async ({ url }) => {
 		})
 	}
 }
+
+// A FastMCP tool argument annotated int, float, bool or Literal[...] is validated by the SDK before
+// the handler runs: it cannot carry a path or a command. A str argument still can.
+func TestScalarAnnotatedToolArgumentIsNotInjectable(t *testing.T) {
+	tmpl := `import os
+from typing import Annotated, Literal, Optional
+from pydantic import Field
+from mcp.server.fastmcp import FastMCP
+mcp = FastMCP("x")
+
+@mcp.tool()
+def stop(%s) -> str:
+    os.remove(f"/tmp/preview-{port}.pid")
+    return "ok"
+`
+	for _, tc := range []struct {
+		name, param string
+		want        bool
+	}{
+		{"int", "port: int = 8000", false},
+		{"optional int", "port: Optional[int] = None", false},
+		{"int or None", "port: int | None = None", false},
+		{"annotated int", "port: Annotated[int, Field(ge=1)] = 8000", false},
+		{"literal", `port: Literal["a", "b"] = "a"`, false},
+		{"str", "port: str = '8000'", true},
+		{"no annotation", "port=8000", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.param)}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A URL that is one of two branches keeps its host when each branch does
+func TestConditionalURLKeepsTheHost(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import axios from "axios";
+import { z } from "zod";
+const api = axios.create({ baseURL: process.env.METABASE_URL });
+const server = new McpServer({ name: "x", version: "1" });
+server.tool("list", { ns: z.string().optional() }, async ({ ns }) => {
+  const url = %s;
+  const r = await fetch(url);
+  return { content: [{ type: "text", text: await r.text() }] };
+});
+`
+	for _, tc := range []struct {
+		name, expr string
+		want       bool
+	}{
+		{"two relative paths", "ns ? `/api/collection?namespace=${ns}` : \"/api/collection\"", false},
+		{"one branch is the caller's", "ns ? ns : \"/api/collection\"", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.expr)}))
+			if got := len(categoryFindings(res, "ssrf")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// this.open(...) where the class defines open is the object's own method, not fs open or the
+// open package; a bare open(...) with that import is still the sink
+func TestOwnMethodIsNotTheSinkOfTheSameName(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import * as fs from "node:fs";
+import { Catalog } from "./catalog.js";
+export const catalog = new Catalog();
+class Tracer {
+  begin(id: string) { %s; }
+  private open(kind: string, id: string): void { console.log("tracing", kind, id.length); }
+}
+const tracer = new Tracer();
+const server = new McpServer({ name: "x", version: "1" });
+server.tool("trace", { id: z.string() }, async ({ id }) => {
+  tracer.begin(id);
+  return { content: [{ type: "text", text: "ok" }] };
+});
+`
+	for _, tc := range []struct {
+		name, call string
+		want       bool
+	}{
+		{"own method", "this.open('manual', id)", false},
+		{"fs.openSync", "fs.openSync(id, \"r\")", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// another class elsewhere also has an open method, so the name alone is ambiguous
+			other := "export class Catalog { open(key: string, flags: string) { return key + flags; } }\n"
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.call), "catalog.ts": other}))
+			if got := len(categoryFindings(res, "path_traversal")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A dialect insert picked by a local name: ins = sqlite_insert if ... else pg_insert
+func TestSQLAlchemyConstructorPickedByALocalName(t *testing.T) {
+	tmpl := `from mcp.server.fastmcp import FastMCP
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+mcp = FastMCP("x")
+
+@mcp.tool()
+def add(name: str, session) -> str:
+    ins = %s
+    session.execute(ins(Portfolio).values(name=name))
+    return "ok"
+`
+	for _, tc := range []struct {
+		name, rhs string
+		want      bool
+	}{
+		{"two dialect inserts", `sqlite_insert if session.get_bind().dialect.name == "sqlite" else pg_insert`, false},
+		{"something else", `make_query`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.py": fmt.Sprintf(tmpl, tc.rhs)}))
+			if got := len(categoryFindings(res, "sql_injection")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A Java SDK tool whose handler is a lambda is analyzed: its argument reaching Runtime.exec is
+// found
+func TestJavaLambdaToolHandlerIsAnalyzed(t *testing.T) {
+	src := `package x;
+import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+public final class Tools {
+  public SyncToolSpecification runTool() {
+    final var aTool = McpSchema.Tool.builder("run", schema).description("Starts a job").build();
+    return new SyncToolSpecification(aTool, (exchange, request) -> {
+      String job = (String) request.arguments().get("job");
+      Runtime.getRuntime().exec("sh -c " + job);
+      return null;
+    });
+  }
+}
+`
+	if fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"Tools.java": src})), "command_injection"); len(fs) == 0 {
+		t.Fatal("want a command_injection finding from the lambda handler")
+	}
+}
+
+// A Go tool handler that takes the project's own params type (bundling the arguments with the
+// server's config) sends its findings to review; one that takes mcp.CallToolRequest does not
+func TestGoCustomHandlerParamsGoToReview(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"example.com/x/api"
+)
+
+func read(%s) (*mcp.CallToolResult, error) {
+	b, _ := os.ReadFile(%s)
+	return mcp.NewToolResultText(string(b)), nil
+}
+
+func main() {
+	s := server.NewMCPServer("x", "1")
+	s.AddTool(mcp.NewTool("show", mcp.WithDescription("Shows a note")), read)
+}
+`
+	for _, tc := range []struct {
+		name, params, arg string
+		want              model.Triage
+	}{
+		{"project params type", "params api.ToolHandlerParams", "params.Config.TokenFile", model.TriageNeedsReview},
+		{"SDK request", "ctx context.Context, req mcp.CallToolRequest", "req.GetString(\"name\", \"\")", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := categoryFindings(analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.params, tc.arg)})), "path_traversal")
+			if len(fs) == 0 {
+				t.Fatal("want a path_traversal finding")
+			}
+			if fs[0].Triage != tc.want {
+				t.Fatalf("triage %q, want %q (%s)", fs[0].Triage, tc.want, fs[0].TriageReason)
+			}
+		})
+	}
+}

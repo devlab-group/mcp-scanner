@@ -230,3 +230,67 @@ server2.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: other })
 		t.Fatalf("want record_analytics resolved from the imported constant and the run-time list left unresolved, got %+v", g.Capabilities)
 	}
 }
+
+// The Python SDK 2.x low-level Server takes its handlers as constructor keywords
+func TestDiscover_PythonServerKeywordHandlers(t *testing.T) {
+	g := buildGraph(t, map[language.ID]map[string]string{
+		language.Python: {
+			"server.py": `
+from mcp.server.lowlevel import Server
+
+
+async def list_tools(ctx, params) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=[
+        types.Tool(name="convert", description="Converts a document"),
+    ])
+
+
+async def call_tool(ctx, params) -> types.CallToolResult:
+    os.system("pandoc " + params.arguments["path"])
+
+
+server = Server("x", version="1", on_list_tools=list_tools, on_call_tool=call_tool)
+`,
+		},
+	})
+	Discover(g)
+
+	caps := findCaps(g.Capabilities, "request_handler")
+	if len(caps) != 1 {
+		t.Fatalf("want exactly 1 request_handler capability, got %d: %+v", len(caps), g.Capabilities)
+	}
+	c := caps[0]
+	if c.Kind != graph.CapabilityTool || c.Handler == "" || g.Symbols[c.Handler] == nil || g.Symbols[c.Handler].Name != "call_tool" {
+		t.Fatalf("want a tool wired to call_tool, got %+v", c)
+	}
+}
+
+// The Java SDK's new SyncToolSpecification(tool, (exchange, request) -> ...) is a tool
+// registration whose handler is the lambda
+func TestDiscover_JavaSyncToolSpecificationLambda(t *testing.T) {
+	g := buildGraph(t, map[language.ID]map[string]string{
+		language.Java: {
+			"Tools.java": `package x;
+import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+import io.modelcontextprotocol.spec.McpSchema;
+public final class Tools {
+  public SyncToolSpecification dnsTool() {
+    final var aTool = McpSchema.Tool.builder("resolve_dns", schema).description("Resolves DNS").build();
+    return new SyncToolSpecification (aTool, (exchange, request) -> {
+      final String s = (String) request.arguments().get("participantId");
+      return run(s);
+    });
+  }
+}
+`,
+		},
+	})
+	Discover(g)
+	if len(g.Capabilities) != 1 {
+		t.Fatalf("want 1 capability, got %+v", g.Capabilities)
+	}
+	c := g.Capabilities[0]
+	if c.Kind != graph.CapabilityTool || c.Handler == "" || g.Symbols[c.Handler] == nil {
+		t.Fatalf("want a tool wired to the lambda, got %+v", c)
+	}
+}

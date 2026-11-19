@@ -490,7 +490,17 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	}
 	seed := map[string]taintInfo{}
 	validators := c.annotationValidators(sym)
+	var scalar map[string]bool
+	if kind == graph.CapabilityTool && capRec.Form == "decorator" {
+		scalar = c.scalarAnnotatedParams(sym)
+	}
 	for _, name := range names {
+		if scalar[name] {
+			// port: int = 8000 on a FastMCP tool: the SDK validates the arguments against the
+			// annotations before the handler runs, so the value is a number, a bool or one of the
+			// author's Literal choices - nothing that can carry a path or a command
+			continue
+		}
 		info := taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: name, File: sym.File, Line: sym.Line, Detail: detail, Resolved: true,
 		}}}
@@ -500,6 +510,9 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 			info = info.extend(model.FlowStep{
 				Kind: "sanitizer", Symbol: v, File: sym.File, Line: sym.Line, Detail: validatorDetail, Resolved: true,
 			}, 1)
+		}
+		if review := c.goCustomParamsType(sym, name); review != "" && info.review == "" {
+			info.review = review
 		}
 		if p, ok := position[name]; ok && p > 0 {
 			skip, review := c.laterParamRole(sym, capRec)
@@ -616,6 +629,46 @@ func (c *ctx) laterParamRole(sym *graph.Symbol, cp graph.Capability) (skip bool,
 		return true, ""
 	}
 	return false, fmt.Sprintf("the value is a later parameter of a handler registered through a %s; the SDK passes only (args, extra), so what the project's wrapper puts in this parameter - client input or its own data - decides between a real issue and noise", cp.Form)
+}
+
+// goSDKRequestType matches the request types Go MCP SDKs hand a tool handler: mcp-go's
+// mcp.CallToolRequest and the official SDK's *mcp.CallToolRequest / CallToolParamsFor[T]
+var goSDKRequestType = regexp.MustCompile(`\bCallTool(Request|Params|ParamsFor|Result)\b|^\*?mcp\.`)
+
+// goCustomParamsType returns a review reason when a Go tool handler's parameter is a type of the
+// project's own rather than an SDK request: api.ToolHandlerParams bundling the call's arguments
+// with the server's config and clients. Which of its fields carry client input is the project's
+// choice, so a flow from it is not decided by the type.
+func (c *ctx) goCustomParamsType(sym *graph.Symbol, name string) string {
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil || pf.adapter.ID != language.Go {
+		return ""
+	}
+	list := parser.ParamList(node)
+	if list == nil {
+		return ""
+	}
+	for i := range list.NamedChildCount() {
+		p := list.NamedChild(i)
+		if p == nil || p.Kind() != "parameter_declaration" {
+			continue
+		}
+		typ := p.ChildByFieldName("type")
+		if typ == nil {
+			continue
+		}
+		for _, b := range parser.ParamBindings(pf.adapter.ID, p, pf.src) {
+			if b != name {
+				continue
+			}
+			t := strings.TrimSpace(typ.Utf8Text(pf.src))
+			if goSDKRequestType.MatchString(t) || sdkContextType.MatchString(" "+t) || !strings.Contains(t, ".") {
+				return ""
+			}
+			return fmt.Sprintf("the handler takes %s, the project's own parameter type rather than an SDK request; which of its fields carry the client's arguments and which hold the server's own config or clients decides between a real issue and noise", t)
+		}
+	}
+	return ""
 }
 
 // sdkContextType matches the parameter types MCP SDKs inject into a handler: FastMCP's Context,
@@ -807,6 +860,29 @@ func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n 
 	if n.Kind() == ifStatementKinds[pf.adapter.ID] {
 		c.handleContainmentGuard(pf, tainted, n)
 	}
+}
+
+// ownMethodInFile reports whether calleeText is this.<name> or self.<name> and the file defines
+// exactly one method of that name - the one such a call reaches, unless it is inherited from
+// elsewhere, in which case the file defines none and the call is left alone
+func (c *ctx) ownMethodInFile(file, calleeText string) bool {
+	t := strings.TrimSpace(calleeText)
+	name, ok := strings.CutPrefix(t, "this.")
+	if !ok {
+		if name, ok = strings.CutPrefix(t, "self."); !ok {
+			return false
+		}
+	}
+	if !isPlainIdent(name) {
+		return false
+	}
+	n := 0
+	for _, id := range c.idx[name] {
+		if s := c.g.Symbols[id]; s != nil && s.File == file && s.Kind == graph.KindMethod {
+			n++
+		}
+	}
+	return n == 1
 }
 
 // enclosingFunctionText returns the source text of the function around n, or "" at module level
@@ -1808,6 +1884,12 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		if c.httpClientReceiver(pf, file, recv) {
 			sink, sinkFound = matchGatedMethodSink(sinkText)
 		}
+	}
+	if sinkFound && (byMethodName || !strings.ContainsAny(sink.text, ".:")) && c.ownMethodInFile(file, calleeText) {
+		// this.open('manual', id) / self.open(path) where this file defines that one method: a
+		// call on this or self goes to the object's own member, not to the builtin or library
+		// function the sink name means; the method is followed below
+		sinkFound = false
 	}
 	if sinkFound {
 		var info taintInfo
@@ -3264,6 +3346,66 @@ func (c *ctx) annotationValidators(sym *graph.Symbol) map[string]string {
 		}
 		for _, b := range parser.ParamBindings(pf.adapter.ID, &param, pf.src) {
 			out[b] = parser.LastSegment(m[1])
+		}
+	}
+	return out
+}
+
+// scalarType reports whether a Python annotation is a number, a bool or a Literal, alone or wrapped
+// in Optional[...], Annotated[..., ...] or a union with None: int, Optional[int], int | None,
+// Annotated[int, Field(ge=1)], Literal["fast", "slow"]
+func scalarType(t string) bool {
+	t = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t), "typing."))
+	if parts := parser.SplitTopLevelSep(t, '|'); len(parts) > 1 {
+		seen := false
+		for _, p := range parts {
+			if strings.TrimSpace(p) == "None" {
+				continue
+			}
+			if !scalarType(p) {
+				return false
+			}
+			seen = true
+		}
+		return seen
+	}
+	switch t {
+	case "int", "float", "bool":
+		return true
+	}
+	if strings.HasPrefix(t, "Literal[") && strings.HasSuffix(t, "]") {
+		return true
+	}
+	for _, w := range []string{"Optional[", "Annotated["} {
+		if strings.HasPrefix(t, w) && strings.HasSuffix(t, "]") {
+			args := parser.SplitTopLevel(t[len(w) : len(t)-1])
+			return len(args) > 0 && scalarType(args[0])
+		}
+	}
+	return false
+}
+
+// scalarAnnotatedParams lists a Python handler's parameters whose annotation is a scalar type the
+// SDK validates the argument against before the handler runs
+func (c *ctx) scalarAnnotatedParams(sym *graph.Symbol) map[string]bool {
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil || pf.adapter.ID != language.Python {
+		return nil
+	}
+	list := parser.ParamList(node)
+	if list == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	cursor := list.Walk()
+	defer cursor.Close()
+	for _, param := range list.NamedChildren(cursor) {
+		typ := param.ChildByFieldName("type")
+		if typ == nil || !scalarType(strings.Join(strings.Fields(typ.Utf8Text(pf.src)), " ")) {
+			continue
+		}
+		for _, b := range parser.ParamBindings(pf.adapter.ID, &param, pf.src) {
+			out[b] = true
 		}
 	}
 	return out

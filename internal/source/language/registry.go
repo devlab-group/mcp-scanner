@@ -82,7 +82,7 @@ var all = []*Adapter{
 		Extensions: []string{".java"},
 		load:       tsjava.Language,
 		Grammar: Grammar{
-			FunctionKinds: []string{"method_declaration"},
+			FunctionKinds: []string{"method_declaration", "lambda_expression"},
 			ClassKinds:    []string{"class_declaration"},
 			CallKinds:     []string{"method_invocation", "object_creation_expression"},
 			AssignKinds:   []string{"variable_declarator", "assignment_expression"},

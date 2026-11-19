@@ -151,7 +151,10 @@ func isDynamic(prefix string, quote byte, val string) bool {
 // SplitTopLevel splits inner on commas that are not nested inside a bracket, brace, paren
 // or quoted string, so a comma belonging to a nested literal never breaks up its enclosing
 // element
-func SplitTopLevel(inner string) []string {
+func SplitTopLevel(inner string) []string { return SplitTopLevelSep(inner, ',') }
+
+// SplitTopLevelSep is SplitTopLevel on another separator: int | None splits on '|'
+func SplitTopLevelSep(inner string, sep byte) []string {
 	var parts []string
 	depth := 0
 	var quote byte
@@ -169,7 +172,7 @@ func SplitTopLevel(inner string) []string {
 			depth++
 		case c == ']' || c == ')' || c == '}':
 			depth--
-		case c == ',' && depth == 0:
+		case c == sep && depth == 0:
 			parts = append(parts, inner[start:i])
 			start = i + 1
 		}
