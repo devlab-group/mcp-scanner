@@ -65,7 +65,7 @@ func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo
 // value was computed changed here, only what later control flow proves
 // about it
 func (t taintInfo) clearFor(categories ...string) taintInfo {
-	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized}
+	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized, review: t.review}
 }
 
 // withoutCategory returns existing minus category, as a new map for the
@@ -413,10 +413,11 @@ func (c *ctx) defNodeFor(sym *graph.Symbol) (*parsedFile, *sitter.Node) {
 // so destructured parameters are not lost; sym.Params is only a fallback.
 func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	var kind graph.CapabilityKind
+	var capRec graph.Capability
 	found := false
 	for _, cp := range c.g.Capabilities {
 		if cp.Handler == sym.ID {
-			kind, found = cp.Kind, true
+			kind, capRec, found = cp.Kind, cp, true
 			break
 		}
 	}
@@ -437,7 +438,7 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 		graph.CapabilityResource: "resource handler argument",
 	}[kind]
 
-	names := c.paramBindingNames(sym)
+	names, position := c.paramBindingNames(sym)
 	if names != nil && len(names) == 0 && c.handlerDeclaresParams(sym) {
 		// Every declared parameter is a context the SDK injects: nothing the client controls
 		// arrives, which is an analyzed handler with an empty seed, not a gap
@@ -458,9 +459,17 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	}
 	seed := map[string]taintInfo{}
 	for _, name := range names {
-		seed[name] = taintInfo{confidence: 1, chain: []model.FlowStep{{
+		info := taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: name, File: sym.File, Line: sym.Line, Detail: detail, Resolved: true,
 		}}}
+		if p, ok := position[name]; ok && p > 0 {
+			skip, review := c.laterParamRole(sym, capRec)
+			if skip {
+				continue
+			}
+			info.review = review
+		}
+		seed[name] = info
 	}
 	c.seeded[sym.ID] = true
 	return seed
@@ -493,16 +502,17 @@ func (c *ctx) handlerDeclaresParams(sym *graph.Symbol) bool {
 // but a destructured JS/TS parameter binds one name per identifier the pattern introduces
 // (nested, renamed and rest bindings included - see parser.ParamBindings). If the body cannot
 // be reparsed, the graph's raw parameter names remain the conservative fallback.
-func (c *ctx) paramBindingNames(sym *graph.Symbol) []string {
+func (c *ctx) paramBindingNames(sym *graph.Symbol) ([]string, map[string]int) {
 	pf, node := c.defNodeFor(sym)
 	if pf == nil || node == nil {
-		return sym.Params
+		return sym.Params, nil
 	}
 	list := parser.ParamList(node)
 	if list == nil {
-		return sym.Params
+		return sym.Params, nil
 	}
 	names := []string{}
+	position := map[string]int{}
 	skipped := 0
 	cursor := list.Walk()
 	defer cursor.Close()
@@ -525,13 +535,48 @@ func (c *ctx) paramBindingNames(sym *graph.Symbol) []string {
 			skipped++
 			continue
 		}
-		names = append(names, parser.ParamBindings(pf.adapter.ID, &param, pf.src)...)
-		names = append(names, param.Utf8Text(pf.src))
+		bound := append(parser.ParamBindings(pf.adapter.ID, &param, pf.src), param.Utf8Text(pf.src))
+		for _, b := range bound {
+			position[b] = i
+		}
+		names = append(names, bound...)
 	}
 	if len(names) == 0 && skipped == 0 {
-		return sym.Params
+		return sym.Params, nil
 	}
-	return names
+	return names, position
+}
+
+// laterParamRole says what a TypeScript or JavaScript handler parameter after the first is. The
+// TypeScript SDK calls a tool, prompt or resource callback as (args, extra): only the first
+// parameter carries what the client sent. A project's own wrapper may call its handler with
+// anything, so there the parameter stays a source but its findings go to review.
+func (c *ctx) laterParamRole(sym *graph.Symbol, cp graph.Capability) (skip bool, review string) {
+	f := c.g.Files[sym.File]
+	if f == nil || (f.Language != string(language.TypeScript) && f.Language != string(language.JavaScript)) {
+		return false, ""
+	}
+	// Only when the first parameter is plainly the arguments object, ({ url, page }, extra): other
+	// frameworks order their callbacks differently, (ctx, args)
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil {
+		return false, ""
+	}
+	list := parser.ParamList(node)
+	if list == nil {
+		return false, ""
+	}
+	cursor := list.Walk()
+	defer cursor.Close()
+	params := list.NamedChildren(cursor)
+	if len(params) == 0 || !strings.HasPrefix(strings.TrimSpace(params[0].Utf8Text(pf.src)), "{") {
+		return false, ""
+	}
+	switch cp.Form {
+	case "direct", "factory", "loop":
+		return true, ""
+	}
+	return false, fmt.Sprintf("the value is a later parameter of a handler registered through a %s; the SDK passes only (args, extra), so what the project's wrapper puts in this parameter - client input or its own data - decides between a real issue and noise", cp.Form)
 }
 
 // sdkContextType matches the parameter types MCP SDKs inject into a handler: FastMCP's Context,
@@ -1225,7 +1270,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 
 		if resolved {
-			c.recurseInto(sym, seedFromArgs(sym, args, tainted, step, mult), depth)
+			c.recurseInto(sym, c.fixedHostArgs(pf, file, rhs, sym, args, tainted, seedFromArgs(sym, args, tainted, step, mult)), depth)
 		}
 		return
 	}
@@ -1588,7 +1633,32 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
 		Detail: "passes tainted input into another function",
 	}
-	c.recurseInto(sym, seedFromArgs(sym, args, tainted, step, 0.9), depth)
+	c.recurseInto(sym, c.fixedHostArgs(pf, file, n, sym, args, tainted, seedFromArgs(sym, args, tainted, step, 0.9)), depth)
+}
+
+// fixedHostArgs clears SSRF from a parameter whose argument fixes the host before any computed
+// text - getStream(`/api/v1/applications/${name}/logs`) or get("https://api.x.example/" + id) -
+// the same judgement handleAssign and the sink check make, applied where a URL is built as an
+// argument and the request is made in the callee. What the caller can still change is the path
+// on that host, which the path is no longer evidence of SSRF for.
+func (c *ctx) fixedHostArgs(pf *parsedFile, file string, call *sitter.Node, sym *graph.Symbol, args []graph.Arg, tainted map[string]taintInfo, seed map[string]taintInfo) map[string]taintInfo {
+	if call == nil || sym == nil {
+		return seed
+	}
+	call = unwrapAwait(call)
+	for i, a := range args {
+		if i >= len(sym.Params) {
+			break
+		}
+		info, ok := seed[sym.Params[i]]
+		if !ok {
+			continue
+		}
+		if an := argNode(call, a, pf.src); an != nil && (c.hostFixed(pf, file, an) || untaintedBaseThenPath(pf, an, tainted) || relativePathURL(pf, an)) {
+			seed[sym.Params[i]] = info.clearFor("ssrf")
+		}
+	}
+	return seed
 }
 
 // walkCallbackArgs follows an inline function/arrow literal passed as one of call's own

@@ -1,6 +1,11 @@
 package behavioral
 
-import "strings"
+import (
+	"sort"
+	"strings"
+
+	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+)
 
 // category is one of the deterministic signals a handler's reachable calls
 // are checked against, and the same vocabulary a description is checked
@@ -40,6 +45,8 @@ var callCategories = []struct {
 	{"readFileSync", catFilesystem}, {"writeFileSync", catFilesystem}, {"fs.readFile", catFilesystem},
 	{"Files.readAllBytes", catFilesystem}, {"Files.write", catFilesystem},
 	{"std::fs::read", catFilesystem}, {"std::fs::write", catFilesystem}, {"open", catFilesystem},
+	// pathlib.Path methods: names no other common library uses for something else
+	{".read_text", catFilesystem}, {".read_bytes", catFilesystem}, {".write_text", catFilesystem}, {".write_bytes", catFilesystem},
 
 	{"http.Get", catNetwork}, {"http.Post", catNetwork}, {"http.NewRequest", catNetwork},
 	{"requests.get", catNetwork}, {"requests.post", catNetwork}, {"requests.put", catNetwork},
@@ -207,6 +214,11 @@ func sentences(text string) []string {
 // words at the end of head, the sentence text before one occurrence of a
 // category word
 func negatedBefore(head string) bool {
+	// A negator in an earlier clause negates that clause: "if refs is empty or not provided,
+	// fetches all resources" does not deny fetching
+	if i := strings.LastIndexAny(head, ",;:"); i >= 0 {
+		head = head[i+1:]
+	}
 	before := strings.Fields(head)
 	if len(before) > negationWindow {
 		before = before[len(before)-negationWindow:]
@@ -326,4 +338,54 @@ func claimsLocalOnly(description string) bool {
 func Declared(description string) (filesystem, network, process bool) {
 	d, _ := declaredCapabilities(description)
 	return d.Filesystem, d.Network, d.Process
+}
+
+// HandlerBehavior is what a capability's handler can reach through the call graph: the categories
+// the behavioral checks compare against the description, and the concrete evidence behind them
+type HandlerBehavior struct {
+	Network           bool     `json:"network"`
+	Filesystem        bool     `json:"filesystem"`
+	Process           bool     `json:"process"`
+	Credentials       bool     `json:"credentials"`
+	SensitivePaths    []string `json:"sensitive_paths,omitempty"`
+	EnvVars           []string `json:"env_vars,omitempty"`
+	URLs              []string `json:"urls,omitempty"`
+	ReachedFunctions  int      `json:"reached_functions"`
+	ReachesUnresolved bool     `json:"reaches_unresolved_calls"`
+}
+
+// Behavior summarizes what handler can reach, with the same reachability and catalogue the
+// mismatch checks use
+func Behavior(g *graph.Graph, handler graph.SymbolID) HandlerBehavior {
+	cs, unknown := actualCapabilities(g, handler)
+	b := HandlerBehavior{Network: cs.Network, Filesystem: cs.Filesystem, Process: cs.Process, Credentials: cs.Credentials, ReachesUnresolved: unknown}
+	seen := map[string]bool{}
+	for _, h := range cs.SensitiveHits {
+		if !seen["s:"+h] {
+			seen["s:"+h] = true
+			b.SensitivePaths = append(b.SensitivePaths, h)
+		}
+	}
+	reached, _ := g.Reachable(handler)
+	reached[handler] = true
+	b.ReachedFunctions = len(reached)
+	for id := range reached {
+		for _, call := range g.CallsFrom(id) {
+			for _, a := range call.Args {
+				v := a.Value
+				if isEnvRead(call.CalleeText) && a.Literal && v != "" && !seen["e:"+v] {
+					seen["e:"+v] = true
+					b.EnvVars = append(b.EnvVars, v)
+				}
+				if a.Literal && (strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") || strings.HasPrefix(v, "ws://") || strings.HasPrefix(v, "wss://")) && !seen["u:"+v] && len(b.URLs) < 50 {
+					seen["u:"+v] = true
+					b.URLs = append(b.URLs, v)
+				}
+			}
+		}
+	}
+	sort.Strings(b.EnvVars)
+	sort.Strings(b.URLs)
+	sort.Strings(b.SensitivePaths)
+	return b
 }

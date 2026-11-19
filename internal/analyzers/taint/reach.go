@@ -175,6 +175,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 		return fs
 	}
 	r := newReachIndex(g)
+	guards := guardIndex{root: g.Root, files: map[string][]string{}}
 	for i := range fs {
 		f := &fs[i]
 		if len(f.Evidence) == 0 || len(f.Evidence[0].Path) == 0 {
@@ -200,6 +201,11 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			}
 			_, unresolved := unresolvedStep(f.Evidence[0].Path)
 			if !unresolved && asCapability(g, f) {
+				break
+			}
+			if guard, line, ok := guardIfHigh(guards, original, f.Evidence[0].Path); ok {
+				f.Triage, f.TriageReason = model.TriageNeedsReview,
+					fmt.Sprintf("before the sink the handler checks the value (%s, line %d) and stops when the check fails; whether that check blocks every dangerous value decides between a real issue and noise, and the scanner does not verify it", guard, line)
 				break
 			}
 			if step, ok := unresolvedStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) {

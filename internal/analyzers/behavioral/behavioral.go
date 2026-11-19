@@ -251,7 +251,7 @@ func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Fi
 			"description does not mention file access, but the handler reaches the filesystem",
 			model.SeverityLow, 0.5, actual, sawUnknown))
 	}
-	return findings
+	return reviewWordBased(findings)
 }
 
 func mkFinding(cap graph.Capability, ruleID, why string, severity model.Severity, confidence float64, actual capSet, sawUnknown bool) model.Finding {
@@ -309,4 +309,32 @@ func (*Analyzer) Describe() analyzer.Description {
 			"the local-scope check reads a fixed, still-incomplete vocabulary (local/project/metadata/offline/workspace/machine/computer/device); a paraphrase using none of them (\"kept on this laptop\", say) is invisible to behavioral.undeclared_network and behavioral.undeclared_filesystem_access, though not to behavioral.contradicted_network, which does not depend on this list at all",
 		},
 	}
+}
+
+// wordBasedReasons say why a high-severity mismatch is a question, not a result. Every mismatch
+// compares what the handler reaches with words in its description - present, absent or negated -
+// and words cannot prove what a description promises, nor where a credential is sent. The finding
+// keeps its severity, for how bad it would be, and goes to needs_review.
+var wordBasedReasons = map[string]string{
+	"behavioral.credential_exfiltration_mismatch": "the handler reads a credential and makes a network call, and the description names neither; the scanner does not trace where the credential is sent, and a server that authenticates to its own service looks the same as one that leaks the credential",
+	"behavioral.contradicted_network":             "the denial is read from a negator a few words before a network word, not from a parse of the sentence; whether the description really promises no network access decides between a real issue and noise",
+	"behavioral.undeclared_network":               "the description reads as local-only because of a scope word (local, project, workspace, metadata) and no network word; whether the tool's purpose implies a remote service decides between a real issue and noise",
+	"behavioral.contradicted_credential_access":   "the denial is read from a negator near a credential word, not from a parse of the sentence",
+	"behavioral.contradicted_process_execution":   "the denial is read from a negator near a process word, not from a parse of the sentence",
+	"behavioral.undeclared_process_execution":     "the description has none of the words that declare running something; whether the tool's stated purpose implies it decides between a real issue and noise",
+	"behavioral.contradicted_filesystem_access":   "the denial is read from a negator near a filesystem word, not from a parse of the sentence",
+}
+
+func reviewWordBased(fs []model.Finding) []model.Finding {
+	for i := range fs {
+		if !fs[i].Severity.AtLeast(model.SeverityHigh) {
+			continue
+		}
+		reason, ok := wordBasedReasons[fs[i].RuleID]
+		if !ok {
+			reason = "the mismatch is read from the description's wording, which cannot prove what the tool promises"
+		}
+		fs[i].Triage, fs[i].TriageReason = model.TriageNeedsReview, reason
+	}
+	return fs
 }

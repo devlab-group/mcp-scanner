@@ -161,6 +161,7 @@ its sandbox.
 - [Compatibility](docs/compatibility.md)
 - [Result schema](docs/result-schema.md)
 - [Command line](docs/cli.md)
+- [Review hints](docs/review-hints.md)
 - [HTTP API](docs/api.md)
 - [Release notes for v1.1.0](docs/release-notes/v1.1.0.md)
 - [Release notes for v1.1.1](docs/release-notes/v1.1.1.md)
