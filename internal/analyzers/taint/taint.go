@@ -108,7 +108,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		Status:    status,
 		Required:  true,
 		Coverage:  cov,
-		Findings:  dedupeFindings(tc.findings),
+		Findings:  dedupeFindings(classify(g, tc.findings)),
 		Warnings:  warnings,
 		StartedAt: started,
 	}
@@ -119,8 +119,8 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 
 // dedupeFindings keeps one finding per identity - the fields a finding ID is computed from. Every
 // path that reaches a sink is emitted, and two seeds or two routes into the same call produced the
-// same finding twice under the same ID. The kept path has the highest confidence, then the
-// fewest steps; order follows first emission.
+// same finding twice under the same ID. It runs after classification so the kept path is the one
+// that matters most (see better); order follows first emission.
 func dedupeFindings(fs []model.Finding) []model.Finding {
 	type key struct {
 		rule, category, file, tool, title string
@@ -143,7 +143,17 @@ func dedupeFindings(fs []model.Finding) []model.Finding {
 	return out
 }
 
+// better picks the path that matters most once paths are classified: the higher severity, then the
+// one that is not background context, then confidence, then the shorter path. Picking by
+// confidence alone kept an environment-variable path, classified INFO, over a file-contents path
+// to the same sink that needed review.
 func better(a, b model.Finding) bool {
+	if a.Severity.Rank() != b.Severity.Rank() {
+		return a.Severity.Rank() > b.Severity.Rank()
+	}
+	if ac, bc := a.Triage == model.TriageContext, b.Triage == model.TriageContext; ac != bc {
+		return !ac
+	}
 	if a.Confidence != b.Confidence {
 		return a.Confidence > b.Confidence
 	}
@@ -200,6 +210,10 @@ func (c *ctx) emit(category string, severity model.Severity, calleeText string, 
 			Path:        info.chain,
 		}},
 	})
+	if info.review != "" {
+		f := &c.findings[len(c.findings)-1]
+		f.Triage, f.TriageReason = model.TriageNeedsReview, info.review
+	}
 }
 
 func describePath(chain []model.FlowStep) string {

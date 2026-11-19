@@ -174,6 +174,9 @@ func (r *ScanResult) Aggregate(blocking Severity) {
 			if a.Findings[j].Analyzer == "" {
 				a.Findings[j].Analyzer = a.Analyzer
 			}
+			if a.Findings[j].Triage == "" {
+				a.Findings[j].Triage, a.Findings[j].TriageReason = DefaultTriage(a.Findings[j])
+			}
 			// A finding without evidence or a severity is the analyzer's
 			// bug, and it is reported as one. Dropping it here would hide
 			// both the finding and the bug; keeping it and failing the

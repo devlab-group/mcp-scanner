@@ -115,7 +115,7 @@ func callsLocalHelper(g *graph.Graph, idx index, c graph.Call) bool {
 func classifyCall(c graph.Call, inMCPTree, localHelper bool) (graph.CapabilityKind, bool) {
 	seg := parser.LastSegment(c.CalleeText)
 	switch normalize(seg) {
-	case "addtool", "registertool":
+	case "addtool", "registertool", "newservertool":
 		return graph.CapabilityTool, true
 	case "addprompt", "registerprompt":
 		return graph.CapabilityPrompt, true

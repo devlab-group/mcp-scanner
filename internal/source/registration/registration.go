@@ -6,6 +6,7 @@
 package registration
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -206,6 +207,16 @@ func Discover(g *graph.Graph) {
 	templates := map[graph.SymbolID]template{}
 	reqHandlers := newRequestHandlerState()
 
+	// mcp.tool()(fn) and mcp.tool(name="x")(fn): a decorator applied by a plain call. The inner
+	// mcp.tool(...) call on the same line is part of the same registration and is skipped below.
+	decoratorCalls := map[string]bool{}
+	for _, c := range g.Calls {
+		if kind, inner, ok := decoratorCall(c, mcpTree); ok {
+			decoratorCalls[fmt.Sprintf("%s:%d:%s", c.File, c.Line, inner)] = true
+			emitDecoratorCall(g, idx, kind, c)
+		}
+	}
+
 	for _, c := range g.Calls {
 		if c.IsDecorator {
 			// Handled below, through the definition it decorates - not
@@ -214,12 +225,23 @@ func Discover(g *graph.Graph) {
 			// the same registration pattern
 			continue
 		}
+		if decoratorCalls[fmt.Sprintf("%s:%d:%s", c.File, c.Line, c.CalleeText)] {
+			continue
+		}
+		if _, _, ok := decoratorCall(c, mcpTree); ok {
+			continue
+		}
 		reqHandlers.addCall(g, idx, c)
 		kind, ok := classifyCall(c, mcpTree, callsLocalHelper(g, idx, c))
 		if !ok {
 			continue
 		}
 		roles := classifyArgs(c.Args)
+		if normalize(parser.LastSegment(c.CalleeText)) == "newservertool" && len(c.Args) >= 3 {
+			// The Go SDK's mcp.NewServerTool(name, description, handler, options...): the handler is
+			// the third argument, not the last
+			roles.Handler = &c.Args[2]
+		}
 		if c.Caller != "" {
 			if sym := g.Symbols[c.Caller]; sym != nil {
 				if t, isTemplate := asTemplate(kind, roles, sym); isTemplate {
@@ -533,4 +555,53 @@ func factoryReturn(g *graph.Graph, idx index, callText string) []graph.Arg {
 		return nil
 	}
 	return sym.ReturnLiteral
+}
+
+// decoratorCall recognizes a registration decorator applied by a plain call: mcp.tool()(fn) or
+// mcp.tool(name="x", description="...")(fn). It returns the kind and the inner call's callee text.
+func decoratorCall(c graph.Call, inMCPTree bool) (graph.CapabilityKind, string, bool) {
+	t := strings.TrimSpace(c.CalleeText)
+	if !inMCPTree || !strings.HasSuffix(t, ")") || len(c.Args) != 1 || !isIdentifierText(c.Args[0].Text) {
+		return "", "", false
+	}
+	open := strings.IndexByte(t, '(')
+	if open <= 0 {
+		return "", "", false
+	}
+	inner := t[:open]
+	if !strings.Contains(inner, ".") {
+		return "", "", false
+	}
+	switch parser.LastSegment(inner) {
+	case "tool":
+		return graph.CapabilityTool, inner, true
+	case "prompt":
+		return graph.CapabilityPrompt, inner, true
+	case "resource":
+		return graph.CapabilityResource, inner, true
+	}
+	return "", "", false
+}
+
+// emitDecoratorCall records mcp.tool(...)(fn): the name and description come from the inner
+// call's arguments when given, otherwise from the function's own name and docstring, as with the
+// @mcp.tool() decorator
+func emitDecoratorCall(g *graph.Graph, idx index, kind graph.CapabilityKind, c graph.Call) {
+	cap := graph.Capability{Kind: kind, Form: "decorator_call", File: c.File, Line: c.Line, HandlerText: c.Args[0].Text}
+	var sym *graph.Symbol
+	if id, ok := idx.resolve(c.Args[0].Text); ok {
+		cap.Handler = id
+		sym = g.Symbols[id]
+	}
+	if v, ok := decoratorArg(c.CalleeText, "name"); ok {
+		cap.Name, cap.NameResolved = v, true
+	} else if sym != nil {
+		cap.Name, cap.NameResolved = sym.Name, true
+	}
+	if v, ok := decoratorArg(c.CalleeText, "description"); ok {
+		cap.Description, cap.DescriptionResolved = v, true
+	} else if sym != nil && sym.Doc != "" {
+		cap.Description, cap.DescriptionResolved = sym.Doc, true
+	}
+	g.Capabilities = append(g.Capabilities, cap)
 }

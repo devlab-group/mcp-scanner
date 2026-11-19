@@ -181,7 +181,33 @@ func capabilityFindings(g *graph.Graph) []model.Finding {
 			})
 		}
 	}
-	return findings
+	return mergeSameSite(findings)
+}
+
+// mergeSameSite keeps one finding per rule, site and title. One registration site can declare
+// several capabilities - a request handler serving many tools, a loop - and each produced an
+// identical finding under the same ID.
+func mergeSameSite(fs []model.Finding) []model.Finding {
+	type key struct {
+		rule, file, title, tool string
+		line                    int
+	}
+	count := map[key]int{}
+	var out []model.Finding
+	for _, f := range fs {
+		k := key{f.RuleID, f.File, f.Title, f.Tool, f.Line}
+		if count[k] == 0 {
+			out = append(out, f)
+		}
+		count[k]++
+	}
+	for i := range out {
+		f := &out[i]
+		if n := count[key{f.RuleID, f.File, f.Title, f.Tool, f.Line}]; n > 1 {
+			f.Description += fmt.Sprintf(" (%d capabilities registered at this site)", n)
+		}
+	}
+	return out
 }
 
 // UnresolvedDescriptions returns tools whose descriptions could not be resolved,
@@ -196,6 +222,10 @@ func UnresolvedDescriptions(g *graph.Graph) map[string]bool {
 	}
 	return out
 }
+
+// DisplayName is the name to show for a capability in findings and snapshots: the resolved name,
+// a handler named by identifier, or an "<unresolved at file:line>" marker - never handler code
+func DisplayName(c graph.Capability) string { return displayName(c) }
 
 func displayName(c graph.Capability) string {
 	if c.NameResolved {

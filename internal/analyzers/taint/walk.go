@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -39,6 +40,10 @@ type taintInfo struct {
 	chain      []model.FlowStep
 	clearedFor map[string]bool
 
+	// review, when set, is why a name-based judgement could not settle the finding; it sends the
+	// finding to needs_review instead of dropping it
+	review string
+
 	// normalized is set by sanitizer patterns marked normalizes. It survives ordinary propagation,
 	// but concatenation, recognized decoders, and worstTaint clear it because the resulting path is
 	// no longer known to be normalized.
@@ -49,7 +54,7 @@ func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo
 	chain := make([]model.FlowStep, len(t.chain), len(t.chain)+1)
 	copy(chain, t.chain)
 	chain = append(chain, step)
-	return taintInfo{confidence: t.confidence * confidenceMult, chain: chain, clearedFor: t.clearedFor, normalized: t.normalized}
+	return taintInfo{confidence: t.confidence * confidenceMult, chain: chain, clearedFor: t.clearedFor, normalized: t.normalized, review: t.review}
 }
 
 // clearFor returns t with categories added to clearedFor, the way a strong
@@ -155,8 +160,19 @@ func seedKeyFor(sym graph.SymbolID, seed map[string]taintInfo) seedKey {
 	if len(seed) == 0 {
 		return seedKey{sym: sym}
 	}
+	// The source class is part of the shape: a helper reached first with an environment value and
+	// then with file contents or MCP input is walked for each, or whichever path the code happened
+	// to reach first would hide the one that matters
 	names := slices.Sorted(maps.Keys(seed))
-	return seedKey{sym: sym, seed: strings.Join(names, ",")}
+	parts := make([]string, len(names))
+	for i, n := range names {
+		class := ""
+		if ch := seed[n].chain; len(ch) > 0 {
+			class = sourceClass(ch[0].Detail)
+		}
+		parts[i] = n + ":" + class
+	}
+	return seedKey{sym: sym, seed: strings.Join(parts, ",")}
 }
 
 // ctx carries the state shared across one analyzer run: the graph, the file
@@ -422,6 +438,12 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	}[kind]
 
 	names := c.paramBindingNames(sym)
+	if names != nil && len(names) == 0 && c.handlerDeclaresParams(sym) {
+		// Every declared parameter is a context the SDK injects: nothing the client controls
+		// arrives, which is an analyzed handler with an empty seed, not a gap
+		c.seeded[sym.ID] = true
+		return map[string]taintInfo{}
+	}
 	if len(names) == 0 {
 		if !c.handlerDeclaresParams(sym) {
 			// A handler that genuinely takes no arguments has nothing an
@@ -480,7 +502,8 @@ func (c *ctx) paramBindingNames(sym *graph.Symbol) []string {
 	if list == nil {
 		return sym.Params
 	}
-	var names []string
+	names := []string{}
+	skipped := 0
 	cursor := list.Walk()
 	defer cursor.Close()
 	children := list.NamedChildren(cursor)
@@ -489,15 +512,45 @@ func (c *ctx) paramBindingNames(sym *graph.Symbol) []string {
 		// attacker controls arrives through it
 		children = children[1:]
 	}
-	for _, ch := range children {
+	for i, ch := range children {
 		param := ch
+		if pf.adapter.ID == language.Rust && param.Kind() == "self_parameter" {
+			// &self, &mut self, self: the tool struct, not anything the client sends
+			skipped++
+			continue
+		}
+		if sdkContextParam(param.Utf8Text(pf.src), i) {
+			// The SDK fills it in - a request context, a cancellation context, a progress
+			// reporter - so the client controls none of it
+			skipped++
+			continue
+		}
 		names = append(names, parser.ParamBindings(pf.adapter.ID, &param, pf.src)...)
 		names = append(names, param.Utf8Text(pf.src))
 	}
-	if len(names) == 0 {
+	if len(names) == 0 && skipped == 0 {
 		return sym.Params
 	}
 	return names
+}
+
+// sdkContextType matches the parameter types MCP SDKs inject into a handler: FastMCP's Context,
+// Go's context.Context, the TypeScript SDK's RequestHandlerExtra
+var sdkContextType = regexp.MustCompile(`(^|[\s:*&(])(context\.Context|Context(\[[^\]]*\])?|RequestHandlerExtra(<[^>]*>)?|ServerContext)(\s*(\||=|,|$))`)
+
+// sdkContextParam reports whether a handler parameter is a context the SDK injects. The type
+// annotation decides, not the name, since a tool may well take a "context: str" argument. The one
+// name-only case is an untyped "extra" after the first parameter, the TypeScript SDK's convention
+// for its RequestHandlerExtra argument.
+func sdkContextParam(text string, position int) bool {
+	t := strings.TrimSpace(text)
+	if position > 0 && t == "extra" {
+		return true
+	}
+	if i := strings.IndexAny(t, ": "); i > 0 {
+		return sdkContextType.MatchString(t[i:])
+	}
+	return false
 }
 
 // analyzeSymbol walks one function's body with the given seed taint. A seed is marked visited
@@ -1076,7 +1129,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 	line := int(n.StartPosition().Row) + 1
 	rhs = unwrapAwait(rhs)
 	// Clear SSRF taint when a fixed prefix closes the URL's host before computed text begins
-	fixedHost := c.hostFixed(pf, file, rhs)
+	fixedHost := c.hostFixed(pf, file, rhs) || untaintedBaseThenPath(pf, rhs, tainted) || relativePathURL(pf, rhs)
 
 	if augmentedAssignKinds[n.Kind()] {
 		text := strings.Join(targets, " + ") + " + " + rhs.Utf8Text(pf.src)
@@ -1134,6 +1187,11 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			if san.normalizes {
 				info.normalized = true
 			}
+			if isComposition(pf, rhs) {
+				info = info.extend(model.FlowStep{
+					Kind: "transform", Symbol: titleCallee(calleeText), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+				}, 1)
+			}
 			setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 			return
 		}
@@ -1147,6 +1205,16 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			Detail: "result of a call that received tainted input",
 		}
 		info := from.extend(step, mult)
+		if resolved && c.isProjectValidator(sym) {
+			info = info.extend(model.FlowStep{
+				Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Detail: validatorDetail, Resolved: true,
+			}, 1)
+		}
+		if isComposition(pf, rhs) {
+			info = info.extend(model.FlowStep{
+				Kind: "transform", Symbol: titleCallee(calleeText), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+			}, 1)
+		}
 		if reintroducesPathSyntax(calleeText) {
 			// A guard proved something about the string it tested, and this call produces a different
 			// string: "%2e%2e%2f" passes a join and a prefix test as ordinary characters and comes out
@@ -1173,11 +1241,126 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		return
 	}
 	if info, ok := propagatedTaint(text, tainted); ok {
+		if isComposition(pf, rhs) {
+			info = info.extend(model.FlowStep{
+				Kind: "transform", Symbol: titleCallee(text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+			}, 1)
+		}
 		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 		return
 	}
 	clearTaint(tainted, targets, conditional)
 }
+
+// validatorDetail marks a pass through a project's own validation function
+const validatorDetail = "checked by a project validator the scanner does not verify"
+
+// projectValidatorName matches the names projects give their own input checks
+var projectValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitise|check|ensure|verify|assert|safe|clean|normalize)[a-z0-9_]*$`)
+
+// isProjectValidator reports whether an in-repo function looks like an input check: a validator's
+// name and a body that can reject its input by raising or throwing
+func (c *ctx) isProjectValidator(sym *graph.Symbol) bool {
+	if sym == nil || !projectValidatorName.MatchString(sym.Name) {
+		return false
+	}
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil {
+		return false
+	}
+	body := node.Utf8Text(pf.src)
+	return strings.Contains(body, "raise ") || strings.Contains(body, "throw ") || strings.Contains(body, "return fmt.Errorf") || strings.Contains(body, "errors.New(")
+}
+
+func hasValidatorStep(info taintInfo) bool {
+	for _, st := range info.chain {
+		if st.Detail == validatorDetail {
+			return true
+		}
+	}
+	return false
+}
+
+// compositionDetail marks a step where the tainted value was combined with other text. It is
+// evidence for a reader - this is where an argument was spliced into a query or a command - and it
+// is what separates an injection from a tool that passes the caller's whole value on by design.
+const compositionDetail = "combined with other text into a larger string"
+
+// compositionCalls build a string or a path out of parts. The value is the fewest arguments that
+// make a call a composition: Path(name) or resolve(name) alone converts one value, while
+// Path(base, name) and path.resolve(ROOT, name) put the caller's part under a base the tool
+// meant to stay inside.
+var compositionCalls = map[string]int{
+	"format": 1, "Sprintf": 2, "sprintf": 2, "join": 1, "Join": 1, "concat": 1, "Concat": 1,
+	"joinpath": 1, "resolve": 2, "Path": 2, "PurePath": 2, "PosixPath": 2,
+}
+
+// isComposition reports whether an expression builds a larger string from parts: concatenation,
+// %-formatting, an f-string or template with an interpolation, or a format/join call
+func isComposition(pf *parsedFile, n *sitter.Node) bool {
+	if n == nil {
+		return false
+	}
+	n = unwrapAwait(n)
+	switch n.Kind() {
+	case "parenthesized_expression":
+		if n.NamedChildCount() == 1 {
+			return isComposition(pf, n.NamedChild(0))
+		}
+	case "binary_operator", "binary_expression":
+		if op := n.ChildByFieldName("operator"); op != nil {
+			switch op.Utf8Text(pf.src) {
+			case "+", "%":
+				return true
+			case "/":
+				// pathlib's base / name; in other languages "/" is division
+				return pf.adapter.ID == language.Python
+			}
+		}
+	case "template_string":
+		for i := range n.NamedChildCount() {
+			if n.NamedChild(i).Kind() == "template_substitution" {
+				return true
+			}
+		}
+	case "string":
+		for i := range n.NamedChildCount() {
+			if n.NamedChild(i).Kind() == "interpolation" {
+				return true
+			}
+		}
+	}
+	if slices.Contains(pf.adapter.Grammar.CallKinds, n.Kind()) {
+		callee, _, args := parser.CalleeAndArgs(pf.adapter.ID, n, pf.src)
+		if min, ok := compositionCalls[parser.LastSegment(callee)]; ok && len(args) >= min {
+			return true
+		}
+		// A method called on a composed value keeps it composed: (NOTES / name).resolve()
+		if fn := n.ChildByFieldName("function"); fn != nil {
+			if obj := fn.ChildByFieldName("object"); obj != nil {
+				return isComposition(pf, obj)
+			}
+		}
+	}
+	return false
+}
+
+// receiverComposed reports whether a sink's receiver is a composed value: (DOCS / name),
+// Path("/srv/docs", name), DOCS.joinpath(name)
+func receiverComposed(r parser.Receiver) bool {
+	if compositionText.MatchString(strings.TrimSpace(r.Text)) {
+		return true
+	}
+	if r.CallText != "" {
+		min, ok := compositionCalls[parser.LastSegment(r.CallText)]
+		return ok && len(r.CallArgs) >= min
+	}
+	return false
+}
+
+// compositionText is the text-only fallback for a receiver, which has no node at hand here:
+// (DOCS / name).read_text(), (root + name).open()
+var compositionText = regexp.MustCompile(`\s[/+%]\s|\$\{|\bjoinpath\(|\bjoin\(|^f["']`)
 
 func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintInfo, n *sitter.Node, depth int, conditional bool) {
 	calleeText, receiver, args := parser.CalleeAndArgs(pf.adapter.ID, n, pf.src)
@@ -1243,8 +1426,37 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if resolvedInRepo && callsItselfThroughReceiver(calleeText, sym, file, int(n.StartPosition().Row)+1) {
 		sym, resolvedInRepo = nil, false
 	}
+	if resolvedInRepo && c.isProjectValidator(sym) {
+		// validate_table_name(table_name) as a statement: later uses of the argument went through
+		// a check. The scanner cannot tell whether the check is sound, so taint stays and the step
+		// sends the finding to review instead of clearing it.
+		line := int(n.StartPosition().Row) + 1
+		for _, a := range args {
+			name := strings.TrimSpace(a.Text)
+			if info, ok := tainted[name]; ok && isPlainIdent(name) && !hasValidatorStep(info) {
+				tainted[name] = info.extend(model.FlowStep{
+					Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Detail: validatorDetail, Resolved: true,
+				}, 1)
+			}
+		}
+	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if sinkFound && sink.category == "command_injection" && parser.LastSegment(sinkText) == "exec" && sqlExecReceiver(sinkText) {
+		// this.sql.exec(query, ...bindings) and db.exec(sql) run SQL, not a process
+		sink = sinkPattern{text: "exec", category: "sql_injection", severity: model.SeverityHigh, argIndex: 0}
+	}
+	if sinkFound && sink.category == "ssrf" && asyncpgQuery[parser.LastSegment(sinkText)] && receiverLooksLikeDB(sinkText) {
+		// conn.fetch(sql) in asyncpg is a query, not an HTTP request
+		sink = sinkPattern{text: parser.LastSegment(sinkText), category: "sql_injection", severity: model.SeverityHigh, argIndex: 0}
+	}
+	if sinkFound && resolvedInRepo && asWritten && !strings.ContainsAny(sink.text, ".:") && !strings.ContainsAny(calleeText, ".:") && sym != nil && sym.Name == calleeText && c.bindsName(file, sym, calleeText) {
+		// fetch(path) where this file defines or imports its own fetch: the call goes to that
+		// function, which is followed below, not to the global API sharing its name. A function
+		// of that name elsewhere in the tree - a fetch(req) method in a server object - does not
+		// shadow the global here.
+		sinkFound = false
+	}
 	if sinkFound && sink.text == "exec" && asWritten && c.regExpReceiver(pf, file, n) {
 		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
 		sinkFound = false
@@ -1256,6 +1468,19 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// they share a name
 		sink, sinkFound = matchMethodSink(sinkText)
 		byMethodName = sinkFound
+	}
+	needsSQLEvidence := false
+	if !sinkFound && resolvedInRepo && receiverMaybeDB(sinkText) {
+		// Resolution is by method name, so one in-repo class with an execute() or query() method
+		// made every cursor.execute(...) and client.query(...) in the tree resolve to it, and real
+		// SQL injection went unreported. A database-like receiver keeps the SQL check; the in-repo
+		// method is still followed below. A generic receiver (client) also needs SQL text on the
+		// path, so a search client's query(IndexId=...) or an HTTP client's execute(request)
+		// is not read as SQL.
+		if m, ok := matchMethodSink(sinkText); ok && m.category == "sql_injection" {
+			sink, sinkFound, byMethodName = m, true, true
+			needsSQLEvidence = !receiverLooksLikeDB(sinkText)
+		}
 	}
 	if !sinkFound && !resolvedInRepo {
 		recv := receiver
@@ -1278,12 +1503,39 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// literal is some other API: a URL or a query string is never a closure, while
 				// sync.Once.Do(func() {...}) and errgroup-style Do(fn) take exactly that
 				info, found = mentionsAny(a.Text, tainted, sink.category)
-				if found && sink.category == "ssrf" && c.hostFixed(pf, file, argNode(n, a, pf.src)) {
-					found = false
+				if found && sink.category == "ssrf" {
+					if an := argNode(n, a, pf.src); c.hostFixed(pf, file, an) || untaintedBaseThenPath(pf, an, tainted) || relativePathURL(pf, an) {
+						found = false
+					}
+				}
+				// The two checks below judge by names, not by what the code does: an execute() or
+				// query() on an object not named like a database handle, or a generic client with no
+				// SQL text on the path, is probably not SQL - a tool class, a job runner, a search API
+				// - but a name cannot prove it. The finding stays, for a person to decide.
+				if found && needsSQLEvidence && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver may be a database client, but no SQL text was seen on the path", sinkText)
+				}
+				if found && byMethodName && sink.category == "sql_injection" && !sqlReceiver(sinkText, a.Text) {
+					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is not named like a database handle and the argument shows no SQL text, so it is probably another API's %s", sinkText, parser.LastSegment(sinkText))
 				}
 			}
 		} else {
-			_, info, found = c.taintedArgOrReceiver(file, receiver, args, tainted, sink.category)
+			var idx int
+			idx, info, found = c.taintedArgOrReceiver(file, receiver, args, tainted, sink.category)
+			composedReceiver := found && idx < 0 && receiverComposed(receiver)
+			if composedReceiver || (found && idx >= 0 && idx < len(args) && isComposition(pf, argNode(n, args[idx], pf.src))) {
+				what := receiver.Text
+				if what == "" {
+					what = receiver.CallText
+				}
+				if idx >= 0 {
+					what = args[idx].Text
+				}
+				line := int(n.StartPosition().Row) + 1
+				info = info.extend(model.FlowStep{
+					Kind: "transform", Symbol: titleCallee(what), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+				}, 1)
+			}
 		}
 		// info.clearedFor[sink.category] means a strong sanitizer upstream
 		// already covers exactly this sink's category (see handleAssign) -
@@ -1292,6 +1544,13 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// before a path read both scan clean
 		if found && !info.clearedFor[sink.category] {
 			line := int(n.StartPosition().Row) + 1
+			if sink.argIndex >= 0 {
+				if a, ok := sinkArg(args, sink.argIndex, sink.category); ok && isComposition(pf, argNode(n, a, pf.src)) {
+					info = info.extend(model.FlowStep{
+						Kind: "transform", Symbol: titleCallee(a.Text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+					}, 1)
+				}
+			}
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: sink.category, Resolved: true,
 			}, 1)
@@ -1389,7 +1648,14 @@ func seedFromArgs(sym *graph.Symbol, args []graph.Arg, tainted map[string]taintI
 			continue
 		}
 		if info, ok := mentionsAny(a.Text, tainted, ""); ok {
-			seed[sym.Params[i]] = info.extend(step, mult)
+			info = info.extend(step, mult)
+			if compositionText.MatchString(strings.TrimSpace(a.Text)) {
+				// _ci_read(GITHUB_DIR / filename): the composition happens in the call itself
+				info = info.extend(model.FlowStep{
+					Kind: "transform", Symbol: titleCallee(a.Text), File: step.File, Line: step.Line, Detail: compositionDetail, Resolved: true,
+				}, 1)
+			}
+			seed[sym.Params[i]] = info
 		}
 	}
 	return seed
@@ -1608,7 +1874,27 @@ func (c *ctx) taintedArgOrReceiver(file string, receiver parser.Receiver, args [
 			}
 		}
 	}
+	if category == "path_traversal" {
+		args = withoutNonPathOptions(args)
+	}
 	return worstCandidate(taintCandidates(args, extra, tainted, category), category)
+}
+
+// nonPathOptions are keyword arguments of file APIs that never name a file:
+// path.read_text(encoding=enc) reads the receiver, whatever the encoding is
+var nonPathOptions = map[string]bool{
+	"encoding": true, "errors": true, "newline": true, "mode": true, "buffering": true,
+	"closefd": true, "exist_ok": true, "parents": true, "missing_ok": true,
+}
+
+func withoutNonPathOptions(args []graph.Arg) []graph.Arg {
+	out := args[:0:0]
+	for _, a := range args {
+		if !nonPathOptions[a.Keyword] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // mentionsAny returns the weakest whole-word taint match after category-aware
@@ -2023,6 +2309,126 @@ func maskLiteralText(text string) string {
 	}
 	return string(out)
 }
+
+// sqlReceiverHint matches receiver names that hold a database handle
+var sqlReceiverHint = regexp.MustCompile(`(?i)(^|[._])(cur|cursor|conn|connection|con|db|database|session|engine|tx|txn|transaction|stmt|statement|pool|client|sql|sqlite|pg|mysql|duck|duckdb|snowflake|bigquery|bq|kusto|spark|query|repo|dao|store)([0-9]*|_[a-z0-9_]*)$`)
+
+// sqlKeywords matches SQL text in the checked argument
+var sqlKeywords = regexp.MustCompile(`(?i)\b(select|insert|update|delete|create|drop|alter|merge|with|where|from)\b`)
+
+// sqlReceiver reports whether a call matched only by method name - execute, query, Exec - is
+// plausibly a SQL call: its receiver is named like a database handle, or its checked argument
+// carries SQL text. A receiver this cannot judge (a bare call) keeps the match.
+func sqlReceiver(sinkText, argText string) bool {
+	i := strings.LastIndexByte(sinkText, '.')
+	if i <= 0 {
+		return true
+	}
+	recv := strings.TrimSpace(strings.TrimRight(sinkText[:i], "!?"))
+	return sqlReceiverHint.MatchString(recv) || sqlKeywords.MatchString(argText)
+}
+
+// receiverLooksLikeDB reports whether a method call's receiver is named like a database handle,
+// excluding the object's own methods (self, this, cls), which resolve to the right class
+func receiverLooksLikeDB(sinkText string) bool {
+	i := strings.LastIndexByte(sinkText, '.')
+	if i <= 0 {
+		return false
+	}
+	recv := strings.TrimSpace(strings.TrimRight(sinkText[:i], "!?"))
+	switch recv {
+	case "self", "this", "cls":
+		return false
+	}
+	return strictDBReceiver.MatchString(recv)
+}
+
+// bindsName reports whether a bare call name refers to sym: a free function (not a method, which
+// a bare name cannot call) that this file defines or imports from the project's own code. A
+// FetchStandardFontDataFactory.fetch method beside a fetch(url) call, or `fetch` imported from
+// node-fetch, leaves the global API in place.
+func (c *ctx) bindsName(file string, sym *graph.Symbol, name string) bool {
+	if sym.Kind != graph.KindFunction || sym.Receiver != "" {
+		return false
+	}
+	if sym.File == file {
+		return true
+	}
+	f := c.g.Files[file]
+	if f == nil {
+		return false
+	}
+	for _, im := range f.Imports {
+		if im.Alias != name && !(im.Alias == "" && parser.LastSegment(im.Path) == name) {
+			continue
+		}
+		if importNamesFile(im.Path, sym.File) {
+			return true
+		}
+	}
+	return false
+}
+
+// importNamesFile reports whether an import path written in the project points at file: a
+// relative import (./http, .http.fetch) or a dotted module path the file's path contains
+// (digikala_mcp.http.fetch for src/digikala_mcp/http.py)
+func importNamesFile(path, file string) bool {
+	if strings.HasPrefix(path, ".") {
+		return true
+	}
+	module := path
+	if i := strings.LastIndexAny(module, "./"); i > 0 {
+		module = module[:i]
+	}
+	module = strings.ReplaceAll(module, ".", "/")
+	return module != "" && strings.Contains(file, module)
+}
+
+// receiverMaybeDB is the broad receiver test: any name a database handle may have, including
+// generic ones like client
+func receiverMaybeDB(sinkText string) bool {
+	i := strings.LastIndexByte(sinkText, '.')
+	if i <= 0 {
+		return false
+	}
+	recv := strings.TrimSpace(strings.TrimRight(sinkText[:i], "!?"))
+	switch recv {
+	case "self", "this", "cls":
+		return false
+	}
+	return sqlReceiverHint.MatchString(recv)
+}
+
+// chainHasSQLText reports whether a path built a string with SQL text in it on the way
+func chainHasSQLText(info taintInfo) bool {
+	for _, st := range info.chain {
+		if st.Detail == compositionDetail && sqlKeywords.MatchString(st.Symbol) {
+			return true
+		}
+	}
+	return false
+}
+
+// sqlExecReceiverName names the objects whose exec() runs SQL: a SQL storage handle, a database,
+// a connection or cursor. Not session or container: a sandbox session or a container exec() runs
+// a process.
+var sqlExecReceiverName = regexp.MustCompile(`(?i)(^|[._])(sql|sqlite3?|db|database|conn|connection|cursor|pg|mysql|duckdb|tx|txn|transaction)([0-9]*|_[a-z0-9_]*)$|(?i)[a-z0-9](Db|DB|Sql|SQL)$`)
+
+func sqlExecReceiver(sinkText string) bool {
+	i := strings.LastIndexByte(sinkText, '.')
+	if i <= 0 {
+		return false
+	}
+	return sqlExecReceiverName.MatchString(strings.TrimSpace(strings.TrimRight(sinkText[:i], "!?")))
+}
+
+// asyncpgQuery are the query methods of asyncpg connections and pools, which share fetch's name
+var asyncpgQuery = map[string]bool{"fetch": true, "fetchrow": true, "fetchval": true}
+
+// strictDBReceiver names only unambiguous database handles. It gates the check that overrides an
+// in-repo resolution, so generic names - client, query, store - that also name HTTP clients and
+// search APIs stay out: kendra_client.query and an HttpClient's execute are not SQL.
+var strictDBReceiver = regexp.MustCompile(`(?i)(^|[._])(cur|cursor|conn|connection|db|database|session|engine|tx|txn|transaction|pool|sqlite|pg|mysql|duckdb)([0-9]*|_[a-z0-9_]*)$`)
 
 // isFunctionLiteralText reports whether an argument is written as a function literal in one of
 // the supported languages: a Go func literal, a JavaScript function or arrow function, a Python

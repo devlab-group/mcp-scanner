@@ -31,6 +31,26 @@ func Write(w io.Writer, res *model.ScanResult, decision *policy.Decision) error 
 		counts[model.SeverityCritical], counts[model.SeverityHigh], counts[model.SeverityMedium],
 		counts[model.SeverityLow], counts[model.SeverityInfo])
 
+	// Severity is how bad a finding would be; triage is how far it can be relied on before a person
+	// checks it. needs_review holds the findings that are either a scanner artefact or serious.
+	triage := map[model.Triage]int{}
+	for _, f := range res.Findings {
+		triage[f.Triage]++
+	}
+	caps := 0
+	for _, f := range res.Findings {
+		if f.FindingKind == model.FindingDangerousCapability {
+			caps++
+		}
+	}
+	if len(res.Findings) > 0 {
+		fmt.Fprintf(w, "triage: %d confirmed, %d potential, %d needs review, %d context\n",
+			triage[model.TriageConfirmed], triage[model.TriagePotential], triage[model.TriageNeedsReview], triage[model.TriageContext])
+		if caps > 0 {
+			fmt.Fprintf(w, "dangerous capabilities: %d (tools that do the risky action by design; gate them rather than patch them)\n", caps)
+		}
+	}
+
 	if gaps := report.AnalyzerGaps(res.Analyzers); len(gaps) > 0 {
 		fmt.Fprintln(w, "coverage gaps:")
 		for _, gap := range gaps {
@@ -51,6 +71,12 @@ func Write(w io.Writer, res *model.ScanResult, decision *policy.Decision) error 
 				loc += ")"
 			}
 			sevLabel := string(f.Severity)
+			if f.Triage != "" {
+				sevLabel += ", " + string(f.Triage)
+			}
+			if f.FindingKind == model.FindingDangerousCapability {
+				sevLabel += ", capability"
+			}
 			if f.Suppressed {
 				sevLabel += " (suppressed)"
 			}

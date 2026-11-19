@@ -255,10 +255,8 @@ func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Fi
 }
 
 func mkFinding(cap graph.Capability, ruleID, why string, severity model.Severity, confidence float64, actual capSet, sawUnknown bool) model.Finding {
-	name := cap.Name
-	if name == "" {
-		name = cap.HandlerText
-	}
+	// Never the inline handler's source text, which used to land in titles verbatim
+	name := source.DisplayName(cap)
 	desc := fmt.Sprintf("%s %q: %s. Declared description: %q.", cap.Kind, name, why, cap.Description)
 	if len(actual.SensitiveHits) > 0 {
 		desc += fmt.Sprintf(" Sensitive path pattern(s) reached: %s.", strings.Join(actual.SensitiveHits, ", "))

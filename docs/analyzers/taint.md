@@ -28,7 +28,68 @@ template, and deserialization APIs across Go, Python, JavaScript, TypeScript,
 Java, and Rust. Coverage differs by language and includes some third-party APIs,
 such as `execa`.
 
+## Source class, reachability and severity
+
+The catalogue severity of a sink is how bad it is when an attacker controls the value. In the
+MCP threat model the attacker is the client side: a model steered by prompt injection fills
+tool arguments. Each finding records `source_class` and `reachability`, and severity and
+triage follow from them:
+
+| Path starts from | Reachable from an MCP handler | Severity | Triage |
+|---|---|---|---|
+| tool, prompt or resource argument | yes, by construction | catalogue | `potential` |
+| HTTP response or file contents | yes, possible or unknown | catalogue | `needs_review` when HIGH or above |
+| environment variable | yes, possible or unknown | at most LOW | `context` |
+| any source | no | INFO | `context` |
+
+Content from a URL or a file may be attacker-written, such as a fetched page or a cloned
+repository, or may be the server's own configuration. The path alone cannot tell which, so the
+finding keeps its severity and a person decides. "Not reachable" is claimed only when the start
+of the path is not reached even if every unresolved call is read as a call to any function of
+that name; module-level code counts as possibly reachable. File names play no part: a file
+named like a test is analyzed like any other.
+
+A path from MCP input that only continues because the analyzer assumed an unresolved call - a
+library function, an API response, a parser - passes its argument on goes to `needs_review`:
+the step is in the evidence path with kind `unknown`. Parameters the SDK injects are not MCP
+input: FastMCP's `Context`, Go's `context.Context` and the TypeScript SDK's
+`RequestHandlerExtra` (or an untyped `extra` after the first parameter). The type decides, not
+the name, so a `context: str` tool argument is still traced.
+
+A path that passes through the project's own validation function - an in-repo function named
+like `validate*`, `sanitize*`, `check*`, `ensure*` or `verify*` whose body can raise or throw -
+goes to `needs_review`, whether the function is called as a guard statement
+(`validate_table_name(t)`) or returns the checked value (`safe = validate_file_path(p)`). Taint
+is not cleared: the scanner does not verify the check, and a broken one must not hide the
+finding.
+
+## Dangerous capabilities
+
+A path from MCP input becomes a dangerous capability (`finding_kind: dangerous_capability`)
+rather than a vulnerability when all of these hold:
+
+- the tool's name or description declares what the sink does: running a command (command,
+  shell, cmd, "runs a command"), executing code, file access, network access, or running a query
+  (sql, query, database, table);
+- the argument reaches the sink as a whole value: no concatenation, interpolation, format call,
+  or path join with a base directory on the way (a join under a base is a boundary the tool
+  meant to keep, so escaping it is a vulnerability);
+- the description promises no boundary (under, within, inside, only, allowed, workspace,
+  sandbox, ...) that the code would have to enforce;
+- no step of the path passes through a call the analyzer could not follow.
+
+The rule id, sink and severity stay; the title names the capability. Severity drops one step
+when the handler can reach an elicitation or confirmation call. A root-directory check would
+have cleared a `file_access` finding, so one that remains has none. Host allowlists are not
+recognized yet, so a `network_request` finding may have one the scanner does not see.
+
 ## Propagation
+
+A helper reached by several paths is walked once per distinct seed shape, where the shape is the
+set of tainted parameters together with the class of the source each one came from. Of several
+paths to the same sink the finding keeps the most severe one after classification, so a path
+from file contents that needs review is not hidden by an environment-variable path to the same
+call.
 
 Every resolved handler parameter is seeded, including destructured and compact
 Go declarations and inline handlers. Taint propagates through assignments,
@@ -70,6 +131,19 @@ argv value suppresses both the argument-injection and unknown-program cases
 because later values cannot be parsed as options.
 
 ## Receivers and method matching
+A bare-name sink (`fetch`, `exec`, `spawn`) called by that bare name yields to a function the
+project defines under the same name: the call is followed into that function instead. `exec` on
+a database-like receiver (`this.sql.exec(query, ...bindings)`, `db.exec(sql)`) is a SQL call
+checked at its query argument, not a process launch. Rust's `self`, `&self` and `&mut self` are
+the tool struct, not client input.
+
+asyncpg's `fetch`, `fetchrow` and `fetchval` on a database-like receiver are SQL calls, not the
+HTTP `fetch`. SQL methods matched by name alone (`execute`, `query`, `Exec`, ...) count as SQL only when the
+receiver is named like a database handle (`cursor`, `conn`, `db`, `session`, `client`, `engine`,
+...) or the checked argument contains SQL text, so `jobs_tool.execute(params)` is not a query.
+Call resolution is by method name, so an in-repo class with an `execute` method used to make
+every `cursor.execute(...)` resolve to it and hide real SQL injection; a database-like receiver
+now keeps the SQL check while the in-repo method is still followed.
 
 Taint can flow through a receiver, as in `Path(user).read_text()` or chained
 builder calls. Module-qualified sinks and generic method names use separate
@@ -86,6 +160,16 @@ fields. Importing an HTTP client alone does not make a dict, `Map`, or
 response object's `get` method a sink.
 
 ## SSRF
+A URL that starts with literal text of the form `/word` (`` `/repositories/${ws}/pulls` ``,
+`f"/v1/product/{id}/"`) is a relative path resolved against the client's configured base, so it
+cannot name another host. A bare `/` followed by an interpolation still counts: `"/" +
+"/evil.example"` is a protocol-relative URL.
+
+A URL that starts with an expression the MCP client does not control, followed by literal text
+beginning with `/`, `?` or `#`, has a fixed host: `f"{ENDPOINT}/tasks/{task_id}"`, `` `${base}/v1/${id}` ``,
+`base + "/items/" + id`, `fmt.Sprintf("%s/items/%s", base, id)`. Text after that `/` is in the
+URL's path and cannot move the request to another host. This assumes the base holds a scheme and
+host, as a configured endpoint does.
 
 The analyzer checks tainted URL arguments for SSRF and clears the taint when
 it can identify a fixed destination host. The URL is the first positional

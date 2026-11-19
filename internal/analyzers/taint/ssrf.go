@@ -70,6 +70,161 @@ func ssrfCleared(info taintInfo, fixedHost bool) taintInfo {
 	return info
 }
 
+// untaintedBaseThenPath reports whether a URL expression starts with an expression that carries no
+// taint and is immediately followed by literal text beginning with "/": f"{endpoint}/tasks/{id}",
+// `${base}/v1/${id}`, base + "/items/" + id, fmt.Sprintf("%s/items/%s", base, id). After that "/"
+// the URL is in its path, so later text cannot move it to another host. This assumes the base holds
+// a scheme and host, as a configured endpoint does; a base that is only "https://" would be wrong,
+// and is rare enough that the gain outweighs it.
+func untaintedBaseThenPath(pf *parsedFile, n *sitter.Node, tainted map[string]taintInfo) bool {
+	if n == nil {
+		return false
+	}
+	n = unwrapAwait(n)
+	src := pf.src
+	clean := func(e *sitter.Node) bool {
+		if e == nil {
+			return false
+		}
+		switch e.Kind() {
+		case "identifier", "attribute", "member_expression", "selector_expression", "field_expression", "subscript_expression", "subscript":
+		default:
+			return false
+		}
+		// An operator-set base - a configured endpoint read from the environment - still fixes
+		// the host; only a base the MCP client controls does not
+		info, found := propagatedTaint(e.Utf8Text(src), tainted)
+		return !found || !fromMCPInput(info)
+	}
+	// "/" starts the path; "?" and "#" end the authority just the same
+	startsWithSlash := func(t string) bool { return t != "" && strings.ContainsRune("/?#", rune(t[0])) }
+	switch n.Kind() {
+	case "template_string", "string":
+		// first meaningful child must be an interpolation, the next a fragment starting with "/"
+		var parts []*sitter.Node
+		for i := range n.ChildCount() {
+			ch := n.Child(i)
+			switch ch.Kind() {
+			case "string_start", "string_end", "`":
+				continue
+			}
+			parts = append(parts, ch)
+			if len(parts) == 2 {
+				break
+			}
+		}
+		if len(parts) < 2 {
+			return false
+		}
+		var expr *sitter.Node
+		switch parts[0].Kind() {
+		case "template_substitution":
+			expr = parts[0].NamedChild(0)
+		case "interpolation":
+			if parts[0].NamedChildCount() != 1 {
+				return false
+			}
+			expr = parts[0].ChildByFieldName("expression")
+		default:
+			return false
+		}
+		k := parts[1].Kind()
+		return (k == "string_fragment" || k == "string_content") && startsWithSlash(parts[1].Utf8Text(src)) && clean(expr)
+	case "binary_operator", "binary_expression":
+		// Descend to the innermost left "+": its left operand starts the URL, its right operand is
+		// the text right after that start
+		inner := n
+		for {
+			if op := inner.ChildByFieldName("operator"); op == nil || op.Utf8Text(src) != "+" {
+				return false
+			}
+			l := inner.ChildByFieldName("left")
+			if l == nil {
+				return false
+			}
+			if l.Kind() != "binary_operator" && l.Kind() != "binary_expression" {
+				break
+			}
+			inner = l
+		}
+		right := inner.ChildByFieldName("right")
+		if right == nil {
+			return false
+		}
+		v, ok := parser.LiteralValue(right, src)
+		return ok && startsWithSlash(v) && clean(inner.ChildByFieldName("left"))
+	}
+	if slices.Contains(pf.adapter.Grammar.CallKinds, n.Kind()) {
+		callee, _, args := parser.CalleeAndArgs(pf.adapter.ID, n, src)
+		if callee != "fmt.Sprintf" || len(args) < 2 {
+			return false
+		}
+		format, ok := parser.UnquoteString(args[0].Text)
+		if !ok || !(strings.HasPrefix(format, "%s/") || strings.HasPrefix(format, "%s?") || strings.HasPrefix(format, "%s#")) {
+			return false
+		}
+		info, found := propagatedTaint(args[1].Text, tainted)
+		return (!found || !fromMCPInput(info)) && isPlainIdentOrSelector(args[1].Text)
+	}
+	return false
+}
+
+// relativePathURL reports whether a URL expression starts with literal text of the form "/word":
+// `/repositories/${ws}/pulls`, f"/v1/product/{id}/". A relative path is resolved against the
+// client's configured base, so the rest of it cannot name another host. A bare "/" followed by an
+// interpolation is not enough: "/" + "/evil.example" is a protocol-relative URL.
+func relativePathURL(pf *parsedFile, n *sitter.Node) bool {
+	if n == nil {
+		return false
+	}
+	n = unwrapAwait(n)
+	lead := ""
+	switch n.Kind() {
+	case "template_string", "string":
+		for i := range n.ChildCount() {
+			ch := n.Child(i)
+			switch ch.Kind() {
+			case "string_start", "string_end", "`":
+				continue
+			case "string_fragment", "string_content":
+				lead = ch.Utf8Text(pf.src)
+			}
+			break
+		}
+	case "binary_operator", "binary_expression":
+		inner := n
+		for {
+			l := inner.ChildByFieldName("left")
+			if l == nil || (l.Kind() != "binary_operator" && l.Kind() != "binary_expression") {
+				break
+			}
+			inner = l
+		}
+		if l := inner.ChildByFieldName("left"); l != nil {
+			lead, _ = parser.LiteralValue(l, pf.src)
+		}
+	}
+	return len(lead) >= 2 && lead[0] == '/' && lead[1] != '/' && lead[1] != '\\'
+}
+
+func fromMCPInput(info taintInfo) bool {
+	return len(info.chain) > 0 && sourceClass(info.chain[0].Detail) == sourceMCPInput
+}
+
+func isPlainIdentOrSelector(t string) bool {
+	if t == "" {
+		return false
+	}
+	for _, r := range t {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // fixesURLHost requires a scheme and non-empty authority followed by /, ? or #.
 // Without that delimiter, appending @evil.example or .evil.example could change
 // the destination host.

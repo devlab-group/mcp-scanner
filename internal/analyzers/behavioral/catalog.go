@@ -319,3 +319,11 @@ func claimsLocalOnly(description string) bool {
 	declaredNetwork, _ := matchCategory(description, declaredWords[catNetwork], false)
 	return narrow && !declaredNetwork
 }
+
+// Declared reports which capability categories a description affirmatively claims, with the
+// same vocabulary and negation handling the mismatch checks use. Other analyzers use it to tell a
+// tool's stated purpose from an injection into it.
+func Declared(description string) (filesystem, network, process bool) {
+	d, _ := declaredCapabilities(description)
+	return d.Filesystem, d.Network, d.Process
+}
