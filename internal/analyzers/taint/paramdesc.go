@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
@@ -97,6 +98,15 @@ func paramDescription(g *graph.Graph, c *graph.Capability, param string) string 
 			return d[1]
 		}
 	}
+	// ImageParams.shape, inputSchema: ImageParams: the schema is a named z.object defined elsewhere in
+	// the file or in another one
+	for _, name := range schemaRefs(text) {
+		if def := schemaDefinition(g, c.File, name); def != "" {
+			if d := entryDescription(def, param); d != "" {
+				return d
+			}
+		}
+	}
 	return ""
 }
 
@@ -183,6 +193,59 @@ func argumentKey(g *graph.Graph, path []model.FlowStep) string {
 		}
 		if m := firstStringLit.FindStringSubmatch(lines[st.Line-1]); m != nil {
 			return m[1]
+		}
+	}
+	return ""
+}
+
+var (
+	schemaRef = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.shape\b|\b(?:inputSchema|paramsSchema|parameters)\s*:\s*([A-Za-z_$][\w$]*)\s*[,}\n]`)
+)
+
+// schemaRefs are the names of schema constants a registration's text passes by name
+func schemaRefs(text string) []string {
+	var out []string
+	for _, m := range schemaRef.FindAllStringSubmatch(text, -1) {
+		if n := firstGroup(m); n != "" && !hasString(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// schemaDefinition is the object text of `const NAME = z.object({...})`, looked up first in the
+// registration's own file, then in the project's other JavaScript and TypeScript files
+func schemaDefinition(g *graph.Graph, file, name string) string {
+	def := regexp.MustCompile(`(?:const|let|var)\s+` + regexp.QuoteMeta(name) + `\s*(?::[^=\n]+)?=\s*z\s*\.\s*(?:strict)?[oO]bject\s*\(\s*\{`)
+	files := []string{file}
+	for f, gf := range g.Files {
+		if f != file && (gf.Language == "typescript" || gf.Language == "javascript") {
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files[1:])
+	for _, f := range files {
+		data, err := os.ReadFile(filepath.Join(g.Root, f))
+		if err != nil || !strings.Contains(string(data), name) {
+			continue
+		}
+		text := string(data)
+		if loc := def.FindStringIndex(text); loc != nil {
+			return entryAt(text, loc[1], true)
+		}
+	}
+	return ""
+}
+
+// entryDescription is the description of param's entry in a zod or JSON-schema object's text
+func entryDescription(text, param string) string {
+	start := regexp.MustCompile(`(?:^|[\s{,(])["']?` + regexp.QuoteMeta(param) + `["']?\??\s*:\s*`)
+	for _, loc := range start.FindAllStringIndex(text, -1) {
+		entry := entryAt(text, loc[1], false)
+		for _, d := range []*regexp.Regexp{describeCall, descriptionKey} {
+			if m := d.FindStringSubmatch(entry); m != nil {
+				return firstGroup(m)
+			}
 		}
 	}
 	return ""

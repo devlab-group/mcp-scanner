@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -321,9 +322,16 @@ func (s *Scanner) runOne(ctx context.Context, a analyzer.Analyzer, target model.
 	// another limit used to carry no trace of the deadline, so a report never showed that its
 	// results were cut off by time - and how much it traced depends on how busy the machine was.
 	if actx.Err() != nil && res.Status != model.AnalyzerFailed {
-		note := fmt.Sprintf("analyzer deadline (%s) reached before it finished: results are incomplete and can differ between runs on a slower or busier machine", timeout)
-		res.Warnings = append(res.Warnings, "analyzer deadline reached before it finished")
-		res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, note)
+		if ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded) {
+			note := fmt.Sprintf("analyzer deadline (%s) reached before it finished: results are incomplete and can differ between runs on a slower or busier machine", timeout)
+			res.Warnings = append(res.Warnings, "analyzer deadline reached before it finished")
+			res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, note)
+		} else {
+			// the whole scan ran out of time or was cancelled: the per-analyzer limit is not
+			// the setting that cut it off
+			res.Warnings = append(res.Warnings, "scan stopped before this analyzer finished")
+			res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, "the scan was stopped (its overall timeout or a cancellation) before this analyzer finished: results are incomplete")
+		}
 	}
 	return res
 }

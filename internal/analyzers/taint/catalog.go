@@ -64,6 +64,14 @@ type sinkPattern struct {
 }
 
 var sinkPatterns = []sinkPattern{
+	// The Docker SDKs start a process inside a container: docker-py's client.containers.run(image,
+	// command) and create(...), a running container's exec_run(cmd), dockerode's
+	// docker.createContainer({ Image, Cmd }). With the daemon's socket that is code execution the
+	// project never spells as a shell or an exec call.
+	{"containers.run", "command_injection", model.SeverityHigh, -1},
+	{"containers.create", "command_injection", model.SeverityHigh, -1},
+	{"exec_run", "command_injection", model.SeverityHigh, 0},
+	{"createContainer", "command_injection", model.SeverityHigh, 0},
 	// exec.Command, subprocess.run/Popen/call, Command::new and
 	// ProcessBuilder take their command as separate argv elements rather
 	// than one shell string; see argvSinks below for why they are not
@@ -639,6 +647,12 @@ var methodSanitizerPatterns = []sanitizerPattern{
 	{"replace", true, nil, "a string replace does not stop command injection", false},
 	{"normalize", true, nil, "normalize does not stop traversal outside the base directory", true},
 	{"toRealPath", true, nil, "toRealPath does not stop traversal outside the base directory", true},
+	// pathlib's Path(p).expanduser(), os.path.expanduser(p), .absolute(): the same path with a
+	// leading ~, environment variables or the working directory filled in - known calls that
+	// pass the value on, not unknown ones
+	{"expanduser", true, nil, "expanduser only replaces a leading ~ with a home directory; it does not limit the path", false},
+	{"expandvars", true, nil, "expandvars only fills in environment variables; it does not limit the path", false},
+	{"absolute", true, nil, "absolute only prefixes the working directory; it does not limit the path", false},
 }
 
 func matchSanitizer(calleeText string) (sanitizerPattern, bool) {

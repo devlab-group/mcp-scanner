@@ -118,12 +118,63 @@ type listSite struct {
 // before anything is emitted, since either can name the dispatch side for
 // a kind the other named the list side for
 type requestHandlerState struct {
-	sites    []listSite
-	dispatch map[graph.CapabilityKind]graph.SymbolID
+	sites []listSite
+	// dispatch holds every dispatch-side handler found per kind, with the file that registers it:
+	// a tree can hold several servers (server.py and server_old.py, each with its own
+	// @app.call_tool()), and each list site belongs to the one in its own module
+	dispatch map[graph.CapabilityKind][]dispatchSite
+}
+
+type dispatchSite struct {
+	id   graph.SymbolID
+	file string
 }
 
 func newRequestHandlerState() *requestHandlerState {
-	return &requestHandlerState{dispatch: map[graph.CapabilityKind]graph.SymbolID{}}
+	return &requestHandlerState{dispatch: map[graph.CapabilityKind][]dispatchSite{}}
+}
+
+func (st *requestHandlerState) addDispatch(kind graph.CapabilityKind, id graph.SymbolID, file string) {
+	for _, d := range st.dispatch[kind] {
+		if d.id == id && d.file == file {
+			return
+		}
+	}
+	st.dispatch[kind] = append(st.dispatch[kind], dispatchSite{id: id, file: file})
+}
+
+// dispatchFor picks the dispatch handler a list site's tools go to: the one registered in the
+// same file; else the only one in the tree; else the one whose file shares the longest directory
+// prefix with the site, ties broken by file path - never by map order, which made the choice
+// change from run to run
+func (st *requestHandlerState) dispatchFor(kind graph.CapabilityKind, file string) graph.SymbolID {
+	ds := st.dispatch[kind]
+	if len(ds) == 0 {
+		return ""
+	}
+	best, bestScore := dispatchSite{}, -1
+	for _, d := range ds {
+		score := 0
+		if d.file == file {
+			score = 1 << 20
+		} else {
+			score = commonDirDepth(d.file, file)
+		}
+		if score > bestScore || score == bestScore && (d.file < best.file || d.file == best.file && d.id < best.id) {
+			best, bestScore = d, score
+		}
+	}
+	return best.id
+}
+
+// commonDirDepth counts the leading directories two slash paths share
+func commonDirDepth(a, b string) int {
+	as, bs := strings.Split(path.Dir(a), "/"), strings.Split(path.Dir(b), "/")
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
 }
 
 // addCall records one setRequestHandler call once it has been classified,
@@ -144,7 +195,7 @@ func (st *requestHandlerState) addCall(g *graph.Graph, idx index, c graph.Call) 
 			if role.list {
 				st.sites = append(st.sites, listSite{kind: role.kind, sym: sym, file: c.File, line: c.Line})
 			} else if id != "" {
-				st.dispatch[role.kind] = id
+				st.addDispatch(role.kind, id, c.File)
 			}
 		}
 		return
@@ -163,7 +214,7 @@ func (st *requestHandlerState) addCall(g *graph.Graph, idx index, c graph.Call) 
 		return
 	}
 	if id != "" {
-		st.dispatch[role.kind] = id
+		st.addDispatch(role.kind, id, c.File)
 	}
 }
 
@@ -172,7 +223,7 @@ func (st *requestHandlerState) addDecorator(role requestHandlerRole, sym *graph.
 		st.sites = append(st.sites, listSite{kind: role.kind, sym: sym, file: sym.File, line: sym.Line})
 		return
 	}
-	st.dispatch[role.kind] = sym.ID
+	st.addDispatch(role.kind, sym.ID, sym.File)
 }
 
 func resolveHandlerArg(g *graph.Graph, idx index, a *graph.Arg) (*graph.Symbol, graph.SymbolID) {
@@ -197,7 +248,7 @@ func resolveHandlerArg(g *graph.Graph, idx index, a *graph.Arg) (*graph.Symbol, 
 // capability rather than erasing the registration.
 func (st *requestHandlerState) emit(g *graph.Graph) {
 	for _, site := range st.sites {
-		handler := st.dispatch[site.kind]
+		handler := st.dispatchFor(site.kind, site.file)
 		if site.sym == nil {
 			g.Capabilities = append(g.Capabilities, graph.Capability{
 				Kind: site.kind, Form: "request_handler", File: site.file, Line: site.line, Handler: handler,

@@ -6,6 +6,7 @@ package taint
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -381,9 +382,27 @@ func (c *ctx) walkAll(ctx context.Context) {
 			c.analyzeSymbol(sym, seed, 0)
 		}
 	}
+	// A handler that reads what another call stored - run_jobs over the jobs add_job queued - is
+	// walked again with the stored taint added to its own arguments
+	for _, sym := range ordered {
+		if ctx.Err() != nil || c.overWorkLimit() || len(c.stored) == 0 {
+			break
+		}
+		seed := c.seedFor(sym)
+		if seed == nil {
+			continue
+		}
+		if stored := c.storedSeed(sym); stored != nil {
+			merged := make(map[string]taintInfo, len(seed)+len(stored))
+			maps.Copy(merged, seed)
+			maps.Copy(merged, stored)
+			c.analyzeSymbol(sym, merged, 0)
+		}
+	}
 	// Everything else: a plain function can still introduce taint on its
 	// own (an environment variable, a file, an HTTP response) and reach a
-	// sink entirely within itself, with no handler involved
+	// sink entirely within itself, with no handler involved - and it can
+	// read what a handler stored (a scheduler loop over queued commands)
 	for _, sym := range ordered {
 		if ctx.Err() != nil || c.overWorkLimit() {
 			break
@@ -392,5 +411,8 @@ func (c *ctx) walkAll(ctx context.Context) {
 			continue
 		}
 		c.analyzeSymbol(sym, nil, 0)
+		if stored := c.storedSeed(sym); stored != nil {
+			c.analyzeSymbol(sym, stored, 0)
+		}
 	}
 }

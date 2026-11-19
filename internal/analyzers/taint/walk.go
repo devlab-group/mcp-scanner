@@ -207,6 +207,17 @@ type ctx struct {
 	// passes workLimit, so where a very large tree is cut depends on the tree, not on the machine
 	work         uint64
 	workLimitHit bool
+	// containers caches each file's module-level container names; stored is the MCP-input taint
+	// handlers left on them (see stored.go)
+	containers map[string]map[string]bool
+	stored     map[storeKey]taintInfo
+	// zodNames are the tree's z.object names, zodParsed each schema read once (see zodparse.go)
+	zodNames  map[string]bool
+	zodParsed map[string]zodParseResult
+	// containerRecv and instanceRecv cache builtinContainerReceiver and projectInstanceMethod
+	// per file, receiver and callee (see binding.go)
+	containerRecv map[receiverKey]bool
+	instanceRecv  map[receiverKey]*graph.Symbol
 
 	// These counters describe taint's own capped, timed-out, or unreadable
 	// reparses. They become limits, not capability skips.
@@ -296,6 +307,7 @@ func newCtx(runCtx context.Context, g *graph.Graph) *ctx {
 	}
 	c := &ctx{
 		g: g, idx: idx, runCtx: runCtx,
+		containers: map[string]map[string]bool{}, stored: map[storeKey]taintInfo{},
 		files:         map[string]*parsedFile{},
 		visited:       map[seedKey]bool{},
 		summaries:     map[seedKey][]summaryEntry{},
@@ -511,6 +523,10 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	if kind == graph.CapabilityTool && scalar == nil {
 		scalar = c.zodScalarParams(capRec)
 	}
+	var patterned map[string][]string
+	if kind == graph.CapabilityTool {
+		patterned = c.zodPatternParams(capRec)
+	}
 	var filled map[int]bool
 	if capRec.Form == "jsonrpc" {
 		filled = c.jsonrpcFilledParams(capRec, sym)
@@ -532,6 +548,15 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 		info := taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: name, File: sym.File, Line: sym.Line, Detail: detail, Resolved: true,
 		}}}
+		if cats := patterned[name]; len(cats) > 0 {
+			// sha: z.string().regex(/^[a-f0-9]{64}$/): the SDK rejects anything else before the
+			// handler runs, so the value cannot hold the syntax these categories need
+			info = info.extend(model.FlowStep{
+				Kind: "sanitizer", Symbol: name, File: sym.File, Line: sym.Line, Resolved: true,
+				Detail: "limited by the tool schema's anchored pattern (" + strings.Join(cats, ", ") + " ruled out)",
+			}, 1)
+			info.clearedFor = mergeClearedFor(info.clearedFor, cats)
+		}
 		if v := validators[name]; v != "" {
 			// path: Annotated[str, BeforeValidator(validate_path)]: the SDK runs the project's own
 			// check on the argument before the handler sees it
@@ -769,6 +794,7 @@ func (c *ctx) analyzeSymbol(sym *graph.Symbol, seed map[string]taintInfo, depth 
 	maps.Copy(tainted, seed)
 	start := len(c.findings)
 	c.walk(pf, sym.File, tainted, body, depth, false)
+	c.recordStored(sym, seed, tainted)
 	c.summarize(key, seed, start)
 }
 
@@ -910,9 +936,6 @@ func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n 
 	}
 }
 
-// ownMethodInFile reports whether calleeText is this.<name> or self.<name> and the file defines
-// exactly one method of that name - the one such a call reaches, unless it is inherited from
-// elsewhere, in which case the file defines none and the call is left alone
 // composedText reports whether an expression's text splices a value into literal text: "a " + x,
 // f"a {x}", `a ${x}`, "a %s" % x, fmt.Sprintf("a %s", x), "a {}".format(x)
 var composedRe = regexp.MustCompile(`["'\x60]\s*\+|\+\s*["'\x60]|^\s*f["']|\$\{|["']\s*%\s*[\w(]|\bSprintf\s*\(|\.format\s*\(`)
@@ -1013,6 +1036,24 @@ func isFunctionLikeNode(n *sitter.Node) bool {
 	switch n.Kind() {
 	case "function_definition", "function_declaration", "method_definition", "arrow_function", "function_expression", "func_literal", "lambda", "lambda_expression", "closure_expression":
 		return true
+	}
+	return false
+}
+
+// dockerSinks are the catalog entries that name Docker SDK calls; other APIs use the same names
+var dockerSinks = map[string]bool{"containers.run": true, "containers.create": true, "exec_run": true, "createContainer": true}
+
+// fileImportsDocker reports whether file imports docker-py or dockerode
+func (c *ctx) fileImportsDocker(file string) bool {
+	f := c.g.Files[file]
+	if f == nil {
+		return false
+	}
+	for _, imp := range f.Imports {
+		p := strings.Trim(imp.Path, "\"' ")
+		if p == "docker" || strings.HasPrefix(p, "docker.") || p == "dockerode" || strings.HasSuffix(p, "/dockerode") {
+			return true
+		}
 	}
 	return false
 }
@@ -1123,6 +1164,9 @@ func calleeIsParam(pf *parsedFile, n *sitter.Node, calleeText string) string {
 	return ""
 }
 
+// ownMethodInFile reports whether calleeText is this.<name> or self.<name> and the file defines
+// exactly one method of that name - the one such a call reaches, unless it is inherited from
+// elsewhere, in which case the file defines none and the call is left alone
 func (c *ctx) ownMethodInFile(file, calleeText string) bool {
 	t := strings.TrimSpace(calleeText)
 	name, ok := strings.CutPrefix(t, "this.")
@@ -1844,6 +1888,10 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		}
 
 		sym, resolved := c.resolveCallee(file, calleeText)
+		if resolved && c.containerReceiverCached(pf, file, receiver.Text) {
+			// clients = new Map(); c = clients.get(name): Map.prototype.get, not a project get()
+			sym, resolved = nil, false
+		}
 
 		san, isSanitizer := sanitizerFor(calleeText, resolved)
 		if !isSanitizer && aliased {
@@ -1871,12 +1919,32 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		}
 
 		kind, mult, detail := "unknown", 0.6, "result of a call that received tainted input"
+		var zodResult *zodParseResult
 		if resolved {
 			kind, mult = "transform", 0.85
 		} else if mappingGet(calleeText, receiver, args, tainted) {
 			// arguments.get("host", ""), (params.arguments or {}).get("host"): a lookup by a literal
 			// key in the client's own mapping hands back part of what the client sent
 			kind, mult, resolved, detail = "transform", 1, true, mappingGetDetail
+		} else if pf.adapter.ID == language.Python && parser.LastSegment(calleeText) == "join" && pyStringLiteral(receiver.Text) {
+			// ", ".join(f"'{v}'" for v in ids): str.join concatenates the elements it is given,
+			// so it passes them on - a known call, not an unknown one. When the elements are one
+			// constant per item (", ".join("?" for _ in ids)) the result holds none of the items.
+			var argText strings.Builder
+			for _, a := range args {
+				argText.WriteString(a.Text)
+				argText.WriteString(" ")
+			}
+			if _, carries := propagatedTaint(argText.String(), tainted); !carries {
+				clearTaint(tainted, targets, conditional)
+				return
+			}
+			kind, mult, resolved, detail = "transform", 1, true, "joined by str.join, which concatenates its elements"
+		} else if zp, ok := c.zodParse(file, calleeText); ok {
+			// PingSchema.safeParse(request.params.arguments): zod hands back the values it was
+			// given, after the checks its schema lists
+			kind, mult, resolved, detail = "transform", 1, true, zodParseDetail
+			zodResult = &zp
 		} else if c.mcpGoArgumentGetter(file, calleeText) {
 			// req.RequireString("path"): the mcp-go SDK's request getters return the client's
 			// argument as sent, so the call is known and passes the value on unchanged
@@ -1887,6 +1955,14 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			Detail: detail,
 		}
 		info := from.extend(step, mult)
+		if zodResult != nil {
+			switch {
+			case zodResult.shellSafe:
+				info.clearedFor = mergeClearedFor(info.clearedFor, []string{"command_injection"})
+			case len(zodResult.checks) > 0 && info.review == "":
+				info.review = "the zod schema behind " + calleeText + " checks or rewrites values (" + strings.Join(zodResult.checks, ", ") + "); whether that blocks dangerous input decides between a real issue and noise"
+			}
+		}
 		if why, ok := c.escapedBy(rhs.Utf8Text(pf.src)); ok && info.review == "" {
 			info.review = escapedReview(why)
 		}
@@ -2173,6 +2249,18 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if resolvedInRepo && callsItselfThroughReceiver(calleeText, sym, file, int(n.StartPosition().Row)+1) {
 		sym, resolvedInRepo = nil, false
 	}
+	containerCall := c.containerReceiverCached(pf, file, receiver.Text)
+	if containerCall {
+		// this.clients.delete(name) where clients is a new Map(): Map.prototype.delete, not the
+		// project's delete method of another class; a built-in container's methods are no sink
+		sym, resolvedInRepo = nil, false
+	}
+	instanceMethod := false
+	if m, ok := c.instanceMethodCached(pf, file, receiver.Text, calleeText); ok {
+		// SESSION = TclSession(); SESSION.execute(cmd): the receiver is an instance of a project
+		// class that defines execute, so the call is that method, whatever its name matches
+		sym, resolvedInRepo, instanceMethod = m, true, true
+	}
 	if resolvedInRepo && c.isProjectValidator(sym) {
 		// validate_table_name(table_name) as a statement: later uses of the argument went through
 		// a check. The scanner cannot tell whether the check is sound, so taint stays and the step
@@ -2189,6 +2277,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if sinkFound && dockerSinks[sink.text] && !c.fileImportsDocker(file) {
+		// tagmanager.accounts.containers.create(...) is a Google API, not docker-py: the Docker SDK
+		// names count only in a file that imports the SDK
+		sinkFound = false
+	}
 	if sinkFound && sink.text == "exec" && pf.adapter.ID == language.Go && strings.TrimSpace(sinkText) != "exec" {
 		// exec.LookPath, exec.ExitError: Go's os/exec package name, not a shell exec. Go starts a
 		// process only through exec.Command(Context), which the argv rules handle
@@ -2249,6 +2342,13 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		if c.httpClientReceiver(pf, file, recv) {
 			sink, sinkFound = matchGatedMethodSink(sinkText)
 		}
+	}
+	if sinkFound && containerCall {
+		sinkFound = false
+	}
+	if sinkFound && instanceMethod {
+		// the project class's own method, followed below
+		sinkFound = false
 	}
 	if sinkFound && (byMethodName || !strings.ContainsAny(sink.text, ".:")) && c.ownMethodInFile(file, calleeText) {
 		// this.open('manual', id) / self.open(path) where this file defines that one method: a
@@ -2913,7 +3013,7 @@ func withoutNonPathOptions(args []graph.Arg) []graph.Arg {
 func mentionsAny(text string, tainted map[string]taintInfo, category string) (taintInfo, bool) {
 	text = maskStrongSanitizerCalls(text, category)
 	text = maskAttributeSanitizers(text)
-	text = maskSubscriptKeys(maskLiteralText(text))
+	text = maskNumericValues(maskSubscriptKeys(maskLiteralText(text)))
 	var best, cleared taintInfo
 	found, foundCleared := false, false
 	for _, name := range taintedNames(tainted) {
@@ -2946,7 +3046,7 @@ func mentionsAny(text string, tainted map[string]taintInfo, category string) (ta
 // propagatedTaint computes assignment taint per name. Visible occurrences stay tainted; fully
 // sanitized occurrences add the intersection of cleared categories and receive reduced confidence.
 func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool) {
-	text = maskSubscriptKeys(maskLiteralText(maskAttributeSanitizers(text)))
+	text = maskNumericValues(maskSubscriptKeys(maskLiteralText(maskAttributeSanitizers(text))))
 	fullyMasked := maskStrongSanitizerCalls(text, "")
 	var best taintInfo
 	found := false
@@ -3231,6 +3331,50 @@ func matchingParen(text string, open int) int {
 	return -1
 }
 
+// numericCall and numericMember find expressions whose value is a number whatever their argument
+// holds: len(x), int(x), parseInt(x), Number(x), x.length, x.size(), x.count(y)
+var (
+	numericCall   = regexp.MustCompile(`\b(?:len|int|float|bool|abs|round|ord|hash|cap|parseInt|parseFloat|Number|Boolean)\s*\(`)
+	numericMember = regexp.MustCompile(`\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.(?:length\b|size\(\s*\)|count\([^()]*\))`)
+)
+
+// maskNumericValues blanks expressions that evaluate to a number: a number carries no path, command,
+// query or address, so "echo " + str(len(TASKS)) does not carry TASKS. The text keeps its length.
+func maskNumericValues(text string) string {
+	out := []byte(text)
+	for _, loc := range numericCall.FindAllStringIndex(text, -1) {
+		if loc[0] > 0 && (out[loc[0]-1] == '.' || out[loc[0]-1] == ' ' && loc[0] > 1 && text[loc[0]-2] == '.') {
+			continue // obj.len(...) is a method, not the builtin
+		}
+		depth, end := 0, -1
+		for k := loc[1] - 1; k < len(out); k++ {
+			if out[k] == '(' {
+				depth++
+			} else if out[k] == ')' {
+				if depth--; depth == 0 {
+					end = k
+					break
+				}
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		for k := loc[0]; k <= end; k++ {
+			out[k] = ' '
+		}
+		out[loc[0]] = '0'
+	}
+	masked := string(out)
+	for _, loc := range numericMember.FindAllStringIndex(masked, -1) {
+		for k := loc[0]; k < loc[1]; k++ {
+			out[k] = ' '
+		}
+		out[loc[0]] = '0'
+	}
+	return string(out)
+}
+
 // maskSubscriptKeys hides lookup keys because selected values come from the
 // collection. Collection names remain visible, and array literals are not
 // masked. Blanking preserves offsets.
@@ -3272,17 +3416,44 @@ func subscriptAt(out []byte, idx int) bool {
 	return isIdentByte(c) || c == ')' || c == ']' || c == '"' || c == '\'' || c == '`'
 }
 
-// maskLiteralText prevents literal words from looking like variable references while leaving
-// interpolated expressions visible. Blanking preserves positions for the identifier matcher;
-// these offsets are not emitted as evidence.
 // constantPerElement matches expressions that turn each element of a collection into the same
 // literal - placeholders for a parameterized query: xs.map(() => "?"), xs.map((_) => '$1'),
 // ["?"] * len(xs), "?" * len(xs), "?" for _ in xs. Their text names the collection, but what they
 // produce does not depend on its contents.
 var constantPerElement = regexp.MustCompile(`[A-Za-z_$][\w.$]*\s*\.map\(\s*\(?\s*\w*\s*(?:,\s*\w+\s*)?\)?\s*=>\s*(?:"[^"]*"|'[^']*'|` + "`[^`$]*`" + `)\s*\)|\[\s*(?:"[^"]*"|'[^']*')\s*\]\s*\*\s*len\(\s*[\w.]+\s*\)|(?:"[^"]*"|'[^']*')\s*\*\s*len\(\s*[\w.]+\s*\)|(?:"[^"]*"|'[^']*')\s+for\s+\w+\s+in\s+[\w.]+`)
 
+// maskConstantPerElement replaces each constantPerElement match with "". A match whose literal is
+// an f-string (f"'{v}'" for v in ids) or holds an interpolation is left alone: its value does
+// depend on the element, and blanking it hid SQL built from the collection's contents.
+func maskConstantPerElement(text string) string {
+	locs := constantPerElement.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, l := range locs {
+		m := text[l[0]:l[1]]
+		q := strings.IndexAny(m, "\"'`")
+		prefixed := q >= 0 && l[0]+q > 0 && isLetterByte(text[l[0]+q-1])
+		if prefixed || strings.Contains(m[max(q, 0):], "{") {
+			continue
+		}
+		b.WriteString(text[last:l[0]])
+		b.WriteString(`""`)
+		last = l[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
+func isLetterByte(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+
+// maskLiteralText prevents literal words from looking like variable references while leaving
+// interpolated expressions visible. Blanking preserves positions for the identifier matcher;
+// these offsets are not emitted as evidence.
 func maskLiteralText(text string) string {
-	text = constantPerElement.ReplaceAllString(text, `""`)
+	text = maskConstantPerElement(text)
 	out := []byte(text)
 	var quote byte
 	for i := 0; i < len(out); i++ {
@@ -4115,4 +4286,13 @@ func keywordOnlyNonSQL(args []graph.Arg) bool {
 		}
 	}
 	return true
+}
+
+// pyStringLiteral reports whether text is one Python string literal with no prefix: ", " or '-'
+func pyStringLiteral(text string) bool {
+	t := strings.TrimSpace(text)
+	if len(t) < 2 || (t[0] != '"' && t[0] != '\'') || t[len(t)-1] != t[0] {
+		return false
+	}
+	return !strings.ContainsRune(t[1:len(t)-1], rune(t[0]))
 }

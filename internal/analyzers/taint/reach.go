@@ -224,7 +224,9 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 					break
 				}
 			}
-			if step, ok := validatorStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) {
+			// A command line is guarded only by a check that can reject shell syntax
+			guards.shell = f.Category == "command_injection"
+			if step, ok := validatorStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) && !(guards.shell && guards.validatorShellBlind(step)) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
 					fmt.Sprintf("the argument passes through %s, the project's own validation function; whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
 				break
@@ -278,13 +280,13 @@ func validatorStep(path []model.FlowStep) (string, bool) {
 	return "", false
 }
 
-// unresolvedStep returns the first step of a path that passed taint through the result of a call
-// the analyzer could not follow - a library call, an API response, a parser - which it assumes
-// carries its tainted argument on
 // testPath matches files that by their path are tests: a test/, tests/, __tests__/ or spec/
 // directory, or a test file name in the usual conventions of each language
 var testPath = regexp.MustCompile(`(^|/)(tests?|__tests__|spec|specs)/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|/)test_[^/]*\.py$|Test\.java$|Tests?\.kt$`)
 
+// unresolvedStep returns the first step of a path that passed taint through the result of a call
+// the analyzer could not follow - a library call, an API response, a parser - which it assumes
+// carries its tainted argument on
 func unresolvedStep(path []model.FlowStep) (string, bool) {
 	for _, st := range path {
 		if st.Kind == "unknown" {

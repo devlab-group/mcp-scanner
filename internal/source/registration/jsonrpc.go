@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
@@ -38,7 +39,12 @@ func discoverJSONRPC(g *graph.Graph, idx index, callsByFile map[string][]int) {
 			return
 		}
 	}
-	for path := range g.Files {
+	paths := make([]string, 0, len(g.Files))
+	for p := range g.Files {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths) // capabilities are appended in file order, not map order
+	for _, path := range paths {
 		if jsonrpcTestPath.MatchString(filepath.ToSlash(path)) {
 			continue
 		}
@@ -137,7 +143,8 @@ func enclosingSymbol(g *graph.Graph, file string, line int) *graph.Symbol {
 		if s.File != file || s.Line > line || s.EndLine < line || s.Kind == graph.KindClass {
 			continue
 		}
-		if best == nil || s.EndLine-s.Line < best.EndLine-best.Line {
+		if best == nil || s.EndLine-s.Line < best.EndLine-best.Line ||
+			s.EndLine-s.Line == best.EndLine-best.Line && (s.Line > best.Line || s.Line == best.Line && s.ID < best.ID) {
 			best = s
 		}
 	}

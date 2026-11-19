@@ -40,7 +40,7 @@ func (c *ctx) sqlalchemyStatement(file, arg, scope string) bool {
 		built := false
 		for _, rhs := range rhss {
 			rhs = peelParens(withoutPyComments(rhs))
-			if sqlaRawText.MatchString(rhs) {
+			if sqlaRawText.MatchString(maskLiteralText(rhs)) {
 				return false
 			}
 			if strings.HasPrefix(rhs, t+".") {
@@ -58,7 +58,9 @@ func (c *ctx) sqlalchemyStatement(file, arg, scope string) bool {
 		return built
 	}
 	t = peelParens(withoutPyComments(t))
-	if sqlaRawText.MatchString(t) {
+	// String contents are blanked first: like("%Controller") holds a % inside a literal, not
+	// %-formatting of SQL text; what formats or splices text stays visible outside the quotes
+	if sqlaRawText.MatchString(maskLiteralText(t)) {
 		return false
 	}
 	i := strings.IndexByte(t, '(')

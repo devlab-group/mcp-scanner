@@ -299,14 +299,22 @@ func Discover(g *graph.Graph) {
 	// A wrapper nobody calls through a resolved call is still a real
 	// registration the source discovered; record it once, unresolved,
 	// rather than dropping it because no call site was found
-	for id, t := range templates {
+	// Map order would decide the order of g.Capabilities, and taint seeds a handler from the first
+	// capability naming it: walk templates and symbols in a fixed order
+	templateIDs := make([]graph.SymbolID, 0, len(templates))
+	for id := range templates {
+		templateIDs = append(templateIDs, id)
+	}
+	slices.Sort(templateIDs)
+	for _, id := range templateIDs {
+		t := templates[id]
 		if called[id] {
 			continue
 		}
 		emitDirect(g, idx, callsByFile, t.kind, t.innerCall, classifyArgs(t.innerCall.Args))
 	}
 
-	for _, sym := range g.Symbols {
+	for _, sym := range sortedSymbols(g) {
 		for i, dec := range sym.Decorators {
 			if role, ok := classifyRequestHandlerDecorator(dec); ok {
 				reqHandlers.addDecorator(role, sym)
@@ -743,4 +751,22 @@ func wrappedHandler(g *graph.Graph, idx index, callsByFile map[string][]int, c g
 		return nil
 	}
 	return nil
+}
+
+// sortedSymbols is every symbol of g by file, line and id
+func sortedSymbols(g *graph.Graph) []*graph.Symbol {
+	out := make([]*graph.Symbol, 0, len(g.Symbols))
+	for _, s := range g.Symbols {
+		out = append(out, s)
+	}
+	slices.SortFunc(out, func(a, b *graph.Symbol) int {
+		if a.File != b.File {
+			return strings.Compare(a.File, b.File)
+		}
+		if a.Line != b.Line {
+			return a.Line - b.Line
+		}
+		return strings.Compare(string(a.ID), string(b.ID))
+	})
+	return out
 }

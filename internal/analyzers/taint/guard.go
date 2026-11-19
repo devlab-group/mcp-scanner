@@ -27,6 +27,11 @@ type guardIndex struct {
 	byName map[string][]*graph.Symbol
 	// allowed are the function names the current path may descend into at the second level
 	allowed map[string]bool
+	// shell is set while the finding being triaged is a command injection: a check that cannot
+	// reject shell syntax (a NUL or '..' test, a prefix test) does not count then
+	shell bool
+	// calleeShell caches inCallee's answer per symbol for shell mode
+	calleeShell map[graph.SymbolID]calleeGuardResult
 }
 
 type calleeGuardResult struct {
@@ -131,10 +136,17 @@ func (gi *guardIndex) inCallee(path []model.FlowStep) (string, int, bool) {
 // a project function the body hands a parameter to - readJob(id) calling jobPath(id), which
 // throws unless id matches /^[a-f0-9-]{36}$/
 func (gi *guardIndex) calleeGuard(sym *graph.Symbol, depth int) (string, int, bool) {
-	own, ok := gi.callee[sym.ID]
+	cache := gi.callee
+	if gi.shell {
+		if gi.calleeShell == nil {
+			gi.calleeShell = map[graph.SymbolID]calleeGuardResult{}
+		}
+		cache = gi.calleeShell
+	}
+	own, ok := cache[sym.ID]
 	if !ok {
 		own = gi.ownBodyGuard(sym)
-		gi.callee[sym.ID] = own
+		cache[sym.ID] = own
 	}
 	if own.ok || depth >= 1 {
 		return own.text, own.line, own.ok
@@ -172,7 +184,20 @@ func (gi *guardIndex) ownBodyGuard(sym *graph.Symbol) calleeGuardResult {
 	if sym.EndLine <= sym.Line || len(ls) < sym.EndLine {
 		return calleeGuardResult{}
 	}
-	text, n, ok := scanRegion(ls, sym.Line, sym.EndLine+1, guardParams(sym))
+	var text string
+	var n int
+	var ok bool
+	if gi.shell {
+		// In shell mode the body is read for what it checks, so the declaration line
+		// (function sanitizePath(input: string)) is not itself taken for a call to a checker:
+		// the function's own name is masked there
+		region := append([]string(nil), ls[sym.Line-1:sym.EndLine]...)
+		region[0] = declName(sym.Name).ReplaceAllString(region[0], "${1}_")
+		text, n, ok = scanRegion(region, 1, len(region)+1, guardParams(sym), gi.blind())
+		n += sym.Line - 1
+	} else {
+		text, n, ok = scanRegion(ls, sym.Line, sym.EndLine+1, guardParams(sym), gi.blind())
+	}
 	if ok {
 		text += " in " + sym.Name
 	}
@@ -205,7 +230,7 @@ func (gi *guardIndex) inSource(path []model.FlowStep) (string, int, bool) {
 	if stop == 0 || stop > len(ls) || stop-src.Line > 400 {
 		return "", 0, false
 	}
-	return scanRegion(ls, src.Line, stop, []string{src.Symbol})
+	return scanRegion(ls, src.Line, stop, []string{src.Symbol}, gi.blind())
 }
 
 // checks reports whether line tests v: validate(v), isSafe(v), v.match(/^https:\/\/x\//),
@@ -273,8 +298,10 @@ func checks(line, v string) bool {
 	return checkRegexp(v).MatchString(line)
 }
 
+var guardIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func isGuardIdent(s string) bool {
-	return regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(s)
+	return guardIdent.MatchString(s)
 }
 
 func mentionsVar(s string, vs []string) bool {
@@ -312,7 +339,7 @@ func guardIfHigh(gi *guardIndex, sev model.Severity, path []model.FlowStep) (str
 // scanRegion looks at lines [from, to) for a check on one of vars, or on a value derived from them
 // by assignment, followed within guardWindow lines by an exit. A check whose exit rejects (throws,
 // raises, returns an error) wins over one followed only by a plain return.
-func scanRegion(ls []string, from, to int, vars []string) (string, int, bool) {
+func scanRegion(ls []string, from, to int, vars []string, blind func(line, v string) bool) (string, int, bool) {
 	vars = append([]string(nil), vars...)
 	weakText, weakLine := "", 0
 	for n := from; n < to && n <= len(ls); n++ {
@@ -321,7 +348,7 @@ func scanRegion(ls []string, from, to int, vars []string) (string, int, bool) {
 			vars = append(vars, m[1])
 		}
 		for _, v := range vars {
-			if !checks(line, v) {
+			if !checks(line, v) || blind != nil && blind(line, v) {
 				continue
 			}
 			end := min(n+guardWindow, to-1, len(ls))
@@ -367,4 +394,168 @@ func returnedLater(ls []string, from, to int, names []string) bool {
 		}
 	}
 	return false
+}
+
+// blind is the filter scanRegion applies in shell mode, or nil
+func (gi *guardIndex) blind() func(line, v string) bool {
+	if gi.shell {
+		return shellBlindCheck
+	}
+	return nil
+}
+
+// shellMeta are the characters a POSIX shell or cmd.exe gives a meaning to in a command line,
+// plus whitespace, which splits words
+const shellMeta = ";|&$`<>()'\"\\\n\r\t *?[]{}!#~%^"
+
+// literalArg is a quoted literal: "..", '\0', `x`
+const literalArg = `("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|` + "`[^`$]*`" + `)`
+
+// shellBlindPatterns are the shapes of a check that cannot reject shell syntax, whatever the rest
+// of the value holds: a test for one literal that is not shell syntax (a NUL byte, ".."), and a
+// prefix or suffix test, which says nothing about the middle of the value. %[1]s is the value's
+// quoted name. A literal's own text is tested separately, see blindLiteral.
+var shellBlindPatterns = []string{
+	`\b%[1]s\s*\.\s*(?:includes|contains|indexOf)\s*\(\s*` + literalArg + `\s*\)`,
+	literalArg + `\s+(?:not\s+)?in\s+%[1]s\b`,
+	`\bstrings\.Contains(?:Rune)?\s*\(\s*%[1]s\s*,\s*` + literalArg + `\s*\)`,
+	`\b%[1]s\s*\.\s*(?:startsWith|startswith|endsWith|endswith|is_relative_to|relative_to)\s*\(`,
+	`\bstrings\.Has(?:Prefix|Suffix)\s*\(\s*%[1]s\b`,
+}
+
+var (
+	blindMu      sync.Mutex
+	blindRegexps = map[string][]*regexp.Regexp{}
+	// nulEscape is a NUL byte written as an escape in a literal
+	nulEscape = regexp.MustCompile(`\\(?:0|x00|u0000|u\{0\})`)
+)
+
+func blindRegexpsFor(v string) []*regexp.Regexp {
+	blindMu.Lock()
+	defer blindMu.Unlock()
+	if res, ok := blindRegexps[v]; ok {
+		return res
+	}
+	q := regexp.QuoteMeta(v)
+	res := make([]*regexp.Regexp, len(shellBlindPatterns))
+	for i, p := range shellBlindPatterns {
+		res[i] = regexp.MustCompile(fmt.Sprintf(p, q))
+	}
+	blindRegexps[v] = res
+	return res
+}
+
+// shellBlindCheck reports whether every check on v in line is one that cannot reject shell syntax.
+// It is a fact of the code, not of names: a value that passes `p.includes("\0")` or
+// `p.startsWith(ROOT)` may still hold "; id", so for a value that ends up in a shell command line
+// such a check is no guard. A line with any other check on v (a pattern, an allowlist, a
+// project's checker) is not blind.
+func shellBlindCheck(line, v string) bool {
+	all := checkRegexp(v).FindAllStringIndex(line, -1)
+	if len(all) == 0 {
+		return false
+	}
+	var blind [][]int
+	for _, re := range blindRegexpsFor(v) {
+		for _, m := range re.FindAllStringSubmatchIndex(line, -1) {
+			if len(m) >= 4 && m[2] >= 0 {
+				lit := line[m[2]:m[3]]
+				body := nulEscape.ReplaceAllString(lit[1:len(lit)-1], "")
+				if strings.ContainsAny(body, shellMeta) {
+					continue // a test for a quote or a ';' may well be the guard
+				}
+			}
+			blind = append(blind, m[:2])
+		}
+	}
+	for _, a := range all {
+		covered := false
+		for _, b := range blind {
+			if b[0] <= a[1] && a[0] <= b[1] {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	// replaceCall is a replace whose pattern is the first argument: a regex or a string literal
+	replaceCall = regexp.MustCompile(`\.(?:replace|replaceAll)\s*\(\s*(/(?:[^/\\\n]|\\.)+/[a-z]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\bre\.sub[n]?\(\s*r?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
+	// otherRewrite is a rewrite the scanner cannot read the pattern of
+	otherRewrite = regexp.MustCompile(`(?i)\bstrings\.(?:Replace|ReplaceAll|Map|NewReplacer)\b|\btranslate\s*\(|\b\w*(?:escape|quote)\w*\s*\(`)
+	// shellStrip are pattern parts that can remove shell syntax: a metacharacter named in the
+	// pattern, a negated class or a class shorthand that covers punctuation
+	shellStrip = regexp.MustCompile("[;|&$`]|\\[\\^|\\\\[WsS]")
+)
+
+// validatorShellBlind reports whether the project validator name (a path's sanitizer step) can be
+// read and cannot reject or remove shell syntax: every check its body makes on its parameters is
+// shell-blind (see shellBlindCheck), there is at least one, and it rewrites the value with no
+// replace that could strip shell characters and no escaping or quoting call. sanitizePath that
+// tests for NUL and for the root prefix and only swaps backslashes is such a function; one that
+// also tests /^[\w.-]+$/ is not.
+func (gi *guardIndex) validatorShellBlind(name string) bool {
+	if gi.g == nil {
+		return false
+	}
+	if gi.byName == nil {
+		gi.byName = map[string][]*graph.Symbol{}
+		for _, s := range gi.g.Symbols {
+			gi.byName[s.Name] = append(gi.byName[s.Name], s)
+		}
+	}
+	cands := gi.byName[parser.LastSegment(name)]
+	if len(cands) != 1 {
+		return false
+	}
+	sym := cands[0]
+	ls := gi.lines(sym.File)
+	if sym.EndLine <= sym.Line || len(ls) < sym.EndLine {
+		return false
+	}
+	vars := guardParams(sym)
+	if len(vars) == 0 {
+		return false
+	}
+	found := false
+	for n := sym.Line + 1; n <= sym.EndLine; n++ {
+		line := ls[n-1]
+		if m := assignFrom.FindStringSubmatch(line); m != nil && mentionsVar(line[len(m[0])-1:], vars) && !hasString(vars, m[1]) {
+			vars = append(vars, m[1])
+		}
+		if otherRewrite.MatchString(line) {
+			return false
+		}
+		for _, m := range replaceCall.FindAllStringSubmatch(line, -1) {
+			if shellStrip.MatchString(m[1] + m[2]) {
+				return false
+			}
+		}
+		for _, m := range callNames.FindAllStringSubmatch(line, 6) {
+			// a check delegated to another function of the project is not read here
+			if c := parser.LastSegment(m[1]); c != sym.Name && checkerName.MatchString(c) && len(gi.byName[c]) > 0 {
+				return false
+			}
+		}
+		for _, v := range vars {
+			if !checks(line, v) {
+				continue
+			}
+			if !shellBlindCheck(line, v) {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
+// declName matches a function's own name where its declaration line names it before "("
+func declName(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[^\w$])` + regexp.QuoteMeta(name) + `\s*\(`)
 }
