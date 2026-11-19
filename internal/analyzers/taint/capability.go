@@ -108,20 +108,48 @@ func asCapability(g *graph.Graph, f *model.Finding) bool {
 	}
 	src := path[0]
 	c := handlerCapability(g, src.File, src.Line)
-	if c == nil || !c.DescriptionResolved && !c.NameResolved {
+	if c == nil {
 		return false
 	}
+	if !c.DescriptionResolved && !c.NameResolved {
+		// A server that dispatches every call by name itself (a hand-written JSON-RPC loop, a
+		// computed registration) gives the scanner neither the tool's name nor its description:
+		// whether the argument reaching the sink is the tool's purpose - a scan_url tool fetching
+		// its URL - or an injection cannot be told. A value spliced into a larger command or query
+		// was handled above and stays an injection.
+		if f.Triage == "" || f.Triage == model.TriagePotential {
+			f.Triage = model.TriageNeedsReview
+			f.TriageReason = "the tool's name and description are not known statically (the server dispatches calls by name itself), so the scanner cannot tell whether the argument reaching the sink is what the tool is for or an injection; the whole argument reaches the sink unchanged"
+		}
+		return true
+	}
 	capName, declared := capabilityOf(f.Category, c.Name, c.Description)
+	// The parameter's own description can state the purpose the tool's does not:
+	// filePath: z.string().describe("Path to the PDF file")
+	pd := paramDescription(g, c, src.Symbol)
+	if pd == "" {
+		// req.RequireString("target"), arguments.get("target"): the argument's name is the key
+		if key := argumentKey(g, path); key != "" {
+			pd = paramDescription(g, c, key)
+		}
+	}
+	if !declared && pd != "" {
+		capName, declared = capabilityOf(f.Category, "", pd)
+	}
 	if !declared {
 		return false
 	}
-	if w := promisesScope.FindString(c.Description); w != "" {
+	scopeText := c.Description
+	if pd != "" {
+		scopeText += " " + pd
+	}
+	if w := promisesScope.FindString(scopeText); w != "" {
 		// "Delete a file under the workspace" with nothing in the code that keeps the path there
 		// is a broken promise - a vulnerability - not a tool doing what it says. But the word
 		// alone does not tell a promise from prose ("only locals persist" in a code tool), so the
 		// finding stays an injection and goes to review rather than to potential.
 		f.Triage = model.TriageNeedsReview
-		f.TriageReason = fmt.Sprintf("the tool's name or description says it %s, and the description also uses %q; if that word promises a boundary, nothing the scanner found on the path enforces it and this is a vulnerability, otherwise the argument reaching the sink is the tool's purpose. Words alone do not decide which", capabilityPhrase[capName], w)
+		f.TriageReason = fmt.Sprintf("the tool's name or description, or the parameter's, says it %s, and the description also uses %q; if that word promises a boundary, nothing the scanner found on the path enforces it and this is a vulnerability, otherwise the argument reaching the sink is the tool's purpose. Words alone do not decide which", capabilityPhrase[capName], w)
 		return true
 	}
 	sink := f.Evidence[0].Path[len(f.Evidence[0].Path)-1]
@@ -146,7 +174,7 @@ func asCapability(g *graph.Graph, f *model.Finding) bool {
 	f.Capability = capName
 	f.Title = fmt.Sprintf("%s %q %s (%s)", c.Kind, toolName, capabilityPhrase[capName], titleCallee(sink.Symbol))
 	f.Triage = model.TriagePotential
-	f.TriageReason = fmt.Sprintf("the tool's own name or description says it does this, so the argument reaching %s is its purpose, not an injection; an agent steered by prompt injection can still use it that way. %s%s",
+	f.TriageReason = fmt.Sprintf("the tool's own name or description, or its parameter's description, says it does this, so the argument reaching %s is its purpose, not an injection; an agent steered by prompt injection can still use it that way. %s%s",
 		titleCallee(sink.Symbol), restriction, limit)
 	return true
 }

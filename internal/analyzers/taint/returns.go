@@ -65,16 +65,25 @@ func (c *ctx) returnSummary(sym *graph.Symbol, param string) *retSummary {
 	tainted := map[string]taintInfo{param: {confidence: 1, chain: []model.FlowStep{{
 		Kind: "source", Symbol: param, File: sym.File, Line: sym.Line, Detail: "tool handler argument", Resolved: true,
 	}}}}
-	prevCapture, prevFunc := c.retCapture, c.retFunc
+	prevCapture, prevFunc, prevSeen := c.retCapture, c.retFunc, c.retSeen
 	var captured []taintInfo
-	c.retCapture, c.retFunc = &captured, def
+	seen := 0
+	c.retCapture, c.retFunc, c.retSeen = &captured, def, &seen
 	c.summaryDepth++
 	c.walk(pf, sym.File, tainted, body, 0, false)
 	c.summaryDepth--
-	c.retCapture, c.retFunc = prevCapture, prevFunc
+	c.retCapture, c.retFunc, c.retSeen = prevCapture, prevFunc, prevSeen
 
 	if len(captured) == 0 {
-		return nil
+		if seen == 0 || storesParam(body.Utf8Text(pf.src), param) {
+			return nil
+		}
+		// async createTmpFile(content, lang) { ...; writeFile(p, content); return p }: the function
+		// returns values, and none of them carries the parameter. The walk may still have lost a
+		// flow it does not model, so the result is not cleared, but the finding goes to a person.
+		sum := &retSummary{cleared: map[string]bool{}, review: "no value " + sym.Name + " returns carries the argument the scanner followed; only a flow it does not model would make the result carry it"}
+		c.retSummaries[key] = sum
+		return sum
 	}
 	sum := &retSummary{cleared: map[string]bool{}, review: captured[0].review}
 	for k, v := range captured[0].clearedFor {
@@ -190,6 +199,9 @@ func (c *ctx) captureReturn(pf *parsedFile, n *sitter.Node, tainted map[string]t
 	if v == nil {
 		return
 	}
+	if c.retSeen != nil {
+		*c.retSeen++
+	}
 	if info, ok := hexOnly(v.Utf8Text(pf.src), tainted); ok {
 		*c.retCapture = append(*c.retCapture, info)
 		return
@@ -201,6 +213,19 @@ func (c *ctx) captureReturn(pf *parsedFile, n *sitter.Node, tainted map[string]t
 		}
 		*c.retCapture = append(*c.retCapture, info)
 	}
+}
+
+// storesParam reports whether a function body may hand param on other than by returning it: stores
+// it on an object, appends it to a collection, writes it into an index, or declares a global
+var storesParamRe = regexp.MustCompile(`(?:\b(?:self|this)\.[\w.]+\s*=[^=]|\.(?:append|push|add|set|put|extend|insert|update|unshift|setdefault|Store)\s*\(|\]\s*=[^=]|\bglobal\b|\bnonlocal\b|\byield\b)`)
+
+func storesParam(body, param string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, param) && wordRegexp(param).MatchString(line) && storesParamRe.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 // enclosingFunctionNode is the innermost function-like node around n

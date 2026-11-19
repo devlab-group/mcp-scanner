@@ -131,7 +131,8 @@ func newRequestHandlerState() *requestHandlerState {
 // registration's handler: an inline function literal's own HandlerID when
 // there is one, a named reference otherwise
 func (st *requestHandlerState) addCall(g *graph.Graph, idx index, c graph.Call) {
-	if parser.LastSegment(c.CalleeText) == "Server" {
+	if callee, _, _ := strings.Cut(parser.LastSegment(c.CalleeText), "["); callee == "Server" {
+		// Server[Any](...) is the same constructor with a type argument
 		// The Python SDK 2.x low-level server takes its handlers as constructor keywords:
 		// Server("name", on_list_tools=list_tools, on_call_tool=call_tool)
 		for i := range c.Args {

@@ -201,6 +201,12 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 				// The walker already sent it to review, with its own reason
 				break
 			}
+			if step, ok := llmStep(g, f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) {
+				// text-to-SQL: the question goes into a prompt and the model's answer reaches the sink
+				f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
+					"the value reaching the sink is a language model's output (%s), written from the argument rather than the argument itself; what the model can be steered into writing, and what the sink may do, decides between a real issue and noise", step)
+				break
+			}
 			if testPath.MatchString(src.File) && original.AtLeast(model.SeverityHigh) {
 				// a tool registered inside a test (test/document-processing.test.ts): the path says
 				// test code, which a released server does not run, but a path name proves nothing
@@ -223,13 +229,16 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 					fmt.Sprintf("the argument passes through %s, the project's own validation function; whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
 				break
 			}
-			_, unresolved := unresolvedStep(f.Evidence[0].Path)
-			if !unresolved && asCapability(g, f) {
-				break
-			}
+			// A check on the path comes first, also in a tool whose purpose is the sink: "fetch a
+			// Wikipedia page" that tests the URL against wikipedia.org is limited by that test, and a
+			// person decides whether it holds
 			if guard, line, ok := guardIfHigh(guards, original, f.Evidence[0].Path); ok {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
 					fmt.Sprintf("before the sink the handler checks the value (%s, line %d) and stops when the check fails; whether that check blocks every dangerous value decides between a real issue and noise, and the scanner does not verify it", guard, line)
+				break
+			}
+			_, unresolved := unresolvedStep(f.Evidence[0].Path)
+			if !unresolved && asCapability(g, f) {
 				break
 			}
 			if step, ok := unresolvedStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) {

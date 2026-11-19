@@ -124,7 +124,8 @@ func dedupeFindings(fs []model.Finding) []model.Finding {
 }
 
 // better picks the path that matters most once paths are classified: the higher severity, then the
-// one that is not background context, then confidence, then the shorter path. Picking by
+// one that is not background context, then the one that is not sent to review, then confidence,
+// then the shorter path. Picking by
 // confidence alone kept an environment-variable path, classified INFO, over a file-contents path
 // to the same sink that needed review.
 func better(a, b model.Finding) bool {
@@ -133,6 +134,11 @@ func better(a, b model.Finding) bool {
 	}
 	if ac, bc := a.Triage == model.TriageContext, b.Triage == model.TriageContext; ac != bc {
 		return !ac
+	}
+	// One route with no check is enough for the sink to be reachable unchecked: a route that went
+	// to review must not hide it
+	if ar, br := a.Triage == model.TriageNeedsReview, b.Triage == model.TriageNeedsReview; ar != br {
+		return !ar
 	}
 	if a.Confidence != b.Confidence {
 		return a.Confidence > b.Confidence

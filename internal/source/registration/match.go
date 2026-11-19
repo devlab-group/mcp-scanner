@@ -152,11 +152,12 @@ func classifyDecorator(dec string) (graph.CapabilityKind, bool) {
 	// "#[tool(...)]" and "@Tool(...)" carry the wrapping punctuation in
 	// their callee slice; strip it before reducing to the final segment
 	switch normalize(parser.LastSegment(strings.Trim(callee, "#[]@ "))) {
-	case "tool", "addtool", "registertool":
+	// mcptool, mcpprompt, mcpresource: Spring AI's @McpTool, @McpPrompt and @McpResource
+	case "tool", "addtool", "registertool", "mcptool":
 		return graph.CapabilityTool, true
-	case "prompt", "addprompt", "registerprompt":
+	case "prompt", "addprompt", "registerprompt", "mcpprompt":
 		return graph.CapabilityPrompt, true
-	case "resource", "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate":
+	case "resource", "addresource", "registerresource", "addresourcetemplate", "registerresourcetemplate", "mcpresource":
 		return graph.CapabilityResource, true
 	}
 	return "", false

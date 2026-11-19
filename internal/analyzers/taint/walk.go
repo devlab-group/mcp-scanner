@@ -245,6 +245,8 @@ type ctx struct {
 	summaryDepth int
 	retCapture   *[]taintInfo
 	retFunc      *sitter.Node
+	// retSeen counts every return with a value of the function being summarized, tainted or not
+	retSeen      *int
 	retSummaries map[retKey]*retSummary
 
 	// aliases maps local names bound directly to known sinks or promisify wrappers. Module aliases
@@ -502,7 +504,21 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	if kind == graph.CapabilityTool && capRec.Form == "decorator" {
 		scalar = c.scalarAnnotatedParams(sym)
 	}
+	if kind == graph.CapabilityTool && scalar == nil {
+		scalar = c.zodScalarParams(capRec)
+	}
+	var filled map[int]bool
+	if capRec.Form == "jsonrpc" {
+		filled = c.jsonrpcFilledParams(capRec, sym)
+	}
 	for _, name := range names {
+		if filled != nil {
+			if p, ok := position[name]; ok && !filled[p] {
+				// callTool(params.name, params.arguments) with opts = {} left to its default: only
+				// what the tools/call branch passes comes from the client
+				continue
+			}
+		}
 		if scalar[name] {
 			// port: int = 8000 on a FastMCP tool: the SDK validates the arguments against the
 			// annotations before the handler runs, so the value is a number, a bool or one of the
@@ -519,7 +535,9 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 				Kind: "sanitizer", Symbol: v, File: sym.File, Line: sym.Line, Detail: validatorDetail, Resolved: true,
 			}, 1)
 		}
-		if review := c.goCustomParamsType(sym, name); review != "" && info.review == "" {
+		// A hand-written JSON-RPC server's handler takes the raw request it decoded itself: every
+		// field of it is what the client sent, so its own type is no project bundle to doubt
+		if review := c.goCustomParamsType(sym, name); review != "" && info.review == "" && capRec.Form != "jsonrpc" {
 			info.review = review
 		}
 		if p, ok := position[name]; ok && p > 0 {
@@ -890,6 +908,151 @@ func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n 
 // ownMethodInFile reports whether calleeText is this.<name> or self.<name> and the file defines
 // exactly one method of that name - the one such a call reaches, unless it is inherited from
 // elsewhere, in which case the file defines none and the call is left alone
+// composedText reports whether an expression's text splices a value into literal text: "a " + x,
+// f"a {x}", `a ${x}`, "a %s" % x, fmt.Sprintf("a %s", x), "a {}".format(x)
+var composedRe = regexp.MustCompile(`["'\x60]\s*\+|\+\s*["'\x60]|^\s*f["']|\$\{|["']\s*%\s*[\w(]|\bSprintf\s*\(|\.format\s*\(`)
+
+func composedText(t string) bool {
+	return composedRe.MatchString(t)
+}
+
+// step details of the two keyed reads of a client's argument
+const (
+	mappingGetDetail  = "a value read by key from the client's own arguments"
+	mcpGoGetterDetail = "the client's argument, read through the mcp-go request"
+)
+
+// emptyDefault matches a receiver written with an empty-mapping fallback: (x or {}), (x || {}), (x ?? {})
+var emptyDefault = regexp.MustCompile(`^\(\s*(.+?)\s*(?:\bor\b|\|\||\?\?)\s*\{\s*\}\s*\)$`)
+
+// mappingGet reports whether a call is get(<literal key>[, default]) on a tainted mapping: the
+// receiver itself is the tainted value (a name or attribute chain), so the lookup returns a piece of
+// it. A get on any other object (an HTTP client, a cache) is not this case.
+func mappingGet(calleeText string, receiver parser.Receiver, args []graph.Arg, tainted map[string]taintInfo) bool {
+	if parser.LastSegment(calleeText) != "get" || len(args) == 0 || len(args) > 2 || receiver.CallText != "" {
+		return false
+	}
+	key := strings.TrimSpace(args[0].Text)
+	if !args[0].Literal || len(key) < 2 || !strings.ContainsRune("\"'`", rune(key[0])) {
+		return false
+	}
+	recv := strings.TrimSpace(receiver.Text)
+	if m := emptyDefault.FindStringSubmatch(recv); m != nil {
+		recv = m[1]
+	}
+	if !isPlainIdentOrSelector(recv) {
+		return false
+	}
+	_, ok := mentionsAny(recv, tainted, "")
+	return ok
+}
+
+// goDecoders write what they decode into the variable whose address they are given
+var goDecoders = map[string]bool{"Unmarshal": true, "Decode": true, "UnmarshalJSON": true, "UnmarshalYAML": true, "UnmarshalTOML": true, "UnmarshalFromString": true}
+
+// decodeInto taints v in json.Unmarshal(data, &v) and json.NewDecoder(r).Decode(&v) when the data
+// or the reader is tainted: a Go server that parses the request itself gets its arguments this way
+func (c *ctx) decodeInto(pf *parsedFile, file string, tainted map[string]taintInfo, n *sitter.Node, calleeText string, receiver parser.Receiver, args []graph.Arg, conditional bool) {
+	if pf.adapter.ID != language.Go || !goDecoders[parser.LastSegment(calleeText)] {
+		return
+	}
+	dst := ""
+	var from []graph.Arg
+	for _, a := range args {
+		t := strings.TrimSpace(a.Text)
+		if strings.HasPrefix(t, "&") && isPlainIdent(strings.TrimSpace(t[1:])) {
+			dst = strings.TrimSpace(t[1:])
+			continue
+		}
+		from = append(from, a)
+	}
+	if dst == "" {
+		return
+	}
+	info, found := taintInfo{}, false
+	if _, i, ok := taintedArgIndex(from, tainted, ""); ok {
+		info, found = i, true
+	} else if i, ok := mentionsAny(receiver.Text+" "+receiver.CallText+" "+argsText(receiver.CallArgs), tainted, ""); ok {
+		info, found = i, true
+	}
+	if !found {
+		return
+	}
+	line := int(n.StartPosition().Row) + 1
+	setTaint(tainted, []string{dst}, info.extend(model.FlowStep{
+		Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
+		Detail: "decoded into " + dst,
+	}, 1), conditional)
+}
+
+func argsText(args []graph.Arg) string {
+	var b strings.Builder
+	for _, a := range args {
+		b.WriteString(a.Text)
+		b.WriteString(" ")
+	}
+	return b.String()
+}
+
+// projectDefinesMethod reports whether the project itself defines a function or method by that name
+func (c *ctx) projectDefinesMethod(name string) bool {
+	for _, id := range c.idx[name] {
+		if s := c.g.Symbols[id]; s != nil && (s.Kind == graph.KindMethod || s.Kind == graph.KindFunction) {
+			return true
+		}
+	}
+	return false
+}
+
+// receiverFromProjectCall reports whether the receiver variable is assigned, in the same file, the
+// result of a call to a project function: const dashboard = createDashboardController({...})
+func (c *ctx) receiverFromProjectCall(pf *parsedFile, file, recv string) bool {
+	recv = strings.TrimSpace(recv)
+	if !isGuardIdent(recv) {
+		return false
+	}
+	assign := regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var|final|val)?\s*` + regexp.QuoteMeta(recv) + `\s*(?::[^=\n]+)?:?=\s*(?:await\s+)?(?:new\s+)?([A-Za-z_$][\w$.]*)\s*\(`)
+	for _, m := range assign.FindAllStringSubmatch(string(pf.src), -1) {
+		if _, ok := c.resolveCallee(file, m[1]); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// calleeIsParam returns the callee's name when a call is a bare name bound by a parameter of the
+// function holding the call: a callback, whatever its name says
+func calleeIsParam(pf *parsedFile, n *sitter.Node, calleeText string) string {
+	name := strings.TrimSpace(calleeText)
+	if name == "" || !isGuardIdent(name) {
+		return ""
+	}
+	fn := enclosingFunctionNode(n)
+	if fn == nil {
+		return ""
+	}
+	list := parser.ParamList(fn)
+	if list == nil {
+		return ""
+	}
+	for i := range list.NamedChildCount() {
+		p := list.NamedChild(i)
+		if p == nil {
+			continue
+		}
+		own := strings.TrimLeft(p.Utf8Text(pf.src), "*&. ")
+		if i := strings.IndexAny(own, ":= \t"); i >= 0 {
+			own = own[:i]
+		}
+		for _, b := range append(parser.ParamBindings(pf.adapter.ID, p, pf.src), own) {
+			if b == name {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
 func (c *ctx) ownMethodInFile(file, calleeText string) bool {
 	t := strings.TrimSpace(calleeText)
 	name, ok := strings.CutPrefix(t, "this.")
@@ -1553,6 +1716,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 
 	if slices.Contains(pf.adapter.Grammar.CallKinds, rhs.Kind()) {
 		calleeText, receiver, args := parser.CalleeAndArgs(pf.adapter.ID, rhs, pf.src)
+		c.decodeInto(pf, file, tainted, rhs, calleeText, receiver, args, conditional)
 		// A second spelling to ask the catalogue about, used only when the
 		// written one matches nothing: `import subprocess as sp` makes
 		// `sp.run` mean `subprocess.run`, while `import fs from
@@ -1609,10 +1773,14 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		kind, mult, detail := "unknown", 0.6, "result of a call that received tainted input"
 		if resolved {
 			kind, mult = "transform", 0.85
+		} else if mappingGet(calleeText, receiver, args, tainted) {
+			// arguments.get("host", ""), (params.arguments or {}).get("host"): a lookup by a literal
+			// key in the client's own mapping hands back part of what the client sent
+			kind, mult, resolved, detail = "transform", 1, true, mappingGetDetail
 		} else if c.mcpGoArgumentGetter(file, calleeText) {
 			// req.RequireString("path"): the mcp-go SDK's request getters return the client's
 			// argument as sent, so the call is known and passes the value on unchanged
-			kind, mult, resolved, detail = "transform", 1, true, "the client's argument, read through the mcp-go request"
+			kind, mult, resolved, detail = "transform", 1, true, mcpGoGetterDetail
 		}
 		step := model.FlowStep{
 			Kind: kind, Symbol: calleeText, File: file, Line: line, Resolved: resolved,
@@ -1647,7 +1815,13 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			return
 		}
 		if resolved && kind == "transform" {
-			if cats := c.callResultCleared(sym, args, tainted); len(cats) > 0 {
+			cats, rv, _ := c.summarizeCall([]*graph.Symbol{sym}, args, tainted)
+			if rv != "" && info.review == "" {
+				// createTmpFile(code, lang): no return of the function carries the argument, or each
+				// escapes it through the project's own function - a person checks
+				info.review = "in " + calleeText + ": " + rv
+			}
+			if len(cats) > 0 {
 				// resolve(name) returns name only after its own check: the result is cleared for
 				// what every return of the function clears
 				info = info.extend(model.FlowStep{
@@ -1814,6 +1988,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	// this call itself turns out to be (forEach is neither a sink nor a
 	// resolved in-repo call, so nothing below this would ever reach it)
 	c.walkCallbackArgs(pf, file, tainted, n, receiver, args, depth)
+	c.decodeInto(pf, file, tainted, n, calleeText, receiver, args, conditional)
 
 	// A method that grows a local list in place - `cmd.append(query)`,
 	// `args.push(query)` - never assigns anything, so handleAssign's call
@@ -1869,6 +2044,19 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				}
 			}
 			line := int(n.StartPosition().Row) + 1
+			for _, a := range c.expandArgvVar(pf, n, argv.kind, argvArgs) {
+				for _, e := range append([]graph.Arg{a}, bracketedListElements(a.Text)...) {
+					if _, hit := mentionsAny(e.Text, tainted, ""); hit && composedText(e.Text) {
+						// "sh", "-c", "ping " + host: the caller's value is spliced into a larger
+						// argument, which is an injection whatever the tool is for
+						info = info.extend(model.FlowStep{
+							Kind: "transform", Symbol: titleCallee(e.Text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
+						}, 1)
+						goto composed
+					}
+				}
+			}
+		composed:
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: category, Resolved: true,
 			}, mult)
@@ -2027,7 +2215,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 			}
 		} else {
 			var idx int
-			idx, info, found = c.taintedArgOrReceiver(file, receiver, args, tainted, sink.category)
+			idx, info, found = c.taintedArgOrReceiver(file, receiver, withoutWrittenData(sink, args), tainted, sink.category)
 			if found && idx >= 0 && idx < len(args) {
 				if _, rv := c.argCallVerdict(pf, file, argNode(n, args[idx], pf.src), tainted, sink.category); rv != "" && info.review == "" {
 					info.review = rv
@@ -2072,6 +2260,19 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// not that the value is clean for every category, which is the
 		// mistake that let basename() before a shell call and shlex.quote()
 		// before a path read both scan clean
+		if found && info.review == "" && byMethodName && c.projectDefinesMethod(parser.LastSegment(sinkText)) && c.receiverFromProjectCall(pf, file, receiver.Text) {
+			// dashboard = createDashboardController(); dashboard.open(args): a sink matched by the
+			// method name alone, on an object a project function built, while the project defines
+			// its own open()
+			info.review = fmt.Sprintf("%s matched a sink by its method name only; the receiver was built by a project function and the project defines a function or method named %s, so it may be the project's own object rather than the library one", sinkText, parser.LastSegment(sinkText))
+		}
+		if found && info.review == "" {
+			if p := calleeIsParam(pf, n, calleeText); p != "" {
+				// with_fallback(cands, fetch) calling fetch(name): the name is bound by the
+				// enclosing function's parameter list, so the call runs whatever its callers pass
+				info.review = fmt.Sprintf("%s is a parameter of the enclosing function, not the library function of that name: the call runs whatever function the callers pass in, which the scanner did not follow", p)
+			}
+		}
 		if found && !info.clearedFor[sink.category] {
 			line := int(n.StartPosition().Row) + 1
 			if sink.argIndex >= 0 {
@@ -2549,6 +2750,31 @@ func (c *ctx) taintedArgOrReceiver(file string, receiver parser.Receiver, args [
 		args = withoutNonPathOptions(args)
 	}
 	return worstCandidate(taintCandidates(args, extra, tainted, category), category)
+}
+
+// writtenDataArg is the argument of a file-writing API that holds the bytes written, not the file:
+// fs.writeFile(path, data), os.WriteFile(name, data, perm), Path.write_text(data). Attacker-chosen
+// content in a file the server picked is not a path traversal.
+var writtenDataArg = map[string]int{
+	"os.WriteFile": 1, "ioutil.WriteFile": 1, "writeFileSync": 1, "writeFile": 1, "appendFile": 1,
+	"appendFileSync": 1, "Files.write": 1, "Files.writeString": 1, "std::fs::write": 1,
+	"write_text": 0, "write_bytes": 0,
+}
+
+// withoutWrittenData blanks a path sink's written-data argument, keeping the other arguments at
+// their positions
+func withoutWrittenData(sink sinkPattern, args []graph.Arg) []graph.Arg {
+	i, ok := writtenDataArg[sink.text]
+	if !ok || sink.category != "path_traversal" {
+		return args
+	}
+	out := slices.Clone(args)
+	for k := range out {
+		if out[k].Keyword == "data" || out[k].Keyword == "" && k == i {
+			out[k].Text, out[k].Literal = `""`, true
+		}
+	}
+	return out
 }
 
 // nonPathOptions are keyword arguments of file APIs that never name a file:
@@ -3608,6 +3834,78 @@ func (c *ctx) goScalarParams(sym *graph.Symbol) map[string]bool {
 					out = map[string]bool{}
 				}
 				out[n.Utf8Text(pf.src)] = true
+			}
+		}
+	}
+	return out
+}
+
+// jsonrpcFilledParams are the parameter positions of a hand-written JSON-RPC server's handler that
+// its tools/call branch passes a non-literal value to, or nil when the handler is the function that
+// holds the branch (it receives the whole request)
+func (c *ctx) jsonrpcFilledParams(capRec graph.Capability, sym *graph.Symbol) map[int]bool {
+	if sym.File == capRec.File && sym.Line <= capRec.Line && capRec.Line <= sym.EndLine {
+		return nil
+	}
+	for _, call := range c.g.Calls {
+		if call.File != capRec.File || call.Line < capRec.Line || call.Line > capRec.Line+20 {
+			continue
+		}
+		if call.Callee != sym.ID && parser.LastSegment(call.CalleeText) != sym.Name {
+			continue
+		}
+		filled := map[int]bool{}
+		for i, a := range call.Args {
+			if !a.Literal {
+				filled[i] = true
+			}
+		}
+		return filled
+	}
+	return nil
+}
+
+// zodScalar matches a zod schema entry whose value can carry no text: an enum or literal of the
+// author's choices, a number, a boolean. The SDK validates the arguments against the schema before
+// the handler runs.
+var zodScalar = regexp.MustCompile(`^\s*["']?([A-Za-z_$][\w$]*)["']?\s*:\s*z\s*\.\s*(?:coerce\s*\.\s*)?(?:enum|nativeEnum|literal|number|boolean|bigint|int)\s*\(`)
+
+var zodInputSchema = regexp.MustCompile(`(?s)^\s*(?:inputSchema|paramsSchema)\s*:\s*\{(.*)\}\s*$`)
+
+// zodScalarParams are the parameters a TypeScript or JavaScript tool registration's own zod schema
+// declares as enums, literals, numbers or booleans: server.tool("run", "...", { lang:
+// z.enum(["py", "js"]) }, handler). Only a schema written inline in the registration call counts,
+// and an entry combined with another type (.or(...), z.union) does not.
+func (c *ctx) zodScalarParams(capRec graph.Capability) map[string]bool {
+	f := c.g.Files[capRec.File]
+	if f == nil || (f.Language != string(language.TypeScript) && f.Language != string(language.JavaScript)) {
+		return nil
+	}
+	var out map[string]bool
+	for _, call := range c.g.Calls {
+		if call.File != capRec.File || call.Line != capRec.Line {
+			continue
+		}
+		for _, a := range call.Args {
+			if !strings.Contains(a.Text, "z.") || !strings.HasPrefix(strings.TrimSpace(a.Text), "{") {
+				continue
+			}
+			entries := parser.SplitTopLevelSep(strings.TrimSpace(a.Text)[1:], ',')
+			for _, entry := range entries {
+				// registerTool(name, { description, inputSchema: { ... } }, handler)
+				if m := zodInputSchema.FindStringSubmatch(entry); m != nil {
+					entries = append(entries, parser.SplitTopLevelSep(m[1], ',')...)
+				}
+			}
+			for _, entry := range entries {
+				m := zodScalar.FindStringSubmatch(entry)
+				if m == nil || strings.Contains(entry, ".or(") || strings.Contains(entry, "union") {
+					continue
+				}
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[m[1]] = true
 			}
 		}
 	}

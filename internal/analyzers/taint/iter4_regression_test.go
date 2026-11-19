@@ -131,3 +131,19 @@ server.tool("cfg", "Shows the configuration", async () => {
 		t.Fatalf("kept severity %s (%s), want the HIGH file-contents path", atLoad[0].Severity, atLoad[0].TriageReason)
 	}
 }
+
+// Two routes to one sink, one behind a check (review, more confident) and one without (potential):
+// the unchecked route is kept whichever comes first, so the check does not hide it
+func TestDedupeKeepsTheUncheckedRoute(t *testing.T) {
+	mk := func(triage model.Triage, conf float64) model.Finding {
+		return model.Finding{RuleID: "taint.path_traversal", Category: "path_traversal", File: "a.py", Line: 3,
+			Title: "tainted data reaches open", Severity: model.SeverityHigh, Confidence: conf, Triage: triage}
+	}
+	checked, unchecked := mk(model.TriageNeedsReview, 1), mk("", 0.85)
+	for _, order := range [][]model.Finding{{checked, unchecked}, {unchecked, checked}} {
+		got := dedupeFindings(order)
+		if len(got) != 1 || got[0].Triage == model.TriageNeedsReview {
+			t.Fatalf("want the unchecked route kept, got %+v", got)
+		}
+	}
+}

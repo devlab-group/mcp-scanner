@@ -42,8 +42,10 @@ var (
 	earlyExit = regexp.MustCompile(`\b(return|throw|raise)\b|\bpanic\(|\babort\(`)
 	// errorExit is an exit that rejects: it throws, raises, or returns an error. A check followed
 	// only by a plain return (if (src.match(/^data:/)) return decoded) picks a branch instead.
-	errorExit  = regexp.MustCompile(`\b(throw|raise)\b|\bpanic\(|\babort\(|return\s+.*\b(err|error|Error|errorResponse|isError|toolError|None|null|false)\b|return\s+fmt\.Errorf|return\s*;?\s*$`)
-	assignFrom = regexp.MustCompile(`^\s*(?:const|let|var|final|val)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?:?=[^=]`)
+	errorExit = regexp.MustCompile(`\b(throw|raise)\b|\bpanic\(|\babort\(|return\s+.*\b(err|error|Error|errorResponse|isError|toolError|None|null|false)\b|return\s+fmt\.Errorf|return\s*;?\s*$`)
+	// checkerName is a function named for checking or normalizing its argument
+	checkerName = regexp.MustCompile(`(?i)^_*(normali[sz]e|validate|sanitize|sanitise|check|ensure|verify|clean|safe|parse)`)
+	assignFrom  = regexp.MustCompile(`^\s*(?:const|let|var|final|val)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?:?=[^=]`)
 )
 
 func (gi *guardIndex) lines(file string) []string {
@@ -144,10 +146,15 @@ func (gi *guardIndex) calleeGuard(sym *graph.Symbol, depth int) (string, int, bo
 		if !mentionsVar(ls[k-1], params) {
 			continue
 		}
+		targets := assignedTargets(ls[k-1])
 		for _, m := range callNames.FindAllStringSubmatch(ls[k-1], 6) {
 			name := parser.LastSegment(m[1])
 			cands := gi.byName[name]
-			if len(cands) != 1 || cands[0].ID == sym.ID || !gi.allowed[name] {
+			// pid = normalize_id(raw): a value the body replaces with a checking function's result
+			// flows through that function even when the path does not name it; so does one whose
+			// result the body returns (full, err = r.resolve(ctx, p) ... return full, nil)
+			through := len(targets) > 0 && (checkerName.MatchString(name) || returnedLater(ls, k+1, sym.EndLine, targets))
+			if len(cands) != 1 || cands[0].ID == sym.ID || !gi.allowed[name] && !through {
 				continue
 			}
 			if t2, n2, ok2 := gi.calleeGuard(cands[0], depth+1); ok2 {
@@ -206,6 +213,8 @@ func (gi *guardIndex) inSource(path []model.FlowStep) (string, int, bool) {
 // checkPatterns are the shapes of an input check on a value; %[1]s is the value's quoted name
 var checkPatterns = []string{
 	`(?i)\b_*(validate|sanitize|sanitise|check|ensure|verify|assert|is_?safe|is_?valid|is_?allowed|allowed)\w*\s*\(\s*%[1]s\b`,
+	// the same with the value after simple leading arguments: validateDir(ctx, p), check(root, p)
+	`(?i)\b_*(validate|sanitize|sanitise|ensure|verify|is_?safe|is_?valid|is_?allowed)\w*\s*\((?:\s*[\w.]+\s*,){1,2}\s*%[1]s\s*\)`,
 	`\b%[1]s\s*\.\s*(match|test|startsWith|startswith|endsWith|endswith|fullmatch|matches|HasPrefix|is_relative_to|relative_to)\s*\(`,
 	`\.(test|match|fullmatch|search|MatchString)\s*\(\s*(?:[^,()]+,\s*)?%[1]s\b`,
 	`\bstrings\.HasPrefix\s*\(\s*%[1]s\b`,
@@ -330,4 +339,32 @@ func scanRegion(ls []string, from, to int, vars []string) (string, int, bool) {
 		return weakText, weakLine, true
 	}
 	return "", 0, false
+}
+
+// assignTargets matches the left side of an assignment, one name or several: p = ..., full, err := ...
+var assignTargets = regexp.MustCompile(`^\s*(?:const|let|var|final|val)?\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?::[^=]+)?:?=[^=]`)
+
+// assignedTargets are the names an assignment line binds, or nil for any other line
+func assignedTargets(line string) []string {
+	m := assignTargets.FindStringSubmatch(line)
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, t := range strings.Split(m[1], ",") {
+		if t = strings.TrimSpace(t); t != "" && t != "_" && t != "err" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// returnedLater reports whether a return in lines [from, to] hands back one of names
+func returnedLater(ls []string, from, to int, names []string) bool {
+	for n := from; n <= to && n <= len(ls); n++ {
+		if strings.Contains(ls[n-1], "return") && regexp.MustCompile(`\breturn\b`).MatchString(ls[n-1]) && mentionsVar(ls[n-1], names) {
+			return true
+		}
+	}
+	return false
 }

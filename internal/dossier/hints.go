@@ -53,11 +53,17 @@ func hints(d *Dossier, g *graph.Graph, cov model.Coverage) []Hint {
 			Question:   "How does this server register its tools, and what do they do?",
 			HowToCheck: "find the registration code; list tools against a running instance"})
 	}
-	if len(d.Capabilities) == 0 {
+	if onlyJSONRPC := allJSONRPC(d.Capabilities); len(d.Capabilities) == 0 || onlyJSONRPC {
 		if files := protocolMethodFiles(g); len(files) > 0 {
+			observed := fmt.Sprintf("no registration was found, but %d source file(s) name MCP methods such as \"tools/call\": %s", len(files), strings.Join(first(files, 4), ", "))
+			undecided := "the tools a server implementing JSON-RPC by hand exposes, and what they do; none of them was analyzed"
+			if onlyJSONRPC {
+				observed = fmt.Sprintf("the server dispatches JSON-RPC by hand: its tools/call branch was analyzed as one handler for every tool; %d source file(s) name MCP methods: %s", len(files), strings.Join(first(files, 4), ", "))
+				undecided = "the names and purposes of the tools it serves, so whether an argument reaching a sink is a tool's purpose or an injection"
+			}
 			add(Hint{Code: "hand_rolled_protocol", Strength: strengthLead, File: files[0],
-				Observed:   fmt.Sprintf("no registration was found, but %d source file(s) name MCP methods such as \"tools/call\": %s", len(files), strings.Join(first(files, 4), ", ")),
-				Undecided:  "the tools a server implementing JSON-RPC by hand exposes, and what they do; none of them was analyzed",
+				Observed:   observed,
+				Undecided:  undecided,
 				Question:   "Which tools does this hand-written dispatcher serve, and what do they reach?",
 				HowToCheck: "read the tools/call dispatch and follow each tool name to its code; list tools against a running instance"})
 		}
@@ -366,4 +372,17 @@ func protocolMethodFiles(g *graph.Graph) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// allJSONRPC reports whether every capability came from a hand-written JSON-RPC dispatcher
+func allJSONRPC(cs []Capability) bool {
+	if len(cs) == 0 {
+		return false
+	}
+	for _, c := range cs {
+		if c.Form != "jsonrpc" {
+			return false
+		}
+	}
+	return true
 }

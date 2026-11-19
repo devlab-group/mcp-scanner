@@ -325,6 +325,7 @@ func Discover(g *graph.Graph) {
 	}
 
 	reqHandlers.emit(g)
+	discoverJSONRPC(g, idx, callsByFile)
 
 	sort.SliceStable(g.Capabilities, func(i, j int) bool {
 		a, b := g.Capabilities[i], g.Capabilities[j]
