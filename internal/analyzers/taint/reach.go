@@ -2,6 +2,7 @@ package taint
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 
@@ -180,7 +181,8 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 		return fs
 	}
 	r := newReachIndex(g)
-	guards := &guardIndex{root: g.Root, files: map[string][]string{}, g: g, callee: map[graph.SymbolID]calleeGuard{}}
+	screen, screenKnown := "", false
+	guards := &guardIndex{root: g.Root, files: map[string][]string{}, g: g, callee: map[graph.SymbolID]calleeGuardResult{}}
 	for i := range fs {
 		f := &fs[i]
 		if len(f.Evidence) == 0 || len(f.Evidence[0].Path) == 0 {
@@ -198,6 +200,23 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			if f.Triage == model.TriageNeedsReview {
 				// The walker already sent it to review, with its own reason
 				break
+			}
+			if testPath.MatchString(src.File) && original.AtLeast(model.SeverityHigh) {
+				// a tool registered inside a test (test/document-processing.test.ts): the path says
+				// test code, which a released server does not run, but a path name proves nothing
+				f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
+					"the handler is in %s, which by its path is test code; whether the released server registers this tool decides between a real issue and noise", src.File)
+				break
+			}
+			if f.Category == "path_traversal" && src.Detail == "resource handler argument" && original.AtLeast(model.SeverityHigh) {
+				if !screenKnown {
+					screen, screenKnown = templateScreening(g.Root), true
+				}
+				if screen != "" {
+					f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
+						"the value is a resource-template parameter, and the tree pins %s, whose default ResourceSecurity rejects '..' segments, absolute paths and NUL bytes in decoded parameters before the handler runs; whether anything else (symlinks inside the base, a server that disables it at run time) still reaches outside decides between a real issue and noise", screen)
+					break
+				}
 			}
 			if step, ok := validatorStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
@@ -253,6 +272,10 @@ func validatorStep(path []model.FlowStep) (string, bool) {
 // unresolvedStep returns the first step of a path that passed taint through the result of a call
 // the analyzer could not follow - a library call, an API response, a parser - which it assumes
 // carries its tainted argument on
+// testPath matches files that by their path are tests: a test/, tests/, __tests__/ or spec/
+// directory, or a test file name in the usual conventions of each language
+var testPath = regexp.MustCompile(`(^|/)(tests?|__tests__|spec|specs)/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py)$|(^|/)test_[^/]*\.py$|Test\.java$|Tests?\.kt$`)
+
 func unresolvedStep(path []model.FlowStep) (string, bool) {
 	for _, st := range path {
 		if st.Kind == "unknown" {

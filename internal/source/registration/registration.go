@@ -408,6 +408,7 @@ func emitDirect(g *graph.Graph, idx index, callsByFile map[string][]int, kind gr
 	}
 	if kind == graph.CapabilityResource {
 		cap.URI = resourceURI(c.Args)
+		cap.URIFixed = fixedResourceURI(c.Args)
 		// server.resource("notes", "notes://{name}", cb): the second literal is the URI, not a
 		// description
 		if cap.URI != "" && cap.DescriptionResolved && cap.Description == cap.URI {
@@ -487,6 +488,7 @@ func emitDecorator(g *graph.Graph, kind graph.CapabilityKind, dec string, args [
 	}
 	if kind == graph.CapabilityResource {
 		cap.URI = resourceURI(args)
+		cap.URIFixed = fixedResourceURI(args)
 	}
 	g.Capabilities = append(g.Capabilities, cap)
 }

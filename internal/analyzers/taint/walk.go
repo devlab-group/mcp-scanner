@@ -448,6 +448,13 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 	if !found {
 		return nil
 	}
+	if kind == graph.CapabilityResource && capRec.URIFixed {
+		// A fixed resource (registerResource("llms-txt", `${BASE}/llms.txt`, ..., async (uri) => ...)):
+		// the SDK calls its handler only for that exact URI, so its uri argument is the server's
+		// own constant, not something the client chose
+		c.seeded[sym.ID] = true
+		return map[string]taintInfo{}
+	}
 	if pf, node := c.defNodeFor(sym); pf == nil || node == nil {
 		// The handler's own body could not be located at all - not the
 		// same thing as a handler that genuinely takes no parameters.
@@ -482,10 +489,18 @@ func (c *ctx) seedFor(sym *graph.Symbol) map[string]taintInfo {
 		return nil
 	}
 	seed := map[string]taintInfo{}
+	validators := c.annotationValidators(sym)
 	for _, name := range names {
 		info := taintInfo{confidence: 1, chain: []model.FlowStep{{
 			Kind: "source", Symbol: name, File: sym.File, Line: sym.Line, Detail: detail, Resolved: true,
 		}}}
+		if v := validators[name]; v != "" {
+			// path: Annotated[str, BeforeValidator(validate_path)]: the SDK runs the project's own
+			// check on the argument before the handler sees it
+			info = info.extend(model.FlowStep{
+				Kind: "sanitizer", Symbol: v, File: sym.File, Line: sym.Line, Detail: validatorDetail, Resolved: true,
+			}, 1)
+		}
 		if p, ok := position[name]; ok && p > 0 {
 			skip, review := c.laterParamRole(sym, capRec)
 			if skip {
@@ -764,9 +779,14 @@ var branchKinds = map[string]bool{
 
 func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n *sitter.Node, depth int, conditional bool) {
 	grammar := pf.adapter.Grammar
+	if restore := blockScope(pf, tainted, n); restore != nil {
+		defer restore()
+	}
 	switch {
 	case slices.Contains(grammar.AssignKinds, n.Kind()):
-		c.handleAssign(pf, file, tainted, n, depth, conditional)
+		// const url = ... directly in a { } block is a new binding whose only value is its
+		// initializer, even inside a branch: the old value cannot reach a use after it
+		c.handleAssign(pf, file, tainted, n, depth, conditional && !blockLexicalDeclarator(pf, n))
 	case slices.Contains(grammar.CallKinds, n.Kind()):
 		c.handleCall(pf, file, tainted, n, depth, conditional)
 	case slices.Contains(grammar.ForKinds, n.Kind()):
@@ -787,6 +807,96 @@ func (c *ctx) walk(pf *parsedFile, file string, tainted map[string]taintInfo, n 
 	if n.Kind() == ifStatementKinds[pf.adapter.ID] {
 		c.handleContainmentGuard(pf, tainted, n)
 	}
+}
+
+// enclosingFunctionText returns the source text of the function around n, or "" at module level
+func enclosingFunctionText(pf *parsedFile, n *sitter.Node) string {
+	for a := n.Parent(); a != nil; a = a.Parent() {
+		switch a.Kind() {
+		case "function_definition", "function_declaration", "method_definition", "arrow_function", "function_expression", "method_declaration", "function_item":
+			return a.Utf8Text(pf.src)
+		}
+	}
+	return ""
+}
+
+// blockScope handles JavaScript/TypeScript block scoping: a const or let declared directly in a
+// { } block is a different variable from any outer one of the same name, and it ends with the
+// block. blockScope saves the outer state of every such name and returns the function that puts
+// it back once the block has been walked, or nil when the block declares none.
+func blockScope(pf *parsedFile, tainted map[string]taintInfo, n *sitter.Node) func() {
+	if n.Kind() != "statement_block" || (pf.adapter.ID != language.JavaScript && pf.adapter.ID != language.TypeScript) {
+		return nil
+	}
+	saved := map[string]*taintInfo{}
+	for i := range n.NamedChildCount() {
+		decl := n.NamedChild(i)
+		if decl == nil || decl.Kind() != "lexical_declaration" {
+			continue
+		}
+		for j := range decl.NamedChildCount() {
+			d := decl.NamedChild(j)
+			if d == nil || d.Kind() != "variable_declarator" {
+				continue
+			}
+			for _, name := range boundNames(d.ChildByFieldName("name"), pf.src) {
+				if _, seen := saved[name]; seen {
+					continue
+				}
+				if v, ok := tainted[name]; ok {
+					saved[name] = &v
+				} else {
+					saved[name] = nil
+				}
+			}
+		}
+	}
+	if len(saved) == 0 {
+		return nil
+	}
+	return func() {
+		for name, v := range saved {
+			if v == nil {
+				delete(tainted, name)
+			} else {
+				tainted[name] = *v
+			}
+		}
+	}
+}
+
+// blockLexicalDeclarator reports whether n is a declarator of a const or let directly in a
+// JavaScript/TypeScript { } block, the declarations blockScope scopes
+func blockLexicalDeclarator(pf *parsedFile, n *sitter.Node) bool {
+	if n.Kind() != "variable_declarator" || (pf.adapter.ID != language.JavaScript && pf.adapter.ID != language.TypeScript) {
+		return false
+	}
+	decl := n.Parent()
+	if decl == nil || decl.Kind() != "lexical_declaration" {
+		return false
+	}
+	block := decl.Parent()
+	return block != nil && block.Kind() == "statement_block"
+}
+
+// boundNames lists the identifiers a declaration binds: x, or each name in {a, b: c} and [d, e]
+func boundNames(n *sitter.Node, src []byte) []string {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind() {
+	case "identifier", "shorthand_property_identifier_pattern":
+		return []string{n.Utf8Text(src)}
+	case "assignment_pattern", "object_assignment_pattern":
+		return boundNames(n.ChildByFieldName("left"), src)
+	case "pair_pattern":
+		return boundNames(n.ChildByFieldName("value"), src)
+	}
+	var out []string
+	for i := range n.NamedChildCount() {
+		out = append(out, boundNames(n.NamedChild(i), src)...)
+	}
+	return out
 }
 
 // handleLoop propagates collection taint into loop variables before walking
@@ -1302,7 +1412,7 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 		}
 	}
 	// Clear SSRF taint when a fixed prefix closes the URL's host before computed text begins
-	fixedHost := c.hostFixed(pf, file, rhs) || untaintedBaseThenPath(pf, rhs, tainted) || relativePathURL(pf, rhs)
+	fixedHost := c.urlHostFixed(pf, file, rhs, tainted)
 
 	if augmentedAssignKinds[n.Kind()] {
 		text := strings.Join(targets, " + ") + " + " + rhs.Utf8Text(pf.src)
@@ -1374,13 +1484,17 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 			return
 		}
 
-		kind, mult := "unknown", 0.6
+		kind, mult, detail := "unknown", 0.6, "result of a call that received tainted input"
 		if resolved {
 			kind, mult = "transform", 0.85
+		} else if c.mcpGoArgumentGetter(file, calleeText) {
+			// req.RequireString("path"): the mcp-go SDK's request getters return the client's
+			// argument as sent, so the call is known and passes the value on unchanged
+			kind, mult, resolved, detail = "transform", 1, true, "the client's argument, read through the mcp-go request"
 		}
 		step := model.FlowStep{
 			Kind: kind, Symbol: calleeText, File: file, Line: line, Resolved: resolved,
-			Detail: "result of a call that received tainted input",
+			Detail: detail,
 		}
 		info := from.extend(step, mult)
 		if why, ok := c.escapedBy(rhs.Utf8Text(pf.src)); ok && info.review == "" {
@@ -1592,7 +1706,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// strong sanitizer upstream may still have cleared it for this
 		// exact category (info.clearedFor) without clearing it for every
 		// category, the same gate the plain-sink branch below applies
-		if category, severity, mult, note, info, found := c.classifyArgv(file, argv.kind, c.expandArgvVar(pf, n, argv.kind, argvArgs), tainted); found && !info.clearedFor[category] {
+		if category, severity, mult, note, info, found := c.classifyArgv(file, argv.kind, calleeText, c.expandArgvVar(pf, n, argv.kind, argvArgs), tainted); found && !info.clearedFor[category] {
 			if info.review == "" && (category == "command_injection" || category == "argument_injection") {
 				// an element the project built through its own quoting function
 				for _, a := range c.expandArgvVar(pf, n, argv.kind, argvArgs) {
@@ -1704,8 +1818,13 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// literal is some other API: a URL or a query string is never a closure, while
 				// sync.Once.Do(func() {...}) and errgroup-style Do(fn) take exactly that
 				info, found = mentionsAny(a.Text, tainted, sink.category)
+				if found && sink.category == "sql_injection" && pf.adapter.ID == language.Python && c.sqlalchemyStatement(file, a.Text, enclosingFunctionText(pf, n)) {
+					// session.execute(update(T).where(T.id == x)): a SQLAlchemy statement binds x as a
+					// parameter; only text(), literal_column() or a built string would make it SQL
+					found = false
+				}
 				if found && sink.category == "ssrf" {
-					if an := argNode(n, a, pf.src); c.hostFixed(pf, file, an) || untaintedBaseThenPath(pf, an, tainted) || relativePathURL(pf, an) {
+					if an := argNode(n, a, pf.src); c.urlHostFixed(pf, file, an, tainted) {
 						found = false
 					}
 				}
@@ -1715,6 +1834,17 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// - but a name cannot prove it. The finding stays, for a person to decide.
 				if found && needsSQLEvidence && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver may be a database client, but no SQL text was seen on the path", sinkText)
+				}
+				if found && sink.category == "sql_injection" && byMethodName && pf.adapter.ID == language.Python && keywordOnlyNonSQL(args) && info.review == "" {
+					// service.searchanalytics().query(siteUrl=..., body=...): DB-API drivers take the
+					// statement positionally or as sql=/query=; named fields of another kind read as
+					// an API client's query, but the names cannot prove it
+					info.review = fmt.Sprintf("%s was matched as SQL by its method name only, and every argument is a named field none of which carries a statement (sql, query, statement), so it is probably an API client's query", sinkText)
+				}
+				if found && sink.category == "sql_injection" && byMethodName && commandObjectArg(a.Text) {
+					// store.execute({ type: "save_app", name, ui }): an object literal with no field a
+					// driver reads SQL from (sql, text, query, statement) is a command, not a query
+					found = false
 				}
 				if found && byMethodName && sink.category == "sql_injection" && !sqlReceiver(sinkText, a.Text) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is not named like a database handle and the argument shows no SQL text, so it is probably another API's %s", sinkText, parser.LastSegment(sinkText))
@@ -1764,10 +1894,30 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// JavaScript functions from !!js/function tags. The version installed decides.
 				info.review = fmt.Sprintf("%s is js-yaml's load, which is safe from version 4 on and builds JavaScript functions from !!js/function tags in version 3; the installed version decides between a real issue and noise", sinkText)
 			}
-			if sink.text == "exec" && sink.category == "command_injection" && c.execOnOtherObject(file, sinkText) {
+			if sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" && info.review == "" && !httpLikeReceiver(sinkText) {
+				// taskrunInformer.Lister().TaskRuns(ns).Get(name), cache.Get(key): a Get method on a
+				// lister, a cache or a map is a lookup, not an HTTP request; matched by name alone
+				info.review = fmt.Sprintf("%s was matched as an HTTP request by its method name only: its receiver does not look like an HTTP client, so it is probably a lookup in a cache, a lister or a map", sinkText)
+			}
+			if sink.text == "fetch" && sink.category == "ssrf" && info.review == "" && fetchOnOtherObject(pf.adapter.ID, sinkText) {
+				// imap.fetch([uid]), cursor.fetch(n): a method named fetch on an object that is not the
+				// global fetch API - matched by name alone
+				info.review = fmt.Sprintf("%s was matched as an HTTP request by its method name only: its receiver is not the global fetch, so it may be another API's fetch (a mail client, a database cursor, a git remote)", sinkText)
+			}
+			if sink.text == "exec" && sink.category == "command_injection" && pf.adapter.ID == language.Java && javaExecOnOtherObject(calleeText) {
+				info.review = fmt.Sprintf("%s was matched as a command by its method name only: its receiver is not a Runtime, so it is probably another API's exec", strings.TrimSpace(calleeText))
+			} else if sink.text == "exec" && sink.category == "command_injection" && c.execOnOtherObject(file, sinkText) {
 				// client.browsers.process.exec(id, {...}): a method named exec on an object no
 				// child_process import binds - an API client's own exec - matched by name alone
 				info.review = fmt.Sprintf("%s was matched as a command by its method name only: its receiver is not bound to child_process in this file, so it may be another API's exec (a remote sandbox, a database driver)", sinkText)
+			}
+			if name := strings.TrimSpace(calleeText); info.review == "" && isPlainIdent(name) &&
+				(pf.adapter.ID == language.JavaScript || pf.adapter.ID == language.TypeScript) && shadowedAt(n, name, pf.src) {
+				// function runGit(exec: ExecFileFn, ...) { exec("git", args, ...) }: the name is a
+				// parameter (or a loop or catch binding) of the code around the call, not the library
+				// function the sink table means; what it holds - child_process.exec, execFile or a
+				// test double - is decided by the caller
+				info.review = fmt.Sprintf("%s is a parameter of the enclosing function, not the library function of that name; which function it holds is decided by its caller", name)
 			}
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: sink.category, Resolved: true,
@@ -1827,7 +1977,7 @@ func (c *ctx) fixedHostArgs(pf *parsedFile, file string, call *sitter.Node, sym 
 		if !ok {
 			continue
 		}
-		if an := argNode(call, a, pf.src); an != nil && (c.hostFixed(pf, file, an) || untaintedBaseThenPath(pf, an, tainted) || relativePathURL(pf, an)) {
+		if an := argNode(call, a, pf.src); an != nil && c.urlHostFixed(pf, file, an, tainted) {
 			seed[sym.Params[i]] = info.clearFor("ssrf")
 		}
 	}
@@ -2770,6 +2920,19 @@ func taintedNames(tainted map[string]taintInfo) []string {
 // execOnOtherObject reports whether a JavaScript or TypeScript exec call has a receiver that no
 // import of child_process (or a module re-exporting it) binds in this file: a.b.exec(...) where a
 // is a local client. A bare exec(...) or child_process.exec(...) is not this case.
+// javaExecOnOtherObject reports whether a Java exec call is on something other than a Runtime:
+// a process starts through Runtime.getRuntime().exec(...) or a Runtime held in a variable, while
+// jolokiaService.exec(mbean, op) is another API's exec. A bare exec(...) is left alone.
+func javaExecOnOtherObject(calleeText string) bool {
+	t := strings.Join(strings.Fields(calleeText), "")
+	recv, ok := strings.CutSuffix(t, ".exec")
+	if !ok || recv == "" {
+		return false
+	}
+	r := strings.ToLower(recv)
+	return !strings.Contains(r, "runtime") && r != "rt"
+}
+
 func (c *ctx) execOnOtherObject(file, sinkText string) bool {
 	f := c.g.Files[file]
 	if f == nil || (f.Language != string(language.TypeScript) && f.Language != string(language.JavaScript)) {
@@ -2922,6 +3085,28 @@ func (c *ctx) holdsFixedHostURL(pf *parsedFile, n *sitter.Node, name string) boo
 	return false
 }
 
+// mcpGoGetter names the argument getters of mcp-go's CallToolRequest: RequireString, GetInt,
+// GetStringSlice, GetArguments and the like
+var mcpGoGetter = regexp.MustCompile(`^(Require|Get)(String|Int|Float|Bool|StringSlice|IntSlice|FloatSlice|BoolSlice|Arguments|RawArguments)$`)
+
+// mcpGoArgumentGetter reports whether a method call is one of mcp-go's request argument getters,
+// in a file that imports mcp-go. They return what the client sent for the named argument.
+func (c *ctx) mcpGoArgumentGetter(file, calleeText string) bool {
+	if !strings.Contains(calleeText, ".") || !mcpGoGetter.MatchString(parser.LastSegment(calleeText)) {
+		return false
+	}
+	f := c.g.Files[file]
+	if f == nil {
+		return false
+	}
+	for _, imp := range f.Imports {
+		if strings.HasPrefix(imp.Path, "github.com/mark3labs/mcp-go/") {
+			return true
+		}
+	}
+	return false
+}
+
 // lastPlainAssignment returns the right-hand side of the last `name = value` (not +=) in text
 func lastPlainAssignment(text, name string) string {
 	re := regexp.MustCompile(`(?m)^[ \t]*(?:let|const|var|final)?\s*` + regexp.QuoteMeta(name) + `\s*(?::[^=\n]+)?=\s*([^=\n].*?)\s*;?\s*$`)
@@ -2930,4 +3115,188 @@ func lastPlainAssignment(text, name string) string {
 		return ""
 	}
 	return strings.TrimSpace(ms[len(ms)-1][1])
+}
+
+// fetchOnOtherObject reports whether a JavaScript or TypeScript call is a fetch method on some object
+// other than the global one: imap.fetch(...), not fetch(...) or globalThis.fetch(...)
+func fetchOnOtherObject(lang language.ID, sinkText string) bool {
+	if lang != language.TypeScript && lang != language.JavaScript {
+		return false
+	}
+	t := strings.TrimSpace(sinkText)
+	root, rest, dotted := strings.Cut(t, ".")
+	if !dotted || parser.LastSegment(t) != "fetch" {
+		return false
+	}
+	switch root {
+	case "window", "globalThis", "self", "global":
+		return rest != "fetch"
+	}
+	return true
+}
+
+// helperRelativePath reports whether a URL expression starts with a call to an in-repo function
+// whose returned value is itself a relative path: `${repoPath(project, repo)}/pull-requests` with
+// repoPath = (p, r) => `/projects/${encodeURIComponent(p)}/repos/...`. The helper's literal "/word"
+// opens the path, so the caller's values that follow cannot name another host.
+func (c *ctx) helperRelativePath(pf *parsedFile, n *sitter.Node) bool {
+	if n == nil {
+		return false
+	}
+	n = unwrapAwait(n)
+	var call *sitter.Node
+	switch n.Kind() {
+	case "template_string":
+		for i := range n.ChildCount() {
+			ch := n.Child(i)
+			if ch.Kind() == "`" {
+				continue
+			}
+			if ch.Kind() == "template_substitution" && ch.NamedChildCount() == 1 {
+				call = ch.NamedChild(0)
+			}
+			break
+		}
+	case "binary_expression", "binary_operator":
+		inner := n
+		for {
+			l := inner.ChildByFieldName("left")
+			if l == nil || (l.Kind() != "binary_expression" && l.Kind() != "binary_operator") {
+				break
+			}
+			inner = l
+		}
+		call = inner.ChildByFieldName("left")
+	case "call_expression", "call":
+		call = n
+	}
+	if call == nil || (call.Kind() != "call_expression" && call.Kind() != "call") {
+		return false
+	}
+	fn := call.ChildByFieldName("function")
+	if fn == nil {
+		return false
+	}
+	ids := c.idx[parser.LastSegment(fn.Utf8Text(pf.src))]
+	if len(ids) != 1 {
+		return false
+	}
+	hpf, def := c.defNodeFor(c.g.Symbols[ids[0]])
+	if hpf == nil || def == nil {
+		return false
+	}
+	ret := returnedExpression(def)
+	return ret != nil && relativePathURL(hpf, ret)
+}
+
+// returnedExpression is what a function returns when that is one expression: an arrow function's
+// expression body, or the value of the only return statement in a block body
+func returnedExpression(def *sitter.Node) *sitter.Node {
+	body := def.ChildByFieldName("body")
+	if body == nil {
+		return nil
+	}
+	if body.Kind() != "statement_block" && body.Kind() != "block" {
+		return body
+	}
+	var ret *sitter.Node
+	count := 0
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		for i := range n.NamedChildCount() {
+			ch := n.NamedChild(i)
+			switch ch.Kind() {
+			case "return_statement":
+				count++
+				if ch.NamedChildCount() > 0 {
+					ret = ch.NamedChild(0)
+				}
+			case "function_declaration", "arrow_function", "function_expression", "function_definition", "method_definition":
+				// returns of a nested function are not this one's
+			default:
+				walk(ch)
+			}
+		}
+	}
+	walk(body)
+	if count != 1 {
+		return nil
+	}
+	return ret
+}
+
+// httpLikeReceiver reports whether a .Get call's receiver reads as an HTTP client: http.Get,
+// client.Get, httpClient.Get, resty's R().Get. A call chain or another name does not.
+func httpLikeReceiver(sinkText string) bool {
+	t := strings.TrimSpace(sinkText)
+	recv := strings.TrimSuffix(t, ".Get")
+	if recv == t {
+		return true
+	}
+	low := strings.ToLower(recv)
+	return httpReceiverName.MatchString(low) || strings.HasSuffix(low, ".r()")
+}
+
+var httpReceiverName = regexp.MustCompile(`(^|[._])(http|https|client|httpclient|resty|req|request|requests|session|api|rest|web)\w*$`)
+
+// annotationValidator matches a Pydantic validator attached to a parameter's type annotation:
+// Annotated[str, BeforeValidator(validate_path)], AfterValidator(check_url), PlainValidator(fn)
+var annotationValidator = regexp.MustCompile(`\b(?:Before|After|Plain|Wrap)Validator\(\s*([A-Za-z_][\w.]*)`)
+
+// annotationValidators maps each Python handler parameter to the validator its annotation attaches
+func (c *ctx) annotationValidators(sym *graph.Symbol) map[string]string {
+	pf, node := c.defNodeFor(sym)
+	if pf == nil || node == nil || pf.adapter.ID != language.Python {
+		return nil
+	}
+	list := parser.ParamList(node)
+	if list == nil {
+		return nil
+	}
+	out := map[string]string{}
+	cursor := list.Walk()
+	defer cursor.Close()
+	for _, param := range list.NamedChildren(cursor) {
+		text := param.Utf8Text(pf.src)
+		m := annotationValidator.FindStringSubmatch(text)
+		if m == nil {
+			continue
+		}
+		for _, b := range parser.ParamBindings(pf.adapter.ID, &param, pf.src) {
+			out[b] = parser.LastSegment(m[1])
+		}
+	}
+	return out
+}
+
+// sqlFieldKey matches an object-literal key a database driver reads the statement from:
+// mysql2 query({ sql, values }), pg query({ text, values }), { query: ... }, { statement: ... }
+var sqlFieldKey = regexp.MustCompile(`(?i)(^|[{,\s])["']?(sql|text|query|statement|stmt)["']?\s*[:,}]`)
+
+// commandObjectArg reports whether a sink argument is an object or dict literal with no key a
+// driver reads SQL from
+func commandObjectArg(text string) bool {
+	t := strings.TrimSpace(text)
+	if len(t) < 2 || t[0] != '{' || t[len(t)-1] != '}' {
+		return false
+	}
+	return !sqlFieldKey.MatchString(t)
+}
+
+// keywordOnlyNonSQL reports whether every argument of a Python call is a keyword one and none of
+// them names a statement (sql, query, statement, operation, stmt, text)
+func keywordOnlyNonSQL(args []graph.Arg) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, a := range args {
+		if a.Keyword == "" {
+			return false
+		}
+		switch strings.ToLower(a.Keyword) {
+		case "sql", "query", "statement", "operation", "stmt", "text", "command":
+			return false
+		}
+	}
+	return true
 }

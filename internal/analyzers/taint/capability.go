@@ -95,7 +95,8 @@ func asksForConfirmation(g *graph.Graph, handler graph.SymbolID) bool {
 }
 
 // asCapability turns an MCP-input finding into a dangerous-capability finding when the tool
-// declares what the sink does. It returns false and leaves f alone otherwise.
+// declares what the sink does. When the description also promises a boundary, it leaves the
+// finding an injection but sends it to review. It returns false and leaves f alone otherwise.
 func asCapability(g *graph.Graph, f *model.Finding) bool {
 	path := f.Evidence[0].Path
 	for _, st := range path {
@@ -114,10 +115,14 @@ func asCapability(g *graph.Graph, f *model.Finding) bool {
 	if !declared {
 		return false
 	}
-	if promisesScope.MatchString(c.Description) {
+	if w := promisesScope.FindString(c.Description); w != "" {
 		// "Delete a file under the workspace" with nothing in the code that keeps the path there
-		// is a broken promise - a vulnerability - not a tool doing what it says
-		return false
+		// is a broken promise - a vulnerability - not a tool doing what it says. But the word
+		// alone does not tell a promise from prose ("only locals persist" in a code tool), so the
+		// finding stays an injection and goes to review rather than to potential.
+		f.Triage = model.TriageNeedsReview
+		f.TriageReason = fmt.Sprintf("the tool's name or description says it %s, and the description also uses %q; if that word promises a boundary, nothing the scanner found on the path enforces it and this is a vulnerability, otherwise the argument reaching the sink is the tool's purpose. Words alone do not decide which", capabilityPhrase[capName], w)
+		return true
 	}
 	sink := f.Evidence[0].Path[len(f.Evidence[0].Path)-1]
 	restriction := "no user confirmation was found on the handler's path"

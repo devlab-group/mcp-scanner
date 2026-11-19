@@ -69,6 +69,9 @@ type FileResult struct {
 	// ObjectConstants holds the source text of unambiguous top-level JavaScript/TypeScript
 	// `const NAME = { ... }` object literals, for callers that read fields such as description
 	ObjectConstants map[string]string
+	// TemplateConstants holds the source text of unambiguous top-level JavaScript/TypeScript
+	// `const NAME = \`...${x}...\`` template literals that are not fixed strings
+	TemplateConstants map[string]string
 }
 
 // localSymbol tracks a symbol's byte range so calls and decorators found later
@@ -228,7 +231,7 @@ func ParseFile(ctx context.Context, adapter *language.Adapter, path string, src 
 	case language.Rust:
 		res.Constants = rustConstants(root, src)
 	case language.JavaScript, language.TypeScript:
-		res.Constants, res.ObjectConstants = jsModuleConstants(root, src)
+		res.Constants, res.ObjectConstants, res.TemplateConstants = jsModuleConstants(root, src)
 	case language.Go:
 		res.Constants = goFileConstants(root, src)
 	}

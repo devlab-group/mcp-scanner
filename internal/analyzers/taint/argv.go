@@ -15,8 +15,14 @@ import (
 // classifyArgv distinguishes tainted program names, shell execution, and
 // separate arguments. Unknown programs or option bags stay conservative at
 // reduced confidence. A literal "--" protects later non-shell arguments.
-func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted map[string]taintInfo) (category string, severity model.Severity, mult float64, note string, hit taintInfo, ok bool) {
+func (c *ctx) classifyArgv(file string, kind argvKind, chain string, args []graph.Arg, tainted map[string]taintInfo) (category string, severity model.Severity, mult float64, note string, hit taintInfo, ok bool) {
 	if kind == argvRustArg {
+		// Command::new("markitdown").arg(source): when this call's own receiver chain starts at
+		// Command::new with a literal program, the whole argv is readable here and is classified
+		// like any other argv
+		if argv, found := rustBuilderArgv(chain, args); found {
+			return c.classifyArgv(file, argvGo, "", argv, tainted)
+		}
 		// The program that started this builder chain is a different call
 		// node and is not visible from here
 		if _, info, found := taintedArgIndex(args, tainted, ""); found {
@@ -124,6 +130,20 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 		}
 	}
 
+	if program.Literal && programBasename(program.Value) == "adb" {
+		// adb [-s serial] shell <args...>: adb joins what follows "shell" into a command line for the
+		// device's shell, the way ssh does on a remote host
+		for i, a := range rest {
+			if a.Literal && a.Value == "shell" {
+				if _, info, found := taintedArgIndex(rest[i+1:], tainted, ""); found {
+					return "command_injection", model.SeverityHigh, 1,
+						"adb shell runs the arguments after it as a command line in the device's shell", info, true
+				}
+				break
+			}
+		}
+	}
+
 	if program.Literal && programBasename(program.Value) == "ssh" {
 		// ssh joins every argument after the destination into one string and hands it to a shell
 		// on the remote host: those arguments are shell text there, whatever they look like here
@@ -152,6 +172,79 @@ func (c *ctx) classifyArgv(file string, kind argvKind, args []graph.Arg, tainted
 			info, true
 	}
 	return "", "", 0, "", taintInfo{}, false
+}
+
+// rustCommandNew matches a builder chain that starts at Command::new with a literal program:
+// Command::new("git"), std::process::Command::new("git"), tokio::process::Command::new("git")
+var rustCommandNew = regexp.MustCompile(`^\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*Command::new\(`)
+
+// rustBuilderArgv reads the argv of a Rust Command builder from the callee text of one of its
+// .arg()/.args() calls - `Command::new("sh").arg("-c").arg` - plus that call's own arguments. It
+// returns the program, every earlier .arg/.args element and this call's elements, in order. Other
+// builder methods (current_dir, env, stdout, ...) add nothing to the argv and are skipped. It
+// reports false when the chain does not start at Command::new with a literal program on this
+// call's own receiver - a Command held in a variable, or a chain it cannot read.
+func rustBuilderArgv(chain string, args []graph.Arg) ([]graph.Arg, bool) {
+	loc := rustCommandNew.FindStringIndex(chain)
+	if loc == nil {
+		return nil, false
+	}
+	open := loc[1] - 1
+	inner := bracketedParen(chain, open)
+	prog, ok := parser.UnquoteString(strings.TrimSpace(inner))
+	if !ok || prog == "" {
+		return nil, false
+	}
+	argv := []graph.Arg{{Text: strings.TrimSpace(inner), Literal: true, Value: prog}}
+	elems := func(method, text string) []graph.Arg {
+		text = strings.TrimSpace(text)
+		if method == "arg" {
+			if v, ok := parser.UnquoteString(text); ok {
+				return []graph.Arg{{Text: text, Literal: true, Value: v}}
+			}
+			return []graph.Arg{{Text: text}}
+		}
+		list := strings.TrimPrefix(strings.TrimPrefix(text, "&"), "vec!")
+		if es := bracketedListElements(list); es != nil {
+			return es
+		}
+		return []graph.Arg{{Text: text}}
+	}
+	// skip ")" closing Command::new(...)
+	rest := chain[open+len(inner)+2:]
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if rest == "" {
+			return nil, false
+		}
+		if rest[0] != '.' {
+			return nil, false
+		}
+		i := 1
+		for i < len(rest) && (rest[i] == '_' || rest[i] >= 'a' && rest[i] <= 'z' || rest[i] >= 'A' && rest[i] <= 'Z' || rest[i] >= '0' && rest[i] <= '9') {
+			i++
+		}
+		method := rest[1:i]
+		tail := strings.TrimLeft(rest[i:], " \t\r\n")
+		if tail == "" {
+			// the call this callee text belongs to: its own arguments end the argv
+			if method != "arg" && method != "args" {
+				return nil, false
+			}
+			for _, a := range args {
+				argv = append(argv, elems(method, a.Text)...)
+			}
+			return argv, true
+		}
+		if tail[0] != '(' {
+			return nil, false
+		}
+		in := bracketedParen(tail, 0)
+		if method == "arg" || method == "args" {
+			argv = append(argv, elems(method, in)...)
+		}
+		rest = tail[len(in)+2:]
+	}
 }
 
 // programBasename reduces a program path to the bare name classification matches

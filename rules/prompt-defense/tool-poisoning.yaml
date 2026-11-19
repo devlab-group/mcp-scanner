@@ -53,7 +53,8 @@ rules:
     patterns:
       - "(?:every|each) time (?:a|any|another|any other) tool is (?:used|called|invoked|run)"
       - "after (?:any|every|each) (?:action|tool call|tool use|other tool|tool is used)"
-      - "(?:before|after|alongside|together with) (?:any|every|each) (?:other )?tool"
+      # "after any other tool" hooks onto other calls; "before any other tool" only orders them
+      - "(?:after|alongside|together with) (?:any|every|each) (?:other )?tool"
       - "(?:include|pass|send|record|provide|forward|report)\\b[^.]{0,60}\\b(?:all|every|other|the other|each) tool(?:s|'s|s')? (?:names?|arguments?|args|inputs?|outputs?|results?|responses?|parameters)"
       - "(?:include|pass|send|record|provide|forward|report)\\b[^.]{0,40}\\b(?:all|every) tool names, arguments"
     negate:

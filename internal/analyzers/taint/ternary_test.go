@@ -162,3 +162,94 @@ server.tool("parse", "Parses a document", async ({ doc }: { doc: string }) => {
 		t.Fatalf("want a deserialization finding in review, got %+v", fs)
 	}
 }
+
+// A path built by a helper that returns a relative "/word..." path: the host is the client's
+// configured base. The pair: a helper that returns the caller's value as is decides nothing.
+func TestURLFromHelperReturningRelativePath(t *testing.T) {
+	ts := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import axios from "axios";
+const api = axios.create({ baseURL: process.env.BITBUCKET_URL });
+const server = new McpServer({ name: "x", version: "1" });
+const repoPath = (project: string, repo: string) => %s;
+server.tool("prs", "Lists pull requests", async ({ project, repo }: { project: string; repo: string }) => {
+  const r = await api.get(` + "`${repoPath(project, repo)}/pull-requests`" + `);
+  return { content: [{ type: "text", text: JSON.stringify(r.data) }] };
+});
+`
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"relative path", "`/projects/${encodeURIComponent(project)}/repos/${encodeURIComponent(repo)}`", false},
+		{"caller's value", "project + repo", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(ts, tc.body)}))
+			if got := len(categoryFindings(res, "ssrf")) > 0; got != tc.want {
+				t.Fatalf("want finding=%v, got %+v", tc.want, res.Findings)
+			}
+		})
+	}
+}
+
+// A Go Get on a lister or a cache is a lookup; on an HTTP client it stays SSRF
+func TestGoGetOnALookupGoesToReview(t *testing.T) {
+	tmpl := `package main
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+var httpClient = &http.Client{}
+
+type args struct{ Name string ` + "`json:\"name\"`" + ` }
+
+func handler(ctx context.Context, req *mcp.CallToolRequest, in args) (*mcp.CallToolResult, any, error) {
+	_, err := %s
+	return nil, nil, err
+}
+
+func main() {
+	s := mcp.NewServer(&mcp.Implementation{Name: "x"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "get", Description: "Gets a task run"}, handler)
+}
+`
+	for _, tc := range []struct{ name, call, want string }{
+		{"kubernetes lister", `informer.Lister().TaskRuns("default").Get(in.Name)`, "needs_review"},
+		{"http client", `httpClient.Get(in.Name)`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"main.go": fmt.Sprintf(tmpl, tc.call)}))
+			fs := categoryFindings(res, "ssrf")
+			if len(fs) == 0 {
+				t.Fatalf("want an ssrf finding, got %+v", res.Findings)
+			}
+			if string(fs[0].Triage) != tc.want {
+				t.Fatalf("want triage %q, got %q (%s)", tc.want, fs[0].Triage, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// A project allowlist helper on the path, the value in any argument: resolveAllowedPath(p, dirs)
+func TestGuardByAllowlistHelper(t *testing.T) {
+	src := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFile } from "fs/promises";
+const server = new McpServer({ name: "x", version: "1" });
+async function readAllowedFile(filePath: string, dirs: string[]) {
+  return readFile(await resolveAllowedPath(filePath, dirs));
+}
+server.tool("send_email", "Sends an email message", async ({ from }: { from: string }) => {
+  const data = await readAllowedFile(from, ["/srv/files"]);
+  return { content: [{ type: "text", text: data.toString("base64") }] };
+});
+`
+	res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": src}))
+	fs := categoryFindings(res, "path_traversal")
+	if len(fs) == 0 || fs[0].Triage != "needs_review" {
+		t.Fatalf("want path_traversal in review, got %+v", fs)
+	}
+}

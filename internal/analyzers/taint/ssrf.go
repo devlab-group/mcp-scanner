@@ -63,6 +63,65 @@ func (c *ctx) hostFixed(pf *parsedFile, file string, n *sitter.Node) bool {
 	return fixesURLHost(prefix)
 }
 
+// urlHostFixed reports whether a URL expression keeps the request on a host the MCP client does
+// not choose: a fixed prefix that closes the host, an untainted base followed by a path, a relative
+// path, or a helper that returns one. It looks through new URL(x), which parses x and changes
+// nothing about its host, and new URL(path, base), where the base decides the host only when the
+// path is relative: an absolute first argument replaces the base.
+func (c *ctx) urlHostFixed(pf *parsedFile, file string, n *sitter.Node, tainted map[string]taintInfo) bool {
+	if n == nil {
+		return false
+	}
+	n = unwrapAwait(n)
+	if inner, base, ok := newURLArgs(pf, n); ok {
+		if base == nil {
+			return c.urlHostFixed(pf, file, inner, tainted)
+		}
+		if !relativePathURL(pf, inner) {
+			return false
+		}
+		if c.hostFixed(pf, file, base) {
+			return true
+		}
+		info, found := propagatedTaint(base.Utf8Text(pf.src), tainted)
+		return !found || !fromMCPInput(info)
+	}
+	return c.hostFixed(pf, file, n) || untaintedBaseThenPath(pf, n, tainted) || relativePathURL(pf, n) || c.helperRelativePath(pf, n)
+}
+
+// newURLArgs returns the arguments of a JavaScript new URL(input) or new URL(input, base)
+func newURLArgs(pf *parsedFile, n *sitter.Node) (input, base *sitter.Node, ok bool) {
+	if n.Kind() != "new_expression" {
+		return nil, nil, false
+	}
+	ctor := n.ChildByFieldName("constructor")
+	if ctor == nil {
+		return nil, nil, false
+	}
+	switch ctor.Utf8Text(pf.src) {
+	case "URL", "globalThis.URL", "url.URL":
+	default:
+		return nil, nil, false
+	}
+	args := n.ChildByFieldName("arguments")
+	if args == nil {
+		return nil, nil, false
+	}
+	var as []*sitter.Node
+	for i := range args.NamedChildCount() {
+		if a := args.NamedChild(i); a != nil && a.Kind() != "comment" {
+			as = append(as, a)
+		}
+	}
+	switch len(as) {
+	case 1:
+		return as[0], nil, true
+	case 2:
+		return as[0], as[1], true
+	}
+	return nil, nil, false
+}
+
 func ssrfCleared(info taintInfo, fixedHost bool) taintInfo {
 	if fixedHost {
 		return info.clearFor("ssrf")
@@ -89,11 +148,26 @@ func untaintedBaseThenPath(pf *parsedFile, n *sitter.Node, tainted map[string]ta
 		switch e.Kind() {
 		case "identifier", "attribute", "member_expression", "selector_expression", "field_expression", "subscript_expression", "subscript":
 		case "call_expression", "call":
-			// getRefUrl() + "/read?url=" + ...: a call with no arguments is handed nothing of the
-			// caller's, so its result - a configured or constant base - carries no MCP input
+			// getRefUrl() + "/read?url=" + ..., strings.TrimRight(base, "/") + "/" + ...: a call
+			// handed only literals and names that carry no MCP input returns a configured or
+			// constant base. Arguments that are themselves calls or other expressions are not read.
 			args := e.ChildByFieldName("arguments")
-			if args == nil || args.NamedChildCount() != 0 {
+			if args == nil {
 				return false
+			}
+			for i := range args.NamedChildCount() {
+				a := args.NamedChild(i)
+				if a == nil || a.Kind() == "comment" {
+					continue
+				}
+				if _, lit := parser.LiteralValue(a, src); lit {
+					continue
+				}
+				switch a.Kind() {
+				case "identifier", "attribute", "member_expression", "selector_expression", "field_expression":
+				default:
+					return false
+				}
 			}
 		default:
 			return false
@@ -280,6 +354,16 @@ func (c *ctx) urlPrefix(pf *parsedFile, file string, n *sitter.Node) (string, bo
 			if v, ok := f.Constants[n.Utf8Text(pf.src)]; ok {
 				return v, true
 			}
+			// A module-level template constant is evaluated when the module loads, from the
+			// server's code and configuration, so its substitutions are operator values and never
+			// MCP input: `https://${DOMAIN}/admin/` fixes the host. Each substitution stands in as
+			// one opaque character; a template that only has "https://" or no "/" after its host
+			// still does not fix it.
+			if t, ok := f.TemplateConstants[n.Utf8Text(pf.src)]; ok && len(t) >= 2 {
+				if v, ok := parser.TemplateWithSubstitutions(t[1:len(t)-1], "x"); ok {
+					return v, false
+				}
+			}
 		}
 	case "binary_operator", "binary_expression":
 		left, op, right := n.ChildByFieldName("left"), n.ChildByFieldName("operator"), n.ChildByFieldName("right")
@@ -334,9 +418,13 @@ func (c *ctx) interpolatedPrefix(pf *parsedFile, file string, n *sitter.Node) st
 				return b.String()
 			}
 			b.WriteString(t)
-		case "interpolation":
-			// Extra children indicate a conversion or format specifier
+		case "interpolation", "template_substitution":
+			// Extra children indicate a conversion or format specifier (Python); a JavaScript
+			// ${...} holds exactly one expression
 			e := ch.ChildByFieldName("expression")
+			if ch.Kind() == "template_substitution" {
+				e = ch.NamedChild(0)
+			}
 			if e == nil || ch.NamedChildCount() != 1 {
 				return b.String()
 			}

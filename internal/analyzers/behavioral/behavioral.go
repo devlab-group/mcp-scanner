@@ -8,6 +8,7 @@ package behavioral
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,6 +59,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 	// saying it could not compare this capability at all, which leaves it unaccounted so
 	// Coverage.Gaps() reports it and the scan downgrades. A skip would balance the arithmetic
 	// and let one uncomparable capability alongside one ordinary one report full coverage.
+	var hits [][]string // the sensitive sources behind each finding, index-aligned with findings
 	for _, cap := range g.Capabilities {
 		if ctx.Err() != nil {
 			break
@@ -77,8 +79,12 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		}
 		cov.CapabilitiesAnalyzed++
 		actual, sawUnknown := actualCapabilities(g, cap.Handler)
-		findings = append(findings, mismatches(cap, actual, sawUnknown)...)
+		for _, f := range mismatches(cap, actual, sawUnknown) {
+			findings = append(findings, f)
+			hits = append(hits, actual.SensitiveHits)
+		}
 	}
+	findings = collapseSharedCredential(findings, hits)
 
 	model.SortFindings(findings)
 
@@ -337,4 +343,60 @@ func reviewWordBased(fs []model.Finding) []model.Finding {
 		fs[i].Triage, fs[i].TriageReason = model.TriageNeedsReview, reason
 	}
 	return fs
+}
+
+// collapseAt is how many tools must share one credential finding before it is reported once
+const collapseAt = 3
+
+// collapseSharedCredential reports a credential mismatch once when many tools reach the same
+// credential sources: a shared helper that attaches the server's own token to every request makes
+// each tool's finding the same fact. The kept finding names every tool that shares it.
+func collapseSharedCredential(fs []model.Finding, hits [][]string) []model.Finding {
+	type key struct{ rule, hits string }
+	groups := map[key][]int{}
+	for i, f := range fs {
+		if !strings.Contains(f.RuleID, "credential") || len(hits[i]) == 0 {
+			continue
+		}
+		h := append([]string(nil), hits[i]...)
+		sort.Strings(h)
+		k := key{f.RuleID, strings.Join(h, ",")}
+		groups[k] = append(groups[k], i)
+	}
+	drop := map[int]bool{}
+	for k, idx := range groups {
+		if len(idx) < collapseAt {
+			continue
+		}
+		sort.Slice(idx, func(a, b int) bool { return fs[idx[a]].Tool < fs[idx[b]].Tool })
+		var tools []string
+		for _, i := range idx {
+			tools = append(tools, fs[i].Tool)
+		}
+		keep := &fs[idx[0]]
+		shown := tools
+		if len(shown) > 12 {
+			shown = append(append([]string(nil), shown[:12]...), fmt.Sprintf("and %d more", len(tools)-12))
+		}
+		keep.Title = fmt.Sprintf("%d tools reach the same credential source (%s); one finding for all of them", len(tools), k.hits)
+		keep.Description = fmt.Sprintf("%d tools share this finding through the same credential source (%s): %s. %s", len(tools), k.hits, strings.Join(shown, ", "), keep.Description)
+		keep.Evidence = append(keep.Evidence, model.Evidence{
+			Level: model.EvidenceStatic, Kind: "shared_credential_source",
+			Description: "tools sharing this finding: " + strings.Join(tools, ", "),
+			File:        keep.File, Line: keep.Line,
+		})
+		for _, i := range idx[1:] {
+			drop[i] = true
+		}
+	}
+	if len(drop) == 0 {
+		return fs
+	}
+	out := fs[:0:0]
+	for i, f := range fs {
+		if !drop[i] {
+			out = append(out, f)
+		}
+	}
+	return out
 }

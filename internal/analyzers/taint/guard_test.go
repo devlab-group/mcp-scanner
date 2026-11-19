@@ -198,7 +198,8 @@ def search(name: str) -> str:
     return str(%s)
 `
 	for _, tc := range []struct{ name, call, want string }{
-		{"constructor", `Query(expr={"$eq": [name]})`, "needs_review"},
+		// a receiver-less call named like a method sink, its argument a string: review
+		{"constructor", `Query("name = " + name)`, "needs_review"},
 		{"method on a handle", `db.Query("SELECT * FROM t WHERE n = '" + name + "'")`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,6 +207,32 @@ def search(name: str) -> str:
 			fs := categoryFindings(res, "sql_injection")
 			if len(fs) == 0 {
 				t.Fatalf("want a finding, got %+v", res.Findings)
+			}
+			if string(fs[0].Triage) != tc.want {
+				t.Fatalf("want triage %q, got %q (%s)", tc.want, fs[0].Triage, fs[0].TriageReason)
+			}
+		})
+	}
+}
+
+// imap.fetch([uid]) fetches a message, not a URL; the global fetch with the caller's URL stays SSRF
+func TestFetchMethodOnAnotherObjectGoesToReview(t *testing.T) {
+	tmpl := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+const server = new McpServer({ name: "x", version: "1" });
+server.tool("get", "Gets one item", async ({ id }: { id: string }) => {
+  const r = await %s;
+  return { content: [{ type: "text", text: String(r) }] };
+});
+`
+	for _, tc := range []struct{ name, call, want string }{
+		{"mail client", `imap.fetch([id], { bodies: "" })`, "needs_review"},
+		{"global fetch", `fetch(id + "?raw=1")`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.call)}))
+			fs := categoryFindings(res, "ssrf")
+			if len(fs) == 0 {
+				t.Fatalf("want an ssrf finding, got %+v", res.Findings)
 			}
 			if string(fs[0].Triage) != tc.want {
 				t.Fatalf("want triage %q, got %q (%s)", tc.want, fs[0].Triage, fs[0].TriageReason)

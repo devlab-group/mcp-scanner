@@ -97,7 +97,11 @@ tool's description and the other tools of the server.
 `resource_template_parameter` - a resource URI template parameter (`docs://{name}`) reaches file or
 network access. Whether it can carry `/`, `..` or a decoded `%2F` depends on the SDK's template
 matching. Ask: can a client reach files or hosts outside the intended set through this URI?
-Check: read the SDK's URI matcher; try `..`, `%2F` and `%252F` against a running instance.
+Check: read the SDK's URI matcher; try `..`, `%2F` and `%252F` against a running instance. Known
+answers: fastmcp from 4.0.0 and the official Python SDK's `mcpserver` from 2.0.0 decode parameters
+and then reject `..` segments, absolute paths and NUL by default (`ResourceSecurity`), unless a
+template or the server sets it to `None` or exempts the parameter; fastmcp 2.x and 3.x and the
+Python SDK 1.x decode `%2E%2E%2F` to `../` and hand it to the handler.
 
 `annotations_not_visible` - in a source scan, tool annotations (`readOnlyHint`, `destructiveHint`,
 `openWorldHint`) and input schemas may be set where the scanner cannot see them. Ask: does a tool

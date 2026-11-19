@@ -318,6 +318,34 @@ func importsThirdPartyModule(g *graph.Graph, file, name string) bool {
 // uriLiteral finds a URI with a scheme inside a quoted literal: "notes://{name}", 'file:///{path}'
 var uriLiteral = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^"'\x60\s]*`)
 
+// fixedResourceURI reports whether a registration's arguments spell a fixed resource URI: a
+// literal URI with no "{" (no URI-template variable), or a JavaScript template literal whose
+// text outside its ${...} substitutions holds a "/" (a scheme or a path) and no "{". A substitution is
+// evaluated by the server when it registers the resource, so it is not a client-chosen part.
+// Python f-strings are not read: there {BASE} and a template's {id} look the same.
+func fixedResourceURI(args []graph.Arg) bool {
+	for _, a := range args {
+		if a.Literal {
+			if m := uriLiteral.FindString(a.Value); m != "" && m == a.Value {
+				return !strings.Contains(m, "{")
+			}
+			continue
+		}
+		t := strings.TrimSpace(a.Text)
+		if len(t) < 2 || t[0] != '`' || t[len(t)-1] != '`' {
+			continue
+		}
+		rest, ok := parser.TemplateWithSubstitutions(t[1:len(t)-1], "")
+		if !ok || !strings.Contains(t, "${") {
+			continue
+		}
+		if strings.Contains(rest, "/") { // a scheme or a path
+			return !strings.Contains(rest, "{")
+		}
+	}
+	return false
+}
+
 // resourceURI returns the first URI a registration's arguments spell, from a string literal or a
 // descriptor literal (`&mcp.Resource{URI: "notes://today"}`), or "" when none is literal
 func resourceURI(args []graph.Arg) string {

@@ -1,0 +1,9 @@
+rule: promptdefense.tool-poisoning-cross-tool-harvesting
+expect_fire: false
+note: an ordering instruction to connect first is not a hook onto other tools' calls
+snapshot:
+  tools:
+  - name: connect
+    description: >-
+      Connect to a running Neovim instance over its Unix socket or TCP address. Call this before any
+      other tool if the agent is not yet connected.

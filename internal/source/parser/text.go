@@ -202,3 +202,37 @@ func LastSegment(text string) string {
 	}
 	return strings.TrimSpace(t)
 }
+
+// TemplateWithSubstitutions returns a JavaScript template literal's body with every ${...}
+// substitution replaced by repl, or false when a substitution is not closed. Escapes are decoded
+// to the character they stand for.
+func TemplateWithSubstitutions(body, repl string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			b.WriteByte(body[i+1])
+			i++
+			continue
+		}
+		if body[i] == '$' && i+1 < len(body) && body[i+1] == '{' {
+			depth, j := 0, i+1
+			for ; j < len(body); j++ {
+				if body[j] == '{' {
+					depth++
+				} else if body[j] == '}' {
+					if depth--; depth == 0 {
+						break
+					}
+				}
+			}
+			if j >= len(body) {
+				return "", false
+			}
+			b.WriteString(repl)
+			i = j
+			continue
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String(), true
+}

@@ -19,8 +19,8 @@ var jsBindingContainers = map[string]bool{
 // other binding of the same name - a parameter, a local variable, an import, a destructured
 // field - leaves it unresolved, so a shadowed name is never read as the module constant. Object
 // literals are returned as their source text for callers that read single fields from them.
-func jsModuleConstants(root *sitter.Node, src []byte) (map[string]string, map[string]string) {
-	strs, objs := map[string]string{}, map[string]string{}
+func jsModuleConstants(root *sitter.Node, src []byte) (strConsts, objConsts, tmplConsts map[string]string) {
+	strs, objs, tmpls := map[string]string{}, map[string]string{}, map[string]string{}
 	for _, stmt := range nonCommentChildren(root) {
 		decl := stmt
 		if decl.Kind() == "export_statement" {
@@ -53,11 +53,15 @@ func jsModuleConstants(root *sitter.Node, src []byte) (map[string]string, map[st
 				// an array too: `export const tools = [{ name: "...", description: "..." }]`
 				// is what a low-level server's tools/list handler returns
 				objs[name.Utf8Text(src)] = value.Utf8Text(src)
+			} else if value.Kind() == "template_string" {
+				// const API = `https://${DOMAIN}/v1/`: fixed when the module loads, though not a
+				// literal
+				tmpls[name.Utf8Text(src)] = value.Utf8Text(src)
 			}
 		}
 	}
-	if len(strs) == 0 && len(objs) == 0 {
-		return nil, nil
+	if len(strs) == 0 && len(objs) == 0 && len(tmpls) == 0 {
+		return nil, nil, nil
 	}
 
 	bindings := map[string]int{}
@@ -121,7 +125,7 @@ func jsModuleConstants(root *sitter.Node, src []byte) (map[string]string, map[st
 		}
 		return out
 	}
-	return keep(strs), keep(objs)
+	return keep(strs), keep(objs), keep(tmpls)
 }
 
 func isConstDeclaration(decl *sitter.Node, src []byte) bool {

@@ -22,12 +22,14 @@ type guardIndex struct {
 	files map[string][]string
 	g     *graph.Graph
 	// callee caches inCallee's answer per symbol: the same helpers sit on many findings' paths
-	callee map[graph.SymbolID]calleeGuard
+	callee map[graph.SymbolID]calleeGuardResult
 	// byName indexes symbols by name once, instead of a walk of every symbol per path step
 	byName map[string][]*graph.Symbol
+	// allowed are the function names the current path may descend into at the second level
+	allowed map[string]bool
 }
 
-type calleeGuard struct {
+type calleeGuardResult struct {
 	text string
 	line int
 	ok   bool
@@ -73,11 +75,35 @@ func (gi *guardIndex) inCallee(path []model.FlowStep) (string, int, bool) {
 	if gi.g == nil {
 		return "", 0, false
 	}
+	var names []string
 	for _, st := range path[1:] {
-		if st.Kind != "transform" || (st.Detail != "result of a call that received tainted input" && st.Detail != "passes tainted input into another function") {
-			continue
+		switch {
+		case st.Kind == "transform" && (st.Detail == "result of a call that received tainted input" || st.Detail == "passes tainted input into another function"):
+			names = append(names, parser.LastSegment(st.Symbol))
+		case st.Kind == "sink":
+			// resolve_note(p).read_text(): the helper is the sink's receiver, not a step of its own
+			for _, m := range callNames.FindAllStringSubmatch(st.Symbol, 4) {
+				if n := parser.LastSegment(m[1]); n != parser.LastSegment(st.Symbol) {
+					names = append(names, n)
+				}
+			}
 		}
-		name := parser.LastSegment(st.Symbol)
+	}
+	// The second level may only enter functions the path itself names, or that the sink's own line
+	// calls (fs.readFile(jobPath(id))): a dispatcher hands its arguments to every handler, and a
+	// check in a handler the path never reaches says nothing about this value
+	gi.allowed = map[string]bool{}
+	for _, n := range names {
+		gi.allowed[n] = true
+	}
+	if last := path[len(path)-1]; last.Kind == "sink" {
+		if ls := gi.lines(last.File); last.Line > 0 && last.Line <= len(ls) {
+			for _, m := range callNames.FindAllStringSubmatch(ls[last.Line-1], 8) {
+				gi.allowed[parser.LastSegment(m[1])] = true
+			}
+		}
+	}
+	for _, name := range names {
 		if gi.byName == nil {
 			gi.byName = map[string][]*graph.Symbol{}
 			for _, s := range gi.g.Symbols {
@@ -92,29 +118,68 @@ func (gi *guardIndex) inCallee(path []model.FlowStep) (string, int, bool) {
 		if sym.EndLine <= sym.Line {
 			continue
 		}
-		if cg, ok := gi.callee[sym.ID]; ok {
-			if cg.ok {
-				return cg.text, cg.line, true
-			}
-			continue
-		}
-		ls := gi.lines(sym.File)
-		if len(ls) < sym.EndLine {
-			continue
-		}
-		var params []string
-		for _, p := range sym.Params {
-			if isGuardIdent(p) {
-				params = append(params, p)
-			}
-		}
-		text, n, ok := scanRegion(ls, sym.Line, sym.EndLine+1, params)
-		gi.callee[sym.ID] = calleeGuard{text: text + " in " + sym.Name, line: n, ok: ok}
-		if ok {
-			return text + " in " + sym.Name, n, true
+		if text, n, ok := gi.calleeGuard(sym, 0); ok {
+			return text, n, true
 		}
 	}
 	return "", 0, false
+}
+
+// calleeGuard looks for an input check on sym's parameters in its body, and one level further in
+// a project function the body hands a parameter to - readJob(id) calling jobPath(id), which
+// throws unless id matches /^[a-f0-9-]{36}$/
+func (gi *guardIndex) calleeGuard(sym *graph.Symbol, depth int) (string, int, bool) {
+	own, ok := gi.callee[sym.ID]
+	if !ok {
+		own = gi.ownBodyGuard(sym)
+		gi.callee[sym.ID] = own
+	}
+	if own.ok || depth >= 1 {
+		return own.text, own.line, own.ok
+	}
+	// a project function this body hands one of its parameters to, if the path allows it
+	ls := gi.lines(sym.File)
+	params := guardParams(sym)
+	for k := sym.Line; k <= sym.EndLine && k <= len(ls); k++ {
+		if !mentionsVar(ls[k-1], params) {
+			continue
+		}
+		for _, m := range callNames.FindAllStringSubmatch(ls[k-1], 6) {
+			name := parser.LastSegment(m[1])
+			cands := gi.byName[name]
+			if len(cands) != 1 || cands[0].ID == sym.ID || !gi.allowed[name] {
+				continue
+			}
+			if t2, n2, ok2 := gi.calleeGuard(cands[0], depth+1); ok2 {
+				return t2, n2, true
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// ownBodyGuard is a check on sym's parameters in sym's own body; it does not depend on the path,
+// so calleeGuard caches it per symbol
+func (gi *guardIndex) ownBodyGuard(sym *graph.Symbol) calleeGuardResult {
+	ls := gi.lines(sym.File)
+	if sym.EndLine <= sym.Line || len(ls) < sym.EndLine {
+		return calleeGuardResult{}
+	}
+	text, n, ok := scanRegion(ls, sym.Line, sym.EndLine+1, guardParams(sym))
+	if ok {
+		text += " in " + sym.Name
+	}
+	return calleeGuardResult{text: text, line: n, ok: ok}
+}
+
+func guardParams(sym *graph.Symbol) []string {
+	var params []string
+	for _, p := range sym.Params {
+		if isGuardIdent(p) {
+			params = append(params, p)
+		}
+	}
+	return params
 }
 
 func (gi *guardIndex) inSource(path []model.FlowStep) (string, int, bool) {
@@ -141,7 +206,7 @@ func (gi *guardIndex) inSource(path []model.FlowStep) (string, int, bool) {
 // checkPatterns are the shapes of an input check on a value; %[1]s is the value's quoted name
 var checkPatterns = []string{
 	`(?i)\b_*(validate|sanitize|sanitise|check|ensure|verify|assert|is_?safe|is_?valid|is_?allowed|allowed)\w*\s*\(\s*%[1]s\b`,
-	`\b%[1]s\s*\.\s*(match|test|startsWith|startswith|endsWith|endswith|fullmatch|matches|HasPrefix)\s*\(`,
+	`\b%[1]s\s*\.\s*(match|test|startsWith|startswith|endsWith|endswith|fullmatch|matches|HasPrefix|is_relative_to|relative_to)\s*\(`,
 	`\.(test|match|fullmatch|search|MatchString)\s*\(\s*(?:[^,()]+,\s*)?%[1]s\b`,
 	`\bstrings\.HasPrefix\s*\(\s*%[1]s\b`,
 	`\b%[1]s\s+not\s+in\s+\w+|\b%[1]s\s+in\s+[A-Z_]{3,}\b`,
@@ -150,6 +215,9 @@ var checkPatterns = []string{
 	`\b%[1]s\s*\.\s*(includes|contains|indexOf|match)\s*\(`,
 	`['"][^'"]*['"]\s+in\s+%[1]s\b`,
 	`\bstrings\.Contains\s*\(\s*%[1]s\b`,
+	// a containment or allowlist helper of the project, the value in any argument position:
+	// resolveAllowedPath(filePath, dirs), isInside(base, target), toSafePath(root, p)
+	`(?i)\b\w*(allowed|inside|within|subpath|safe_?path|valid_?path|under_?root|in_?root|confine)\w*\s*\([^()]*\b%[1]s\b`,
 }
 
 // checkRegexps caches one compiled alternation of checkPatterns per value name; compiling them for
