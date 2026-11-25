@@ -169,6 +169,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 
 	parser.Resolve(g)
 	registration.Discover(g)
+	g.IndexCalls()
 	cov.CapabilitiesDiscovered = len(g.Capabilities)
 	cov.CapabilitiesAnalyzed = len(g.Capabilities) // every discovered one was inspected for name/handler
 	if len(g.Capabilities) == 0 {
