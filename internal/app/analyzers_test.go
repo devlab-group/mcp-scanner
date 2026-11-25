@@ -10,7 +10,7 @@ import (
 // Pin the public analyzer names exposed by the default build. cisco and virustotal compile but
 // are not registered.
 func TestDefaultBuildRegistersTheDocumentedAnalyzers(t *testing.T) {
-	want := []string{"auth", "behavioral", "llm", "promptdefense", "protocol", "readiness", "runtime", "source", "supplychain", "taint", "yara"}
+	want := []string{"auth", "behavioral", "iac", "llm", "promptdefense", "protocol", "readiness", "runtime", "source", "supplychain", "taint", "transport", "yara"}
 	got := slices.Sorted(slices.Values(analyzer.Default.Names()))
 	if !slices.Equal(got, want) {
 		t.Fatalf("registered analyzers = %v, want %v", got, want)

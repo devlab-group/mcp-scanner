@@ -131,6 +131,10 @@ func isEnvRead(calleeText string) bool {
 // decide whether reading it counts as touching a credential
 var credentialWords = []string{"key", "secret", "token", "password", "credential", "auth", "apikey"}
 
+// CredentialLikeName reports whether an environment variable or setting name looks like it holds
+// a credential (KEY, SECRET, TOKEN, PASSWORD, ...), by the vocabulary the credential checks use
+func CredentialLikeName(name string) bool { return credentialLikeName(name) }
+
 func credentialLikeName(name string) bool {
 	lower := strings.ToLower(name)
 	for _, w := range credentialWords {
