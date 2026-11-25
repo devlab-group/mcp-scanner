@@ -89,13 +89,18 @@ verdict.
   "transport": "streamable",
   "ecosystem": "npm",
   "package": "left-pad",
-  "version": "1.0.0",
+  "version": "latest",
+  "resolved_version": "1.3.0",
   "path": "/scan/root"
 }
 ```
 
 `kind` is `remote`, `stdio`, `static`, `source`, or `package`. Only
-relevant fields are populated. `headers` and `env` are never serialized
+relevant fields are populated. For a package, `version` is what was asked
+for (empty, a dist-tag such as `latest`, or a version) and `resolved_version`
+is the version the registry served: the bytes that were downloaded, scanned and
+looked up in OSV. A baseline does not depend on either (see
+[Baseline scope](#baseline-scope)). `headers` and `env` are never serialized
 because they may contain credentials.
 
 URLs redact both basic-auth fields before serialization. For example,

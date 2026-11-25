@@ -109,6 +109,15 @@ func TestPackageTargetManifestWithNoLockfileIsCoverageGap(t *testing.T) {
 	if len(res.Coverage.Gaps()) == 0 {
 		t.Fatal("a manifest whose dependency ranges were never resolved must downgrade the scan")
 	}
+	// ...for the reason it has, not as a skip without one
+	for _, g := range res.Coverage.Gaps() {
+		if strings.Contains(g, "without a reason") {
+			t.Errorf("the skipped manifest is reported as %q", g)
+		}
+	}
+	if len(res.Coverage.SkipReasons) == 0 {
+		t.Error("the skipped manifest has no skip reason")
+	}
 
 	// The gap must actually reach the scan-level verdict, not just sit
 	// unread in the analyzer's own Coverage
@@ -549,5 +558,21 @@ func TestPackageTargetVersionComesFromTheRegistry(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("an unresolved version left no limit: %+v", res.Coverage)
+	}
+}
+
+// A tag is not a version OSV can match: the package is looked up at the version the registry
+// served for it, even when the request named one
+func TestPackageTargetTagIsQueriedAtTheResolvedVersion(t *testing.T) {
+	for _, asked := range []string{"latest", "next", "2.3.4"} {
+		target := model.Target{Kind: model.TargetPackage, Ecosystem: "npm", Package: "demo", Version: asked}
+		q := &fakeQuerier{}
+		ac := acWithQuerier("", q)
+		ac.Artifacts = analyzer.NewArtifacts()
+		ac.Artifacts.Set(supplychain.ResolvedVersionKey, "2.3.4")
+		(&Analyzer{}).Analyze(context.Background(), target, ac)
+		if len(q.calls) != 1 || q.calls[0].Version != "2.3.4" {
+			t.Errorf("asked %q: queried %+v, want version 2.3.4", asked, q.calls)
+		}
 	}
 }

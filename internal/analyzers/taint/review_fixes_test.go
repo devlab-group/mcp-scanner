@@ -299,6 +299,8 @@ func TestFixedResourceURIIsNotInput(t *testing.T) {
 const server = new McpServer({ name: "x", version: "1" });
 const BASE = process.env.DOCS_BASE || "https://docs.example.com";
 const docURI = process.argv[2];
+const FIXED_URI = "https://docs.example.com/llms.txt";
+const PAGE_URI = "https://docs.example.com/{page}";
 server.registerResource("doc", %s, { description: "A document" }, async (uri: URL) => {
   const r = await fetch(uri.href);
   return { contents: [{ uri: uri.href, text: await r.text() }] };
@@ -313,6 +315,8 @@ server.registerResource("doc", %s, { description: "A document" }, async (uri: UR
 		{"template literal with the server's base", "`${BASE}/llms.txt`", false},
 		{"template literal with a template variable", "`${BASE}/{page}`", true},
 		{"variable, unknown", "docURI", true},
+		{"same-file constant, fixed", "FIXED_URI", false},
+		{"same-file constant, template", "PAGE_URI", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.uri)}))

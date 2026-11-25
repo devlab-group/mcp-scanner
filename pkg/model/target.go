@@ -68,6 +68,10 @@ type Target struct {
 	Ecosystem string `json:"ecosystem,omitempty"` // npm | pypi | go | cargo
 	Package   string `json:"package,omitempty"`
 	Version   string `json:"version,omitempty"`
+	// ResolvedVersion is the version the registry served for a package target: what was actually
+	// downloaded and scanned, whatever Version asked for (nothing, "latest", a dist-tag). Set by
+	// the scanner after preparation; Version keeps the request as given.
+	ResolvedVersion string `json:"resolved_version,omitempty"`
 }
 
 func (t Target) Validate() error {

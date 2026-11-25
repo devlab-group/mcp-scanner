@@ -222,6 +222,10 @@ func (s *Scanner) Scan(ctx context.Context, target model.Target, opts Options) (
 			ac = prepared
 		}
 		res.Snapshot = ac.Snapshot
+		if v, ok := analyzer.Get[string](ac.Artifacts, analyzer.ResolvedVersionKey); ok {
+			// what was downloaded and scanned, beside what was asked for
+			res.Target.ResolvedVersion = v
+		}
 	}
 
 	results := append(s.run(ctx, selected, target, ac, opts), notApplicable...)

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/devlab-group/mcp-scanner/internal/source/bundle"
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
@@ -31,6 +32,10 @@ type Entry struct {
 	// MaxBytes truncates an oversized file instead of dropping it. The limit
 	// still downgrades coverage.
 	MaxBytes int64
+	// Bundle marks an oversized JavaScript bundle whose own modules fit the size limit: it is
+	// read whole with its node_modules modules blanked (package bundle), and the blanked modules
+	// are a coverage gap like a node_modules directory
+	Bundle bool
 }
 
 // Limits bound how much of a hostile tree the walk will look at
@@ -140,6 +145,14 @@ func Walk(ctx context.Context, root string, limits Limits) (*Result, error) {
 		w.res.Coverage.LimitsHit = append(w.res.Coverage.LimitsHit,
 			fmt.Sprintf("%d file(s) exceeded the %d byte size limit and were parsed only up to it", w.truncated, w.limits.MaxFileSize))
 	}
+	if w.bundles > 0 {
+		// The same accounting as a node_modules directory: excluded third-party code is a skip
+		// reason and a limit, since it runs with the server and was not read
+		reason := fmt.Sprintf("%d bundled third-party module(s) from node_modules in %d bundle file(s) over the %d byte size limit were not analyzed; the bundles' own modules were",
+			w.bundled, w.bundles, w.limits.MaxFileSize)
+		w.res.Coverage.SkipReasons = append(w.res.Coverage.SkipReasons, reason)
+		w.res.Coverage.LimitsHit = append(w.res.Coverage.LimitsHit, reason)
+	}
 	// Unsupported-language files, one entry per extension with how many were found - the same
 	// shape as the dirSkips accounting above
 	extNames := slices.Sorted(maps.Keys(w.extSkips))
@@ -162,6 +175,8 @@ type walker struct {
 	totalSize int64
 	stopped   bool // true once MaxFiles or MaxTotalSize was hit; no more files are added to res.Files, but the walk keeps going so it can still say how much that left out
 	truncated int  // files included past MaxFileSize, read only up to it
+	bundles   int  // oversized bundles read whole with their node_modules modules blanked
+	bundled   int  // node_modules modules blanked in them
 
 	skipCounts map[string]int
 	dirSkips   map[string]int // excluded directory name -> source files it held
@@ -417,7 +432,8 @@ func looksLikeScript(path string, de fs.DirEntry) bool {
 // considerFile decides whether one file joins the inventory. Nothing here looks at the
 // file's own name beyond its extension, or at its content, to decide it can be left out:
 // what gets analyzed is not a decision scanned content, or whoever named its files, gets to
-// make.
+// make. The one place content counts is an oversized bundle, whose node_modules modules are
+// blanked so its own code fits the limit; what that leaves out is reported as a limit.
 func (w *walker) considerFile(full, readPath string, de fs.DirEntry) {
 	ext := strings.ToLower(filepath.Ext(full))
 	adapter := language.ForExt(ext)
@@ -468,6 +484,13 @@ func (w *walker) considerFile(full, readPath string, de fs.DirEntry) {
 		return
 	}
 	readSize := min(info.Size(), w.limits.MaxFileSize) // only this much will actually be read
+	var bundled int
+	if info.Size() > w.limits.MaxFileSize && (adapter.ID == language.JavaScript || adapter.ID == language.TypeScript) {
+		if n, ok := w.bundleFits(readPath, info.Size()); ok {
+			bundled = n
+			readSize = info.Size()
+		}
+	}
 	if w.totalSize+readSize > w.limits.MaxTotalSize {
 		w.recordLimit(fmt.Sprintf("total scan size limit reached (%d bytes)", w.limits.MaxTotalSize))
 		w.stopped = true
@@ -489,10 +512,32 @@ func (w *walker) considerFile(full, readPath string, de fs.DirEntry) {
 	// whole - whatever it holds past the limit is unread either way, so
 	// this is downgraded the same as any other limit, not treated as a
 	// skip with an excuse
-	if info.Size() > w.limits.MaxFileSize {
+	switch {
+	case bundled > 0:
+		entry.Bundle = true
+		w.bundles++
+		w.bundled += bundled
+	case info.Size() > w.limits.MaxFileSize:
 		entry.MaxBytes = w.limits.MaxFileSize
 		w.truncated++
 	}
 	w.totalSize += readSize
 	w.res.Files = append(w.res.Files, entry)
+}
+
+// bundleFits reports whether an oversized file is a bundle whose own modules, with its
+// node_modules modules blanked, fit the per-file size limit, and how many modules were blanked
+func (w *walker) bundleFits(path string, size int64) (int, bool) {
+	if size > bundle.MaxSize {
+		return 0, false
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	res, ok := bundle.Split(src)
+	if !ok || res.OwnBytes > w.limits.MaxFileSize {
+		return 0, false
+	}
+	return res.ThirdParty, true
 }

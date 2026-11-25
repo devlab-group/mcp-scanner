@@ -15,7 +15,9 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/devlab-group/mcp-scanner/internal/source/bundle"
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/inventory"
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
@@ -378,6 +380,27 @@ func (c *ctx) readSource(path string, maxBytes int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxBytes))
 }
 
+// readBundle reads a bundle through the same root as readSource, blanked the way the source walk
+// parsed it; whole is false when the file no longer reads as one and only its first bytes came back
+func (c *ctx) readBundle(path string) ([]byte, bool, error) {
+	var f *os.File
+	var err error
+	switch {
+	case c.root != nil:
+		f, err = c.root.Open(path)
+	case c.g.Root == "":
+		f, err = os.Open(path)
+	default:
+		return nil, false, fmt.Errorf("taint: scan root %q could not be opened", c.g.Root)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	src, _, whole, err := bundle.Read(f, inventory.DefaultLimits().MaxFileSize)
+	return src, whole, err
+}
+
 func (c *ctx) fileFor(path string) *parsedFile {
 	if pf, ok := c.files[path]; ok {
 		return pf
@@ -394,7 +417,19 @@ func (c *ctx) fileFor(path string) *parsedFile {
 		c.files[path] = nil
 		return nil
 	}
-	src, err := c.readSource(path, f.MaxBytes)
+	var src []byte
+	var err error
+	if f.Bundle {
+		// the same blanking the source walk parsed: positions in the graph are positions here
+		var whole bool
+		src, whole, err = c.readBundle(path)
+		if err == nil && !whole {
+			c.sizeCapped++
+			c.sizeCap = max(c.sizeCap, inventory.DefaultLimits().MaxFileSize)
+		}
+	} else {
+		src, err = c.readSource(path, f.MaxBytes)
+	}
 	if err != nil {
 		c.unreadable++
 		c.files[path] = nil

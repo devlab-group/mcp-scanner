@@ -3,6 +3,7 @@ package registration
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
@@ -26,8 +27,13 @@ func FileImportsMCPSDK(f *graph.File) bool {
 	if f == nil {
 		return false
 	}
+	// A bundle has no import of a package it inlined; its module markers name it instead
+	paths := slices.Clone(f.BundledPackages)
 	for _, imp := range f.Imports {
-		path := strings.ToLower(imp.Path)
+		paths = append(paths, imp.Path)
+	}
+	for _, p := range paths {
+		path := strings.ToLower(p)
 		if path == "mcp" || strings.HasPrefix(path, "mcp.") || strings.HasPrefix(path, "mcp/") {
 			return true
 		}
@@ -350,19 +356,126 @@ func fixedResourceURI(args []graph.Arg) bool {
 	return false
 }
 
-// resourceURI returns the first URI a registration's arguments spell, from a string literal or a
-// descriptor literal (`&mcp.Resource{URI: "notes://today"}`), or "" when none is literal
-func resourceURI(args []graph.Arg) string {
+// constantResourceURI returns the first argument that names a same-file string constant whose
+// value is a whole URI - registerResource("graph", RESOURCE_URI, ...)
+func constantResourceURI(g *graph.Graph, file string, args []graph.Arg) (string, bool) {
+	f := g.Files[file]
+	if f == nil {
+		return "", false
+	}
 	for _, a := range args {
+		if a.Literal || a.Keyword != "" || !isIdentifierText(strings.TrimSpace(a.Text)) {
+			continue
+		}
+		if v, ok := f.Constants[strings.TrimSpace(a.Text)]; ok && v != "" && uriLiteral.FindString(v) == v {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// resourceMetadataDescription reads the description from a resource registration's metadata
+// object: an inline object literal argument, or a same-file object constant it names. The
+// handler is never read as metadata.
+func resourceMetadataDescription(g *graph.Graph, file string, args []graph.Arg, handler *graph.Arg) (string, bool) {
+	for i := range args {
+		a := &args[i]
+		if a == handler || a.Literal || a.Keyword != "" || a.HandlerID != "" {
+			continue
+		}
+		fields := objectLiteralFields(a.Text)
+		if fields == nil && isIdentifierText(strings.TrimSpace(a.Text)) {
+			if f := g.Files[file]; f != nil {
+				fields = objectLiteralFields(f.ObjectConstants[strings.TrimSpace(a.Text)])
+			}
+		}
+		if v, ok := literalField(fields, "description"); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// resourceURI returns the URI a resource registration spells in a place that holds one: a whole
+// string literal argument, a template literal that is one URI, a same-file constant, the URI field
+// of a descriptor literal (&mcp.Resource{URI: ...}, { uri: ... }), or the first argument of a
+// constructor (new ResourceTemplate("notes://{id}", ...), mcp.NewResource("docs://readme", ...),
+// new URL("https://...")). Text anywhere else is not the URI and gives "": the handler's body (a
+// CSP domain list, a fetched URL), or a concatenation such as "slack://" + ws, whose literal part
+// is only a prefix.
+func resourceURI(g *graph.Graph, file string, args []graph.Arg, handler *graph.Arg) string {
+	for i := range args {
+		a := &args[i]
+		if a == handler || a.HandlerID != "" {
+			continue
+		}
 		if a.Literal {
-			if m := uriLiteral.FindString(a.Value); m != "" && m == a.Value {
-				return m
+			if wholeURI(a.Value) {
+				return a.Value
 			}
 			continue
 		}
-		if m := uriLiteral.FindString(a.Text); m != "" && strings.ContainsAny(a.Text, `"'`+"`") {
-			return m
+		if v, ok := uriExpression(g, file, strings.TrimSpace(a.Text)); ok {
+			return v
 		}
 	}
 	return ""
+}
+
+// wholeURI reports whether s is one URI from start to end, with something after the scheme
+func wholeURI(s string) bool {
+	return s != "" && uriLiteral.FindString(s) == s && !strings.HasSuffix(s, "://")
+}
+
+var descriptorType = regexp.MustCompile(`^[&*]?[A-Za-z_][A-Za-z0-9_.]*$`)
+
+var uriConstructor = regexp.MustCompile(`(?i)(resource|template|ur[il])\s*$`)
+
+// uriExpression reads the URI out of one non-literal argument expression, or reports false
+func uriExpression(g *graph.Graph, file, t string) (string, bool) {
+	if len(t) >= 2 && t[0] == '`' && t[len(t)-1] == '`' {
+		return valueURI(g, file, t)
+	}
+	if open := strings.IndexByte(t, '{'); open >= 0 && strings.HasSuffix(t, "}") && (open == 0 || descriptorType.MatchString(strings.TrimSpace(t[:open]))) {
+		fields := map[string]string{}
+		for k, v := range objectLiteralFields(t[open:]) {
+			fields[strings.ToLower(k)] = v
+		}
+		for _, key := range []string{"uri", "uritemplate"} {
+			if raw, ok := fields[key]; ok {
+				return valueURI(g, file, raw)
+			}
+		}
+		return "", false
+	}
+	if open := strings.IndexByte(t, '('); open > 0 && strings.HasSuffix(t, ")") && uriConstructor.MatchString(t[:open]) {
+		if args := parser.SplitTopLevel(t[open+1 : len(t)-1]); len(args) > 0 {
+			return valueURI(g, file, strings.TrimSpace(args[0]))
+		}
+		return "", false
+	}
+	if isIdentifierText(t) {
+		return valueURI(g, file, t)
+	}
+	return "", false
+}
+
+// valueURI reads one value as a URI: a string literal, a template literal with no substitution
+// before its scheme, or a same-file string constant
+func valueURI(g *graph.Graph, file, raw string) (string, bool) {
+	if v, ok := parser.UnquoteString(raw); ok {
+		return v, wholeURI(v)
+	}
+	if len(raw) >= 2 && raw[0] == '`' && raw[len(raw)-1] == '`' {
+		inner := raw[1 : len(raw)-1]
+		return inner, wholeURI(inner)
+	}
+	if isIdentifierText(raw) {
+		if f := g.Files[file]; f != nil {
+			if v, ok := f.Constants[raw]; ok && wholeURI(v) {
+				return v, true
+			}
+		}
+	}
+	return "", false
 }

@@ -416,12 +416,27 @@ func emitDirect(g *graph.Graph, idx index, callsByFile map[string][]int, kind gr
 		docstringDescription(g, &cap)
 	}
 	if kind == graph.CapabilityResource {
-		cap.URI = resourceURI(c.Args)
+		cap.URI = resourceURI(g, c.File, c.Args, roles.Handler)
 		cap.URIFixed = fixedResourceURI(c.Args)
+		if !cap.URIFixed {
+			// registerResource("graph", RESOURCE_URI, ...): a URI held in a same-file string
+			// constant is as fixed as one written inline
+			if uri, ok := constantResourceURI(g, c.File, c.Args); ok && uri == cap.URI {
+				cap.URIFixed = !strings.Contains(uri, "{")
+			}
+		}
 		// server.resource("notes", "notes://{name}", cb): the second literal is the URI, not a
 		// description
 		if cap.URI != "" && cap.DescriptionResolved && cap.Description == cap.URI {
 			cap.Description, cap.DescriptionResolved = "", false
+		}
+		// registerResource(name, uri, { title, description, mimeType }, handler) and the older
+		// server.resource(name, uri, metadata, handler) keep the description in the metadata
+		// object - inline or a same-file object constant - never in the URI's slot
+		if !cap.DescriptionResolved {
+			if v, ok := resourceMetadataDescription(g, c.File, c.Args, roles.Handler); ok {
+				cap.Description, cap.DescriptionResolved = v, true
+			}
 		}
 	}
 	g.Capabilities = append(g.Capabilities, cap)
@@ -496,7 +511,7 @@ func emitDecorator(g *graph.Graph, kind graph.CapabilityKind, dec string, args [
 		cap.DescriptionResolved = true
 	}
 	if kind == graph.CapabilityResource {
-		cap.URI = resourceURI(args)
+		cap.URI = resourceURI(g, sym.File, args, nil)
 		cap.URIFixed = fixedResourceURI(args)
 	}
 	g.Capabilities = append(g.Capabilities, cap)

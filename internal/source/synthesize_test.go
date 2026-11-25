@@ -94,3 +94,34 @@ def guide_a():
 		t.Errorf("want a non-empty identifier (URI or handler fallback), got %+v", snap.Resources[0])
 	}
 }
+
+// registerResource names a resource apart from its URI: the snapshot carries the URI, which is
+// what resources/list reports and what findings are located by, and keeps the name beside it
+func TestSynthesize_ResourceURIIsTheURINotTheName(t *testing.T) {
+	g := graph.New("/fake")
+	const path = "server.ts"
+	res, err := parser.ParseFile(context.Background(), language.ByID(language.TypeScript), path, []byte(`
+const RESOURCE_URI = "memory://graph";
+function setup(server: McpServer): void {
+  server.registerResource("graph", RESOURCE_URI, { description: "The whole graph" }, read);
+}
+`))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	g.Files[path] = &graph.File{Path: path, Language: string(language.TypeScript), Imports: res.Imports, Constants: res.Constants, ObjectConstants: res.ObjectConstants}
+	for _, s := range res.Symbols {
+		g.Symbols[s.ID] = s
+	}
+	g.Calls = append(g.Calls, res.Calls...)
+	parser.Resolve(g)
+	registration.Discover(g)
+
+	snap, _ := Synthesize(g)
+	if len(snap.Resources) != 1 {
+		t.Fatalf("want one synthesized resource, got %+v", snap.Resources)
+	}
+	if r := snap.Resources[0]; r.URI != "memory://graph" || r.Name != "graph" || r.Description != "The whole graph" {
+		t.Errorf("got %+v, want uri memory://graph, name graph, the metadata description", r)
+	}
+}

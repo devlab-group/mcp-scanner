@@ -132,6 +132,12 @@ type File struct {
 	// MaxBytes is nonzero when the walk that produced this file found it over the per-file size
 	// limit: only the first MaxBytes bytes were read and parsed
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// Bundle is set for a JavaScript bundle read with its node_modules modules blanked (package
+	// bundle); every reader that parses the file blanks them the same way
+	Bundle bool `json:"bundle,omitempty"`
+	// BundledPackages are the npm packages whose modules were blanked, so a tree that bundles the
+	// MCP SDK counts as importing it
+	BundledPackages []string `json:"bundled_packages,omitempty"`
 	// Constants maps unambiguous same-file string constants to their values:
 	// Python module assignments, Java string fields, Rust const or static items,
 	// JavaScript/TypeScript top-level const declarations and Go package-level consts
