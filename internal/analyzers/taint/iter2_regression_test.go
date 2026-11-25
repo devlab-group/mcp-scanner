@@ -1,6 +1,7 @@
 package taint
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/devlab-group/mcp-scanner/pkg/model"
@@ -105,8 +106,9 @@ def read_doc(name: str) -> str:
     return Path(name).read_text(encoding="utf-8")
 `, "path_traversal", 1, false},
 		// An in-repo query() function makes these calls resolve in the tree; a generic receiver
-		// name must not turn a search API into SQL
-		{"a search client's query goes to review beside an in-repo query function", "server.py", py + `
+		// name must not turn a search API into SQL. The client is built by boto3 for kendra, no
+		// database, and no SQL text reaches it: context (P6b; review before)
+		{"a search client's query stays context beside an in-repo query function", "server.py", py + `
 import boto3
 
 kendra_client = boto3.client("kendra")
@@ -120,6 +122,21 @@ def query(q):
 def search(text: str, index_id: str) -> dict:
     """Searches the index"""
     return kendra_client.query(IndexId=index_id, QueryText=text)
+`, "sql_injection", 1, false},
+		{"a timestream query client's query goes to review beside an in-repo query function", "server.py", py + `
+import boto3
+
+ts_client = boto3.client("timestream-query")
+
+
+def query(q):
+    return q
+
+
+@mcp.tool()
+def search(text: str, index_id: str) -> dict:
+    """Searches the measures"""
+    return ts_client.query(QueryString=text)
 `, "sql_injection", 1, true},
 		{"an SDK context parameter is not client input", "server.py", py + `
 @mcp.tool()
@@ -140,6 +157,9 @@ def info(context: str) -> str:
 			got := categoryFindings(res, tc.category)
 			if len(got) != tc.want {
 				t.Fatalf("want %d %s findings, got %d: %+v", tc.want, tc.category, len(got), res.Findings)
+			}
+			if strings.HasPrefix(tc.name, "a search client's query stays context") && got[0].Triage != model.TriageContext {
+				t.Fatalf("triage = %q, want context", got[0].Triage)
 			}
 			if tc.review && got[0].Triage != model.TriageNeedsReview {
 				t.Fatalf("triage = %q, want needs_review", got[0].Triage)

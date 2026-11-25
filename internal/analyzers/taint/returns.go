@@ -65,14 +65,14 @@ func (c *ctx) returnSummary(sym *graph.Symbol, param string) *retSummary {
 	tainted := map[string]taintInfo{param: {confidence: 1, chain: []model.FlowStep{{
 		Kind: "source", Symbol: param, File: sym.File, Line: sym.Line, Detail: "tool handler argument", Resolved: true,
 	}}}}
-	prevCapture, prevFunc, prevSeen := c.retCapture, c.retFunc, c.retSeen
+	prevCapture, prevFunc, prevSeen, prevHits := c.retCapture, c.retFunc, c.retSeen, c.sinkHits
 	var captured []taintInfo
 	seen := 0
-	c.retCapture, c.retFunc, c.retSeen = &captured, def, &seen
+	c.retCapture, c.retFunc, c.retSeen, c.sinkHits = &captured, def, &seen, nil
 	c.summaryDepth++
 	c.walk(pf, sym.File, tainted, body, 0, false)
 	c.summaryDepth--
-	c.retCapture, c.retFunc, c.retSeen = prevCapture, prevFunc, prevSeen
+	c.retCapture, c.retFunc, c.retSeen, c.sinkHits = prevCapture, prevFunc, prevSeen, prevHits
 
 	if len(captured) == 0 {
 		// The walk skips subtrees that mention nothing tainted, so it may never reach a return;

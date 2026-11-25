@@ -229,6 +229,10 @@ type ctx struct {
 	// per file, receiver and callee (see binding.go)
 	containerRecv map[receiverKey]bool
 	instanceRecv  map[receiverKey]*graph.Symbol
+	factoryRecv   map[receiverKey][]*graph.Symbol
+	// sinkHits collects, during a sink summary walk (sinkSummary), the sinks the walk reached
+	sinkHits      *[]sinkHit
+	sinkSummaries map[string]*sinkHit
 
 	// These counters describe taint's own capped, timed-out, or unreadable
 	// reparses. They become limits, not capability skips.
@@ -2112,12 +2116,20 @@ var projectValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitis
 // libraryValidatorName matches library checks that reject bad input: validate_filename,
 // sanitize_path, check_url, verify_hostname, ensure_safe. Narrower than projectValidatorName:
 // "safe", "clean" and "normalize" name library functions that return a value rather than reject
-var libraryValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitise|check|verify|ensure)[a-z0-9_]*$`)
+// The verb must end where a word does: checkpoint, checksum, checkoutBranch start with check and
+// check nothing.
+var libraryValidatorName = regexp.MustCompile(`^_*([Vv]alidate|[Ss]anitize|[Ss]anitise|[Cc]heck|[Vv]erify|[Ee]nsure)(?:$|[A-Z0-9_]\w*$)`)
 
 // libraryNotValidator are library functions with a validator's name that run or fetch something
 var libraryNotValidator = map[string]bool{
-	"check_output": true, "check_call": true, "checkout": true, "check_returncode": true,
+	"check_output": true, "check_call": true, "check_returncode": true,
 }
+
+// libraryAction matches library functions that act under a checking verb: ensureDir and
+// ensure_file create what is missing, ensure_future schedules a coroutine, verifyToken and
+// verify_signature check a credential. None of them rejects a value that is dangerous in a path,
+// a command or a query.
+var libraryAction = regexp.MustCompile(`(?i)^_*(ensure_?(dir|director|file|folder|link|symlink|exists|future|loop|connect|login|session|table|index|schema|bucket|queue|topic|database)|verify_?(token|jwt|signature|password|session|credential|auth))`)
 
 // isProjectValidator reports whether an in-repo function looks like an input check: a validator's
 // name and a body that can reject its input by raising or throwing
@@ -2324,10 +2336,19 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		sym, resolvedInRepo = nil, false
 	}
 	instanceMethod := false
+	var factoryMethods []*graph.Symbol
 	if m, ok := c.instanceMethodCached(pf, file, receiver.Text, calleeText); ok {
 		// SESSION = TclSession(); SESSION.execute(cmd): the receiver is an instance of a project
 		// class that defines execute, so the call is that method, whatever its name matches
 		sym, resolvedInRepo, instanceMethod = m, true, true
+	} else if ms := c.factoryCandidatesCached(pf, file, receiver.Text, calleeText); len(ms) > 0 {
+		// backend = get_backend(); backend.write_text(key, text), where get_backend returns only
+		// LocalBackend(...): the call is LocalBackend.write_text. A factory of several classes
+		// leaves the call unresolved; their methods are only read for a sink below.
+		factoryMethods = ms
+		if len(ms) == 1 {
+			sym, resolvedInRepo, instanceMethod = ms[0], true, true
+		}
 	}
 	if resolvedInRepo && c.isProjectValidator(sym) {
 		// validate_table_name(table_name) as a statement: later uses of the argument went through
@@ -2345,7 +2366,7 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
-	if !resolvedInRepo && !sinkFound && libraryValidatorName.MatchString(parser.LastSegment(calleeText)) && !libraryNotValidator[parser.LastSegment(calleeText)] {
+	if name := parser.LastSegment(calleeText); !resolvedInRepo && !sinkFound && libraryValidatorName.MatchString(name) && !libraryNotValidator[name] && !libraryAction.MatchString(name) {
 		// pathvalidate.validate_filename(doc), validators.url(u) style checks from a library: the
 		// scanner cannot read them, so - as for a project's own validator - taint stays and the
 		// step sends a later finding on the same value to review instead of clearing it
@@ -2433,6 +2454,42 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if sinkFound && containerCall {
 		sinkFound = false
 	}
+	if len(factoryMethods) > 0 {
+		// the call's name is a library sink's (write_text, execute), and it is the project's own
+		// method: when the method - of any class the factory builds - hands the argument to a sink
+		// of that kind, the finding stays at this call, with the inner sink on its path. Otherwise
+		// one method is followed below like any other call, and several leave the call as before.
+		lib, isLib := sink, sinkFound
+		if !isLib {
+			lib, isLib = matchMethodSink(sinkText)
+		}
+		line := int(n.StartPosition().Row) + 1
+		step := model.FlowStep{
+			Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
+			Detail: "passes tainted input into another function",
+		}
+		for _, m := range factoryMethods {
+			if !isLib {
+				break
+			}
+			sym := m
+			if hit, ok := c.sinkSummary(sym, c.seedArgs(sym, args, tainted, step, 0.9), lib.category); ok {
+				// the inner sink is a step of this path, and this call its sink
+				inner := hit.info
+				inner.chain = append([]model.FlowStep(nil), hit.info.chain...)
+				if k := len(inner.chain) - 1; k >= 0 && inner.chain[k].Kind == "sink" {
+					inner.chain[k].Kind = "transform"
+					inner.chain[k].Detail = "the project's own " + sym.Name + " hands it to " + titleCallee(hit.callee)
+				}
+				final := inner.extend(model.FlowStep{
+					Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: lib.category, Resolved: true,
+				}, 1)
+				c.emit(lib.category, hit.severity, calleeText, final, file, line, fmt.Sprintf(
+					"%s is the project's own %s, which hands the value to %s (%s:%d)", strings.TrimSpace(calleeText), sym.Name, titleCallee(hit.callee), hit.file, hit.line))
+				return
+			}
+		}
+	}
 	if sinkFound && instanceMethod {
 		// the project class's own method, followed below
 		sinkFound = false
@@ -2446,6 +2503,9 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if sinkFound {
 		var info taintInfo
 		var found bool
+		// set when what the receiver is built from settles that the call is no sink of its kind;
+		// the finding stays, as context
+		contextReason := ""
 		if sink.argIndex >= 0 {
 			if a, ok := sinkArg(args, sink.argIndex, sink.category); ok && !(byMethodName && isFunctionLiteralText(a.Text)) {
 				// A sink matched by method name alone whose checked argument is a function
@@ -2483,6 +2543,14 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 					origin = receiverOrigin(pf.src, n, sinkText)
 				}
 				dbHandle := origin != "" && dbOrigin.MatchString(origin)
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+					// client = DefaultClient() from a payments SDK; client.execute(request): the
+					// receiver is another library's object, and nothing on the path is SQL
+					// boto3.client("timestream-query"): what the factory is asked for counts as well
+					if mod, lib := c.libraryOf(pf.src, origin); mod != "" && vendorLibrary.MatchString(mod) && !dbLibrary.MatchString(lib) && !dbLibrary.MatchString(origin) {
+						contextReason = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is built from %s, a client of another service's API and not a database driver, query engine or data store, and no SQL text was seen on the path", sinkText, lib)
+					}
+				}
 				if found && needsSQLEvidence && !dbHandle && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver may be a database client, but no SQL text was seen on the path", sinkText)
 				}
@@ -2637,7 +2705,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: sink.category, Resolved: true,
 			}, 1)
-			c.emit(sink.category, sink.severity, calleeText, final, file, line, "")
+			if contextReason != "" {
+				c.emitContext(sink.category, sink.severity, calleeText, final, file, line, contextReason)
+			} else {
+				c.emit(sink.category, sink.severity, calleeText, final, file, line, "")
+			}
 		}
 		return
 	}

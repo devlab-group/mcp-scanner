@@ -206,6 +206,10 @@ func classify(g *graph.Graph, fs []model.Finding) ([]model.Finding, int) {
 			continue
 		}
 
+		if f.Triage == model.TriageContext {
+			// the walker settled it by what the code builds the sink's receiver from
+			continue
+		}
 		switch {
 		case f.SourceClass == sourceMCPInput:
 			// Seeded from a handler, so reachable by construction

@@ -91,6 +91,28 @@ func (c *ctx) instanceMethodCached(pf *parsedFile, file, recv, calleeText string
 	return m, ok
 }
 
+// factoryCandidatesCached is factoryCandidates, cached per file, receiver and callee, and empty
+// when the file binds the receiver in a way that does not read as an assignment
+func (c *ctx) factoryCandidatesCached(pf *parsedFile, file, recv, calleeText string) []*graph.Symbol {
+	recv = strings.TrimSpace(recv)
+	if recv == "" {
+		return nil
+	}
+	k := receiverKey{file: file, recv: recv, callee: strings.TrimSpace(calleeText)}
+	if v, ok := c.factoryRecv[k]; ok {
+		return v
+	}
+	ms := c.factoryCandidates(pf.src, file, recv, calleeText)
+	if len(ms) > 0 && c.boundElsewhere(file, pf.src, recv) {
+		ms = nil
+	}
+	if c.factoryRecv == nil {
+		c.factoryRecv = map[receiverKey][]*graph.Symbol{}
+	}
+	c.factoryRecv[k] = ms
+	return ms
+}
+
 // bareName is the name a receiver binds: db for this.db or self.db, the name itself otherwise
 func bareName(recv string) string {
 	if i := strings.LastIndexByte(recv, '.'); i >= 0 {
