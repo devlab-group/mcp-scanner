@@ -58,7 +58,7 @@ combinations exist:
 
 | `status` | `verdict` | Meaning for a consumer |
 |---|---|---|
-| `COMPLETED` | `SAFE` | Every required analyzer finished without a reported coverage gap and found nothing at or above the blocking severity. Treat as a pass. |
+| `COMPLETED` | `SAFE` | Every required analyzer finished without a reported coverage gap and found nothing at or above the blocking severity (`MEDIUM` unless configured; `LOW` findings are background and do not decide the verdict). Treat as a pass. |
 | `COMPLETED` | `UNSAFE` | Every required analyzer finished; at least one non-suppressed finding is at or above the blocking severity. Treat as a fail; see `findings` for what blocked it. |
 | `PARTIAL` | `UNKNOWN` | At least one required analyzer could not finish (timed out, hit a coverage gap) but the scan did not hard-fail. Do **not** treat as a pass - there is no `PARTIAL` + `SAFE`. Re-run, extend the timeout, or treat as inconclusive. |
 | `ERROR` | `UNKNOWN` | At least one required analyzer failed outright. Same rule: never treat as a pass. |

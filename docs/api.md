@@ -49,7 +49,7 @@ Beyond `target`, a submission may carry three optional fields:
 |---|---|
 | `analyzers` | Restricts the run to these analyzers. An unknown name is accepted with `202`, then the stored scan becomes `ERROR`. The LLM analyzer is enabled when the server config names `llm` in `analyzers` or sets `llm.provider` or `llm.api_key_env`. Otherwise an explicitly requested `llm` scan is incomplete. |
 | `fail_on` | the lowest severity that makes `pass` false, or `"none"` to turn the gate off. Defaults to the server's configured threshold. |
-| `blocking_severity` | the lowest severity that makes the scan's own `verdict` `UNSAFE`, independent of `fail_on`. |
+| `blocking_severity` | the lowest severity that makes the scan's own `verdict` `UNSAFE`, independent of `fail_on`. Defaults to `medium`. |
 
 These thresholds do not change the findings. Because the caller controls
 `fail_on`, `pass` represents that caller's gate, not server policy.
