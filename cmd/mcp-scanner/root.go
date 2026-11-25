@@ -46,6 +46,7 @@ func newRootCmd() *cobra.Command {
 		newConfigCmd(),
 		newAnalyzersCmd(),
 		newInventoryCmd(),
+		newAttestationCmd(),
 	)
 	return root
 }
