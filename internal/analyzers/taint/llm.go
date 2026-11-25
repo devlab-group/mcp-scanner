@@ -1,13 +1,12 @@
 package taint
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -47,7 +46,7 @@ func uniqueFunctionBody(g *graph.Graph, name string) string {
 	if found == nil || found.EndLine <= found.Line {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(g.Root, found.File))
+	data, err := targetfs.ReadGraphFile(g, found.File)
 	if err != nil {
 		return ""
 	}

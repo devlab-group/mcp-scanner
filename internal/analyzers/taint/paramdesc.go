@@ -1,13 +1,12 @@
 package taint
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -40,7 +39,7 @@ func paramDescription(g *graph.Graph, c *graph.Capability, param string) string 
 			return d
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(g.Root, c.File))
+	data, err := targetfs.ReadGraphFile(g, c.File)
 	if err != nil {
 		return ""
 	}
@@ -171,7 +170,7 @@ func argumentKey(g *graph.Graph, path []model.FlowStep) string {
 	if len(path) > 1 && isGuardIdent(path[0].Symbol) {
 		member := regexp.MustCompile(`\b` + regexp.QuoteMeta(path[0].Symbol) + `\s*(?:\?\.|\.)\s*([A-Za-z_]\w*)\b(?:\s*[^\w\s(]|\s*$)|\b` + regexp.QuoteMeta(path[0].Symbol) + `\[\s*["']([A-Za-z_][\w-]*)["']\s*\]`)
 		st := path[1]
-		if data, err := os.ReadFile(filepath.Join(g.Root, st.File)); err == nil {
+		if data, err := targetfs.ReadGraphFile(g, st.File); err == nil {
 			if lines := strings.Split(string(data), "\n"); st.Line >= 1 && st.Line <= len(lines) {
 				if m := member.FindStringSubmatch(lines[st.Line-1]); m != nil {
 					return firstGroup(m)
@@ -183,7 +182,7 @@ func argumentKey(g *graph.Graph, path []model.FlowStep) string {
 		if st.Detail != mcpGoGetterDetail && st.Detail != mappingGetDetail {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(g.Root, st.File))
+		data, err := targetfs.ReadGraphFile(g, st.File)
 		if err != nil {
 			return ""
 		}
@@ -225,7 +224,7 @@ func schemaDefinition(g *graph.Graph, file, name string) string {
 	}
 	sort.Strings(files[1:])
 	for _, f := range files {
-		data, err := os.ReadFile(filepath.Join(g.Root, f))
+		data, err := targetfs.ReadGraphFile(g, f)
 		if err != nil || !strings.Contains(string(data), name) {
 			continue
 		}

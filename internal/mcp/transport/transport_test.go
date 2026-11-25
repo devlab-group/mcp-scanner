@@ -74,11 +74,11 @@ func TestNewStdioEnvIsAllowlisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ct, ok := tr.(*mcp.CommandTransport)
+	gt, ok := tr.(*stdioGroupTransport)
 	if !ok {
-		t.Fatalf("got %T, want *mcp.CommandTransport", tr)
+		t.Fatalf("got %T, want *stdioGroupTransport", tr)
 	}
-	env := ct.Command.Env
+	env := gt.inner.Command.Env
 	found := map[string]bool{}
 	for _, kv := range env {
 		found[kv] = true

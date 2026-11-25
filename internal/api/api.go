@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -117,6 +119,16 @@ type Options struct {
 	// TargetStatic is in AllowedTargetKinds.
 	BaseDir string
 
+	// AllowedHosts are the host names (without a port) the Host header of a /v1 request may
+	// carry. A web page can reach a listener on loopback through DNS rebinding, and the request
+	// then carries the page's own host name; only the names listed here are served. Empty means
+	// no Host check: mcp-scanner-api fills it for a listener on a named or loopback address.
+	AllowedHosts []string
+	// AllowedOrigins are the browser origins (scheme://host[:port]) allowed to call /v1. A
+	// request with any other Origin header comes from a web page and is refused. Empty allows
+	// none: API clients such as curl and SDKs send no Origin header.
+	AllowedOrigins []string
+
 	// RecordRetention bounds how long a stored record survives before the
 	// next put evicts it. Defaults to defaultRecordRetention.
 	RecordRetention time.Duration
@@ -148,6 +160,8 @@ type Server struct {
 	scanTimeout  time.Duration
 
 	allowedTargetKinds map[model.TargetKind]bool
+	allowedHosts       map[string]bool
+	allowedOrigins     map[string]bool
 	token              string
 	baseDir            string
 	logger             *slog.Logger
@@ -220,6 +234,15 @@ func NewServer(sc *scanner.Scanner, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("api: a local-path target kind is enabled but Options.BaseDir is not set")
 	}
 
+	hosts := make(map[string]bool, len(opts.AllowedHosts))
+	for _, h := range opts.AllowedHosts {
+		hosts[hostName(h)] = true
+	}
+	origins := make(map[string]bool, len(opts.AllowedOrigins))
+	for _, o := range opts.AllowedOrigins {
+		origins[strings.TrimSuffix(o, "/")] = true
+	}
+
 	return &Server{
 		scanner:            sc,
 		pol:                opts.Policy,
@@ -229,6 +252,8 @@ func NewServer(sc *scanner.Scanner, opts Options) (*Server, error) {
 		maxInFlight:        maxInFlight,
 		scanTimeout:        scanTimeout,
 		allowedTargetKinds: allowedSet,
+		allowedHosts:       hosts,
+		allowedOrigins:     origins,
 		token:              token,
 		baseDir:            opts.BaseDir,
 		logger:             logger,
@@ -240,11 +265,56 @@ func NewServer(sc *scanner.Scanner, opts Options) (*Server, error) {
 // checks requires the configured bearer token, when one is configured.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/scans", s.requireAuth(http.HandlerFunc(s.handleSubmit)))
-	mux.Handle("GET /v1/scans/{id}", s.requireAuth(http.HandlerFunc(s.handleGet)))
+	mux.Handle("POST /v1/scans", s.refuseBrowsers(s.requireAuth(requireJSON(http.HandlerFunc(s.handleSubmit)))))
+	mux.Handle("GET /v1/scans/{id}", s.refuseBrowsers(s.requireAuth(http.HandlerFunc(s.handleGet))))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	return mux
+}
+
+// refuseBrowsers keeps web pages away from /v1. The default deployment has no token and listens
+// on loopback, which other machines cannot reach but the user's own browser can: a page could
+// start scans with a form-style POST, and through DNS rebinding read their results. Refused,
+// before authentication:
+//
+//   - a Host header outside AllowedHosts, when that is set (a rebound name);
+//   - any Origin header outside AllowedOrigins (only browsers send one).
+//
+// requireJSON adds the third check after it.
+func (s *Server) refuseBrowsers(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.allowedHosts) > 0 && !s.allowedHosts[hostName(r.Host)] {
+			writeError(w, http.StatusForbidden, "host not allowed")
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && !s.allowedOrigins[strings.TrimSuffix(o, "/")] {
+			writeError(w, http.StatusForbidden, "requests from web pages are not accepted")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireJSON refuses a body that is not application/json. The types a web page can send
+// without a CORS preflight are text/plain, form and multipart; the documented call uses JSON.
+func requireJSON(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mt != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, "content-type must be application/json")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// hostName is a Host header value or a configured name without its port, brackets or a
+// trailing dot, in lower case: "[::1]:8080" -> "::1", "LocalHost.:80" -> "localhost"
+func hostName(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
 }
 
 // requireAuth checks the Authorization header against the configured

@@ -76,8 +76,16 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		warnings = append(warnings, "the published source graph carried no walk coverage; file-level coverage cannot be reported for this scan")
 	}
 
+	findings, refusedManifests := classify(g, tc.findings)
 	cov := baseCov
 	cov.Add(taintCoverage(g, tc))
+	if refusedManifests > 0 {
+		// a rule that lowers a finding by what a manifest says (test code no manifest starts) met a
+		// manifest it could not read, kept the finding as it was, and says so
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"%d package manifest(s) a triage rule needed could not be read through the scan root (a link out of the tree, not a regular file, or over 1 MiB); the findings they would have decided keep their triage",
+			refusedManifests))
+	}
 	var arts *analyzer.Artifacts
 	if ac != nil {
 		arts = ac.Artifacts
@@ -89,7 +97,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		Status:    status,
 		Required:  true,
 		Coverage:  cov,
-		Findings:  dedupeFindings(classify(g, tc.findings)),
+		Findings:  dedupeFindings(findings),
 		Warnings:  warnings,
 		StartedAt: started,
 	}

@@ -242,12 +242,16 @@ func (a *analysis) scopeOf(file string) string {
 	return ""
 }
 
+// exists reports whether p is in the tree, through the scan root like open
 func (r *reader) exists(p string) bool {
 	var err error
-	if r.root != nil {
+	switch {
+	case r.root != nil:
 		_, err = r.root.Stat(p)
-	} else {
+	case r.g.Root == "":
 		_, err = os.Stat(p)
+	default:
+		return false
 	}
 	return err == nil
 }

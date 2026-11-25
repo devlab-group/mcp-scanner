@@ -2,14 +2,13 @@ package taint
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -21,6 +20,8 @@ type guardIndex struct {
 	root  string
 	files map[string][]string
 	g     *graph.Graph
+	// refused are the manifests a triage rule needed and could not read through the scan root
+	refused map[string]bool
 	// callee caches inCallee's answer per symbol: the same helpers sit on many findings' paths
 	callee map[graph.SymbolID]calleeGuardResult
 	// byName indexes symbols by name once, instead of a walk of every symbol per path step
@@ -38,7 +39,7 @@ type guardIndex struct {
 	// elsewhere, manifests and dirs cache what the not-shipped rule read (notshipped.go)
 	elsewhere *string
 	manifests map[string]manifestRead
-	dirs      map[string][]string
+	dirs      map[string]dirRead
 }
 
 // guardHit locates one check: the file and line of the test and the name of the value it tests
@@ -77,11 +78,18 @@ var (
 	assignFrom  = regexp.MustCompile(`^\s*(?:const|let|var|final|val)?\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?:?=[^=]`)
 )
 
+func (gi *guardIndex) refuse(p string) {
+	if gi.refused == nil {
+		gi.refused = map[string]bool{}
+	}
+	gi.refused[p] = true
+}
+
 func (gi *guardIndex) lines(file string) []string {
 	if ls, ok := gi.files[file]; ok {
 		return ls
 	}
-	b, err := os.ReadFile(filepath.Join(gi.root, file))
+	b, _, err := targetfs.Read(gi.root, file, targetfs.Cap(gi.g, file))
 	var ls []string
 	if err == nil && len(b) < 4<<20 {
 		ls = strings.Split(string(b), "\n")

@@ -108,13 +108,28 @@ URLs redact both basic-auth fields before serialization. For example,
 `https://redacted:redacted@host/mcp`; a bare username becomes
 `https://redacted@host/mcp`.
 
-Query values are also redacted except for `transport` and `version`.
-`model.Target.MarshalJSON` applies this automatically.
+Query values are also redacted except for `transport` and `version`. So are
+path segments that look like a key, since hosted MCP services often put one
+there: a UUID, a token with a known issuer prefix (`sk-`, `ghp_`, `xoxb-`,
+`AKIA…`, a JWT and similar), or at least 20 token characters mixing letters
+and digits. `https://host/s/<uuid>/mcp` becomes `https://host/s/redacted/mcp`;
+routes such as `mcp`, `sse` or `v1` stay. A shorter key in a path is not
+recognized. `model.Target.MarshalJSON` applies this automatically.
 
-Args redact values for flags ending in `key`, `token`, `secret`, or
-`password`, in both `--name value` and `--name=value` forms. Similar words
-such as `--keyring` are unchanged. `MarshalJSON` calls
-`model.Target.RedactedArgs` automatically.
+Args redact:
+
+- the value of a flag ending in `key`, `token`, `secret`, or `password`, in
+  both `--name value` and `--name=value` forms, and of `NAME=value` with such
+  a name (`GITHUB_TOKEN=…`); similar words such as `--keyring` are unchanged;
+- the value of a header passed with `--header`, `-H` or `--headers` (the way
+  `mcp-remote` sends `Authorization: Bearer …`), and of any `Name: value`
+  argument whose name is `Authorization`, `Cookie` or ends in one of the words
+  above; the header name stays;
+- a URL argument, the same way as a remote target's URL;
+- the token after `Bearer` or `Basic`, and an argument that is itself a token
+  with a known issuer prefix or a JWT.
+
+`MarshalJSON` calls `model.Target.RedactedArgs` automatically.
 
 ## Finding
 
@@ -305,7 +320,7 @@ Target identity always comes from the operator:
 
 | Kind | Identity |
 |---|---|
-| `remote` | the redacted URL |
+| `remote` | the URL with userinfo and query values redacted; the path is kept as written (it is hashed, never printed), so endpoints that differ only by a key in their path keep distinct ids |
 | `stdio` | command and arguments |
 | `static` | operator name, falling back to the capture filename; never the snapshot's self-declared `server_name` |
 | `package` | the ecosystem and package name, without the version, so an accepted finding survives a patch bump |

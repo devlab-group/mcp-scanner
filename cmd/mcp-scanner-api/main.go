@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -74,6 +76,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	if len(opts.AllowedHosts) == 0 {
+		logger.Warn("listening on every interface without MCP_SCANNER_API_ALLOWED_HOSTS: the Host header is not checked, so a web page on this machine can reach the API through DNS rebinding; set it to the names clients use")
+	}
 	srv, err := api.NewServer(sc, opts)
 	if err != nil {
 		// Refuse to start when sensitive target kinds lack required safeguards
@@ -128,10 +133,16 @@ func apiOptions(cfg config.Config, logger *slog.Logger) (api.Options, error) {
 	if err != nil {
 		return api.Options{}, err
 	}
+	hosts, err := allowedHosts(envOr("MCP_SCANNER_API_ADDR", defaultAddr))
+	if err != nil {
+		return api.Options{}, err
+	}
 	return api.Options{
 		Policy:             pol,
 		ScanOptions:        sopts,
 		AllowedTargetKinds: kinds,
+		AllowedHosts:       hosts,
+		AllowedOrigins:     splitList(os.Getenv("MCP_SCANNER_API_ALLOWED_ORIGINS")),
 		TokenEnv:           envOr("MCP_SCANNER_API_TOKEN_ENV", defaultTokenEnv),
 		BaseDir:            os.Getenv("MCP_SCANNER_API_BASE_DIR"),
 		// Log details hidden from redacted API responses
@@ -172,6 +183,38 @@ func allowedTargetKinds() ([]model.TargetKind, error) {
 		out = append(out, kind)
 	}
 	return out, nil
+}
+
+// loopbackNames are the Host names a client on this machine uses for a loopback listener
+var loopbackNames = []string{"localhost", "127.0.0.1", "::1"}
+
+// allowedHosts is MCP_SCANNER_API_ALLOWED_HOSTS when set. Otherwise, for a listener on a named or
+// loopback address, the loopback names plus that address; for one on every interface (0.0.0.0,
+// ::, or no host) nothing, since the names clients use are not known - main warns about that.
+func allowedHosts(addr string) ([]string, error) {
+	if hosts := splitList(os.Getenv("MCP_SCANNER_API_ALLOWED_HOSTS")); len(hosts) > 0 {
+		return hosts, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("MCP_SCANNER_API_ADDR %q: %w", addr, err)
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		return nil, nil
+	}
+	return append(slices.Clone(loopbackNames), host), nil
+}
+
+// splitList reads a comma-separated setting, dropping empty items
+func splitList(raw string) []string {
+	var out []string
+	for part := range strings.SplitSeq(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

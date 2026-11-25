@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -362,7 +361,7 @@ func protocolMethodFiles(g *graph.Graph) []string {
 		if strings.Contains(low, "test") || strings.Contains(low, "/examples/") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(g.Root, p))
+		b, err := targetfs.ReadGraphFile(g, p)
 		if err != nil || len(b) > 2<<20 {
 			continue
 		}

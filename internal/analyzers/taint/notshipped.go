@@ -2,12 +2,12 @@ package taint
 
 import (
 	"encoding/json"
-	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 )
 
 // notShippedDir and notShippedFile match code a released server usually does not run: test
@@ -134,7 +134,12 @@ func (gi *guardIndex) launch(file string) (strong, weak string) {
 		if dir != "." {
 			rel = strings.TrimPrefix(file, dir+"/")
 		}
-		for _, name := range gi.dirNames(dir) {
+		names, refused := gi.dirNames(dir)
+		if refused {
+			// a folder above the file that cannot be listed may hold what starts it
+			return dir, ""
+		}
+		for _, name := range names {
 			p := name
 			if dir != "." {
 				p = dir + "/" + name
@@ -333,20 +338,22 @@ func stringLeaves(vs ...any) []string {
 	return out
 }
 
-// manifestText and dirNames are this file's only reads of the scanned tree. A manifest over 1 MiB
-// is refused rather than read.
+// manifestText and dirNames are this file's only reads of the scanned tree, both through the scan
+// root. A manifest that is there but cannot be read - a link out of the tree, not a regular file,
+// over 1 MiB - is refused: that is no evidence the file is not started, so the caller keeps the
+// finding's triage, and the refusal is reported as a coverage limit.
 func (gi *guardIndex) manifestText(rel string) (string, bool) {
 	if t, ok := gi.manifests[rel]; ok {
 		return t.text, t.refused
 	}
 	var t manifestRead
-	b, err := os.ReadFile(filepath.Join(gi.root, filepath.FromSlash(rel)))
+	b, err := targetfs.ReadWhole(gi.root, rel, 1<<20-1)
 	switch {
-	case err != nil:
-	case len(b) >= 1<<20:
-		t.refused = true
-	default:
+	case err == nil:
 		t.text = string(b)
+	case targetfs.Refused(err):
+		t.refused = true
+		gi.refuse(rel)
 	}
 	if gi.manifests == nil {
 		gi.manifests = map[string]manifestRead{}
@@ -360,21 +367,27 @@ type manifestRead struct {
 	refused bool
 }
 
-func (gi *guardIndex) dirNames(rel string) []string {
-	if names, ok := gi.dirs[rel]; ok {
-		return names
+func (gi *guardIndex) dirNames(rel string) ([]string, bool) {
+	if d, ok := gi.dirs[rel]; ok {
+		return d.names, d.refused
 	}
-	var names []string
-	if es, err := os.ReadDir(filepath.Join(gi.root, filepath.FromSlash(rel))); err == nil {
-		for _, e := range es {
-			if !e.IsDir() {
-				names = append(names, e.Name())
-			}
-		}
+	var d dirRead
+	names, err := targetfs.ReadDirNames(gi.root, rel)
+	switch {
+	case err == nil:
+		d.names = names
+	case targetfs.Refused(err):
+		d.refused = true
+		gi.refuse(rel)
 	}
 	if gi.dirs == nil {
-		gi.dirs = map[string][]string{}
+		gi.dirs = map[string]dirRead{}
 	}
-	gi.dirs[rel] = names
-	return names
+	gi.dirs[rel] = d
+	return d.names, d.refused
+}
+
+type dirRead struct {
+	names   []string
+	refused bool
 }

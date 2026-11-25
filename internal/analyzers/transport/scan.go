@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"regexp"
@@ -165,11 +166,18 @@ func (r *reader) close() {
 	}
 }
 
+// open opens a file of the tree through the scan root. Only a graph with no root at all (one
+// built in memory, as tests do) opens the path as given; a root that would not open is an error,
+// never a read relative to the process's working directory
 func (r *reader) open(path string) (*os.File, error) {
-	if r.root != nil {
+	switch {
+	case r.root != nil:
 		return r.root.Open(path)
+	case r.g.Root == "":
+		return os.Open(path)
+	default:
+		return nil, fmt.Errorf("transport: scan root %q could not be opened", r.g.Root)
 	}
-	return os.Open(path)
 }
 
 // read returns a file's bytes as the source walk parsed them: bundles blanked, oversized files

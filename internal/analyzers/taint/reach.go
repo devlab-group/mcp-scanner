@@ -176,9 +176,12 @@ func sorted(ls []string) []string {
 // their severity and go to needs_review when it is high. Severity is lowered only where the MCP
 // threat model's attacker does not control the source: an environment variable the operator
 // sets, or code no MCP handler can reach (tests, build scripts, an unrelated CLI).
-func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
+//
+// It also returns how many package manifests a triage rule needed and could not read through the
+// scan root; the caller reports them as a coverage limit.
+func classify(g *graph.Graph, fs []model.Finding) ([]model.Finding, int) {
 	if len(fs) == 0 {
-		return fs
+		return fs, 0
 	}
 	r := newReachIndex(g)
 	screen, screenKnown := "", false
@@ -226,7 +229,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			}
 			if f.Category == "path_traversal" && src.Detail == "resource handler argument" && original.AtLeast(model.SeverityHigh) {
 				if !screenKnown {
-					screen, screenKnown = templateScreening(g.Root), true
+					screen, screenKnown = templateScreening(g), true
 				}
 				if screen != "" {
 					f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
@@ -298,7 +301,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 				"the path runs in %s, which by its folder is test or evaluation code, but %s; whether a released server runs it decides between a real issue and noise", src.File, shipWhy)
 		}
 	}
-	return fs
+	return fs, len(guards.refused)
 }
 
 // validatorStep returns the project validator a path passed through, if any

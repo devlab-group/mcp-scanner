@@ -1,13 +1,12 @@
 package behavioral
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 )
 
 // category is one of the deterministic signals a handler's reachable calls
@@ -94,7 +93,7 @@ func sourceEnvReads(g *graph.Graph, reached map[graph.SymbolID]bool) []string {
 		}
 		lines, ok := files[sym.File]
 		if !ok {
-			b, err := os.ReadFile(filepath.Join(g.Root, sym.File))
+			b, err := targetfs.ReadGraphFile(g, sym.File)
 			if err == nil {
 				lines = strings.Split(string(b), "\n")
 			}

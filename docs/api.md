@@ -12,6 +12,16 @@ The server binds to loopback at `127.0.0.1:8080`. Set
 `MCP_SCANNER_API_ADDR` to expose it, and add access control in front of any
 network-facing listener.
 
+Loopback keeps other machines out, not the user's own browser. `/v1` therefore
+refuses what only a web page sends: a request with an `Origin` header (unless
+it is in `MCP_SCANNER_API_ALLOWED_ORIGINS`), a `POST` whose `Content-Type` is
+not `application/json`, and a `Host` header outside the allowed names, which is
+how a DNS-rebound page reaches a loopback listener. The allowed names default
+to `localhost`, `127.0.0.1`, `::1` and the listen host. A listener on every
+interface (`0.0.0.0`, `::`) checks no `Host` unless
+`MCP_SCANNER_API_ALLOWED_HOSTS` names the hosts clients use, and logs a
+warning at startup. `/healthz` and `/readyz` are not checked.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -68,6 +78,8 @@ All of it is environment variables.
 | `MCP_SCANNER_API_ALLOWED_KINDS` | `remote` | comma-separated target kinds this server accepts |
 | `MCP_SCANNER_API_TOKEN_ENV` | `MCP_SCANNER_API_TOKEN` | name of the variable holding the bearer token |
 | `MCP_SCANNER_API_BASE_DIR` | none | directory that filesystem targets must stay inside |
+| `MCP_SCANNER_API_ALLOWED_HOSTS` | loopback names and the listen host; none on every interface | comma-separated `Host` names `/v1` serves |
+| `MCP_SCANNER_API_ALLOWED_ORIGINS` | none | comma-separated browser origins (`https://dash.example`) allowed to call `/v1` |
 
 An unknown allowed kind stops startup.
 

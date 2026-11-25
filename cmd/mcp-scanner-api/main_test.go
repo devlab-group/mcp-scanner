@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +108,25 @@ func TestAPIOptionsFromConfig(t *testing.T) {
 	t.Setenv("MCP_SCANNER_API_ALLOWED_KINDS", "remote, stdiio")
 	if _, err := apiOptions(config.Defaults(), nil); err == nil || !strings.Contains(err.Error(), "stdiio") {
 		t.Errorf("an unknown allowed kind was accepted: %v", err)
+	}
+}
+
+func TestAllowedHostsFollowTheListenAddress(t *testing.T) {
+	t.Setenv("MCP_SCANNER_API_ALLOWED_HOSTS", "")
+	for addr, want := range map[string][]string{
+		"127.0.0.1:8080": {"localhost", "127.0.0.1", "::1", "127.0.0.1"},
+		"10.0.0.5:9000":  {"localhost", "127.0.0.1", "::1", "10.0.0.5"},
+		"0.0.0.0:8080":   nil,
+		":8080":          nil,
+		"[::]:8080":      nil,
+	} {
+		got, err := allowedHosts(addr)
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("allowedHosts(%q) = %v, %v; want %v", addr, got, err, want)
+		}
+	}
+	t.Setenv("MCP_SCANNER_API_ALLOWED_HOSTS", "scanner.internal, localhost")
+	if got, _ := allowedHosts("0.0.0.0:8080"); !slices.Equal(got, []string{"scanner.internal", "localhost"}) {
+		t.Errorf("explicit MCP_SCANNER_API_ALLOWED_HOSTS ignored: %v", got)
 	}
 }
