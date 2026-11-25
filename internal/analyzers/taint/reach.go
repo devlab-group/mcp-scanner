@@ -228,7 +228,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			guards.shell = f.Category == "command_injection"
 			if step, ok := validatorStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) && !(guards.shell && guards.validatorShellBlind(step)) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
-					fmt.Sprintf("the argument passes through %s, the project's own validation function; whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
+					fmt.Sprintf("the argument passes through %s, a validation function (the project's own or a library's); whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
 				break
 			}
 			// A check on the path comes first, also in a tool whose purpose is the sink: "fetch a

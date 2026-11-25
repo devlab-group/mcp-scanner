@@ -468,14 +468,19 @@ func receiverNode(call *sitter.Node) *sitter.Node {
 // hexCategories are what a hex-encoded value cannot carry: it holds only 0-9 and a-f
 var hexCategories = []string{"path_traversal", "command_injection", "sql_injection", "argument_injection"}
 
-// maskHexEncodings replaces every expression ending in .hex() or .hexdigest() -
-// url_path.encode("utf-8").hex(), hashlib.sha256(x.encode()).hexdigest() - with a placeholder, so
-// what is left shows whether any tainted name is used other than hex-encoded
+// hexSuffixes end an expression whose value is hex: Python's bytes.hex() and hashlib's or hmac's
+// hexdigest(), Node crypto's Hash/Hmac digest("hex")
+var hexSuffixes = []string{".hexdigest()", ".hex()", `.digest("hex")`, `.digest('hex')`}
+
+// maskHexEncodings replaces every hex-encoded expression - url_path.encode("utf-8").hex(),
+// hashlib.sha256(x.encode()).hexdigest(), createHash("sha256").update(x).digest("hex"), Go's
+// hex.EncodeToString(sum[:]) - with a placeholder, so what is left shows whether any tainted name
+// is used other than hex-encoded
 func maskHexEncodings(text string) (string, bool) {
-	changed := false
+	text, changed := maskHexEncodeCalls(text)
 	for {
 		i, n := -1, 0
-		for _, suf := range []string{".hexdigest()", ".hex()"} {
+		for _, suf := range hexSuffixes {
 			if j := strings.Index(text, suf); j >= 0 && (i < 0 || j < i) {
 				i, n = j, len(suf)
 			}
@@ -501,6 +506,31 @@ func maskHexEncodings(text string) (string, bool) {
 	done:
 		text = text[:start] + "HEXDIGITS" + text[i+n:]
 		changed = true
+	}
+}
+
+// maskHexEncodeCalls replaces each hex.EncodeToString(...) call, argument list included, with the
+// placeholder maskHexEncodings uses
+func maskHexEncodeCalls(text string) (string, bool) {
+	changed := false
+	from := 0
+	for {
+		j := strings.Index(text[from:], "hex.EncodeToString(")
+		if j < 0 {
+			return text, changed
+		}
+		i := from + j
+		if i > 0 && (isIdentByte(text[i-1]) || text[i-1] == '.') {
+			from = i + 1
+			continue
+		}
+		end := matchingParen(text, i+len("hex.EncodeToString"))
+		if end < 0 {
+			return text, changed
+		}
+		text = text[:i] + "HEXDIGITS" + text[end+1:]
+		changed = true
+		from = i + len("HEXDIGITS")
 	}
 }
 

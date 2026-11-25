@@ -36,6 +36,8 @@ var (
 	commandWords = regexp.MustCompile(`(?i)\b(command|commands|cmd|shell|bash|zsh|powershell|terminal|exec|executes? (a |the |any )?(command|script|program)|runs? (a |the |any )?(command|script|program|shell))\b`)
 	sqlWords     = regexp.MustCompile(`(?i)\b(sql|query|queries|database|databases|table|tables|select|kql|cypher|graphql)\b`)
 	codeWords    = regexp.MustCompile(`(?i)\b(code|script|scripts|repl|evaluate|evaluates|eval|python|javascript|notebook|interpreter)\b`)
+	// Documentation about a command: the noun names the subject of a manual or help page
+	commandDocPhrase = regexp.MustCompile(`(?i)\b(man(ual)?\s+pages?|manpages?|help|usage|documentation|docs|reference)\s+(of|for|about)\s+(a|an|the|any|each)?\s*(given\s+|specified\s+|named\s+|requested\s+)?(shell\s+)?(command|commands|cmd)\b`)
 	// A description that promises a boundary the tool would have to enforce
 	promisesScope = regexp.MustCompile(`(?i)\b(under|within|inside|only|allowed|allowlist(ed)?|whitelist(ed)?|sandbox(ed)?|restricted|scoped|configured (root|director(y|ies)|hosts?|domains?)|workspace|project (root|director(y|ies)))\b`)
 	// Calls that ask the user before acting: MCP elicitation and the common confirm helpers
@@ -53,7 +55,9 @@ func capabilityOf(category, name, description string) (string, bool) {
 		// not running whatever the caller passes, and an option smuggled into their argv is an
 		// injection
 		_ = proc
-		return capProcess, commandWords.MatchString(text)
+		// "Show the manual page of a command", "help for a command": the command is what the
+		// documentation is about, not something the tool runs
+		return capProcess, commandWords.MatchString(commandDocPhrase.ReplaceAllString(text, " "))
 	case "eval":
 		return capCode, codeWords.MatchString(text)
 	case "path_traversal":
@@ -64,6 +68,26 @@ func capabilityOf(category, name, description string) (string, bool) {
 		return capSQL, sqlWords.MatchString(text)
 	}
 	return "", false
+}
+
+// Words that declare removing files: a tool that says one of them may delete the caller's path
+var deleteWords = regexp.MustCompile(`(?i)\b(delet\w*|remov\w*|rm|unlink\w*|erase\w*|purg\w*|clean\w*|clear\w*|trash\w*|wip\w*|prun\w*|mov(e|es|ed|ing)|renam\w*|uninstall\w*|reset\w*|discard\w*|destroy\w*|drop\w*)\b`)
+
+// deleteCallees are the last segments of the file sinks that remove a path
+var deleteCallees = map[string]bool{
+	"unlink": true, "unlinkSync": true, "rm": true, "rmSync": true, "rmdir": true, "rmdirSync": true,
+	"Remove": true, "RemoveAll": true, "remove": true, "removedirs": true, "rmtree": true,
+}
+
+// deleteSink reports whether a sink callee removes a file or directory
+func deleteSink(callee string) bool {
+	return deleteCallees[parser.LastSegment(callee)]
+}
+
+// declText is everything a tool says about itself and the argument: name, description and the
+// parameter's description
+func declText(c *graph.Capability, paramDesc string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(c.Name, "_", " "), "-", " ") + ". " + c.Description + " " + paramDesc
 }
 
 // handlerCapability finds the capability whose handler a path's source step belongs to
@@ -139,6 +163,13 @@ func asCapability(g *graph.Graph, f *model.Finding) bool {
 	if !declared {
 		return false
 	}
+	sink := f.Evidence[0].Path[len(f.Evidence[0].Path)-1]
+	if capName == capFile && deleteSink(sink.Symbol) && !deleteWords.MatchString(declText(c, pd)) {
+		// "Path to a local metadata.xml file" declares a file to read, not one to delete: a
+		// handler that removes the caller's path when the tool never says it removes anything
+		// does more than its purpose, so the finding stays an injection
+		return false
+	}
 	scopeText := c.Description
 	if pd != "" {
 		scopeText += " " + pd
@@ -152,7 +183,6 @@ func asCapability(g *graph.Graph, f *model.Finding) bool {
 		f.TriageReason = fmt.Sprintf("the tool's name or description, or the parameter's, says it %s, and the description also uses %q; if that word promises a boundary, nothing the scanner found on the path enforces it and this is a vulnerability, otherwise the argument reaching the sink is the tool's purpose. Words alone do not decide which", capabilityPhrase[capName], w)
 		return true
 	}
-	sink := f.Evidence[0].Path[len(f.Evidence[0].Path)-1]
 	restriction := "no user confirmation was found on the handler's path"
 	if asksForConfirmation(g, c.Handler) {
 		f.Severity = f.Severity.OneStepDown()

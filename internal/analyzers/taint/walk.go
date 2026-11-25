@@ -49,6 +49,12 @@ type taintInfo struct {
 	// but concatenation, recognized decoders, and worstTaint clear it because the resulting path is
 	// no longer known to be normalized.
 	normalized bool
+
+	// freshName, when set, is the random call the value's last path component is named around:
+	// path.join(dirname(out), `.${basename(out)}.${randomUUID()}.tmp`) can only name the file the
+	// server creates now (see freshname.go). Only a plain copy of the value keeps it: extend drops
+	// it, since any further step may change the name.
+	freshName string
 }
 
 func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo {
@@ -66,7 +72,7 @@ func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo
 // value was computed changed here, only what later control flow proves
 // about it
 func (t taintInfo) clearFor(categories ...string) taintInfo {
-	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized, review: t.review}
+	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized, review: t.review, freshName: t.freshName}
 }
 
 // withoutCategory returns existing minus category, as a new map for the
@@ -131,6 +137,9 @@ func worstTaint(a, b taintInfo) taintInfo {
 	}
 	out.clearedFor = intersectClearedFor(a.clearedFor, b.clearedFor)
 	out.normalized = a.normalized && b.normalized
+	if a.freshName == "" || b.freshName == "" {
+		out.freshName = ""
+	}
 	return out
 }
 
@@ -1328,6 +1337,9 @@ func atLeastAsTainted(old, next taintInfo) bool {
 	if next.confidence < old.confidence {
 		return false
 	}
+	if next.freshName != "" && old.freshName == "" {
+		return false
+	}
 	for cat := range next.clearedFor {
 		if !old.clearedFor[cat] {
 			return false
@@ -1914,6 +1926,13 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 					Kind: "transform", Symbol: titleCallee(calleeText), File: file, Line: line, Detail: compositionDetail, Resolved: true,
 				}, 1)
 			}
+			if name, ok := c.freshJoin(file, calleeText, args, tainted); ok {
+				// temp = path.join(path.dirname(out), `.${path.basename(out)}.${randomUUID()}.tmp`)
+				info = info.extend(model.FlowStep{
+					Kind: "transform", Symbol: name, File: file, Line: line, Detail: freshNameDetail, Resolved: true,
+				}, 1)
+				info.freshName = name
+			}
 			setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 			return
 		}
@@ -2039,6 +2058,10 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 				Kind: "transform", Symbol: titleCallee(text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
 			}, 1)
 		}
+		if !isPlainIdent(strings.TrimSpace(text)) {
+			// t = cond ? temp : out: only a copy of one fresh path is still that path
+			info.freshName = ""
+		}
 		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 		return
 	}
@@ -2050,6 +2073,16 @@ const validatorDetail = "checked by a project validator the scanner does not ver
 
 // projectValidatorName matches the names projects give their own input checks
 var projectValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitise|check|ensure|verify|assert|safe|clean|normalize)[a-z0-9_]*$`)
+
+// libraryValidatorName matches library checks that reject bad input: validate_filename,
+// sanitize_path, check_url, verify_hostname, ensure_safe. Narrower than projectValidatorName:
+// "safe", "clean" and "normalize" name library functions that return a value rather than reject
+var libraryValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitise|check|verify|ensure)[a-z0-9_]*$`)
+
+// libraryNotValidator are library functions with a validator's name that run or fetch something
+var libraryNotValidator = map[string]bool{
+	"check_output": true, "check_call": true, "checkout": true, "check_returncode": true,
+}
 
 // isProjectValidator reports whether an in-repo function looks like an input check: a validator's
 // name and a body that can reject its input by raising or throwing
@@ -2277,6 +2310,20 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if !resolvedInRepo && !sinkFound && libraryValidatorName.MatchString(parser.LastSegment(calleeText)) && !libraryNotValidator[parser.LastSegment(calleeText)] {
+		// pathvalidate.validate_filename(doc), validators.url(u) style checks from a library: the
+		// scanner cannot read them, so - as for a project's own validator - taint stays and the
+		// step sends a later finding on the same value to review instead of clearing it
+		line := int(n.StartPosition().Row) + 1
+		for _, a := range args {
+			name := strings.TrimSpace(a.Text)
+			if info, ok := tainted[name]; ok && isPlainIdent(name) && !hasValidatorStep(info) {
+				tainted[name] = info.extend(model.FlowStep{
+					Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Detail: validatorDetail, Resolved: false,
+				}, 1)
+			}
+		}
+	}
 	if sinkFound && dockerSinks[sink.text] && !c.fileImportsDocker(file) {
 		// tagmanager.accounts.containers.create(...) is a Google API, not docker-py: the Docker SDK
 		// names count only in a file that imports the SDK
@@ -2471,6 +2518,18 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// with_fallback(cands, fetch) calling fetch(name): the name is bound by the
 				// enclosing function's parameter list, so the call runs whatever its callers pass
 				info.review = fmt.Sprintf("%s is a parameter of the enclosing function, not the library function of that name: the call runs whatever function the callers pass in, which the scanner did not follow", p)
+			}
+		}
+		if found && !info.clearedFor[sink.category] && sink.category == "path_traversal" {
+			if name, ok := c.freshSinkPath(pf, file, n, sink, receiver, args, tainted); ok {
+				if deleteSink(calleeText) {
+					// unlink(temp) where temp is dirname(out)/.<basename(out)>.<randomUUID()>.tmp:
+					// the only file it can remove is the one the server created for this call
+					return
+				}
+				if info.review == "" {
+					info.review = freshPathReview(titleCallee(calleeText), name)
+				}
 			}
 		}
 		if found && !info.clearedFor[sink.category] {
@@ -3061,6 +3120,8 @@ func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool
 		// something larger - a concatenation, an index, a member access
 		if strings.TrimSpace(text) != name {
 			candidate.normalized = false
+			// likewise a fresh last component: temp + "/..", temp += suffix name another path
+			candidate.freshName = ""
 		}
 		if !mentionsTaintedVar(fullyMasked, name) {
 			candidate.confidence *= 0.6
