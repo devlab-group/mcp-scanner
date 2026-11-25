@@ -79,7 +79,17 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		}
 		cov.CapabilitiesAnalyzed++
 		actual, sawUnknown := actualCapabilities(g, cap.Handler)
-		for _, f := range mismatches(cap, actual, sawUnknown) {
+		handler := cap.Handler
+		var fl *flow
+		flowOf := func() *flow {
+			if fl == nil {
+				reached, _ := g.Reachable(handler)
+				reached[handler] = true
+				fl = walkFlow(g, handler, reached)
+			}
+			return fl
+		}
+		for _, f := range mismatches(cap, actual, sawUnknown, flowOf) {
 			findings = append(findings, f)
 			hits = append(hits, actual.SensitiveHits)
 		}
@@ -187,7 +197,22 @@ func mark(cs *capSet, cat category) {
 // emits one CRITICAL and suppresses its weaker component findings. Undeclared process execution
 // starts LOW, contradicted process execution starts MEDIUM, and either rises to HIGH when
 // undeclared network or credential access is also reachable.
-func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Finding {
+//
+// A network mismatch read from words alone - a scope word, or a negator near a network word - is a
+// question for review only when the network call carries the caller's data (callerData): a tool
+// argument or a file's content in its address or body. A request to a fixed address with nothing
+// from the caller stays reported, as context: a word does not make it a broken promise about the
+// caller's data.
+//
+// A credential read together with a network call is a server signing in to its own service far
+// more often than a leak; where the credential goes decides (flow.route): to a request whose
+// address the caller chooses or into the tool's result is a leak (CRITICAL, as traced); only to
+// the server's own fixed or configured host, or anywhere the names do not settle, goes to review
+// at MEDIUM. A
+// credential read from a sensitive file (an SSH key, a cloud credentials file) is never the
+// server's own service and keeps its severity.
+func mismatches(cap graph.Capability, actual capSet, sawUnknown bool, flowOf func() *flow) []model.Finding {
+	callerData := func() bool { return flowOf().callerReaches }
 	if !actual.any() {
 		return nil
 	}
@@ -203,19 +228,61 @@ func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Fi
 
 	exfil := actual.Credentials && actual.Network && !(declared.Credentials && declared.Network)
 	if exfil {
-		findings = append(findings, mkFinding(cap, "behavioral.credential_exfiltration_mismatch",
-			"handler reaches a credential source and makes an outbound network call; neither is fully declared",
-			model.SeverityCritical, 0.9, actual, sawUnknown))
+		const rule = "behavioral.credential_exfiltration_mismatch"
+		envOnly := true
+		for _, h := range actual.SensitiveHits {
+			if !strings.HasPrefix(h, "env:") {
+				envOnly = false
+			}
+		}
+		switch route := flowOf().route(); {
+		case route == credLeak:
+			f := mkFinding(cap, rule,
+				"handler reads a credential and sends it where the caller decides: to a request whose address comes from the tool's argument, or into the tool's result",
+				model.SeverityCritical, 0.9, actual, sawUnknown)
+			f.Triage, f.TriageReason = model.TriagePotential, "the credential reaches a request whose address the caller's data starts, or the tool's own result"
+			findings = append(findings, f)
+		case route == credOwnService && envOnly:
+			// most likely the server signing in to its own service; the description does not say
+			// so, and a hard-coded foreign host would look the same, so a person still decides
+			f := mkFinding(cap, rule,
+				"handler reads a credential from the environment and sends it only to a fixed or configured host; the description mentions neither",
+				model.SeverityMedium, 0.5, actual, sawUnknown)
+			f.Triage, f.TriageReason = model.TriageNeedsReview, "the credential the operator configured goes only to requests on a fixed or configured host, most likely the server signing in to its own service; the description does not say so, and a hard-coded foreign host would look the same"
+			findings = append(findings, f)
+		case envOnly:
+			f := mkFinding(cap, rule,
+				"handler reads a credential from the environment and makes an outbound network call; neither is fully declared",
+				model.SeverityMedium, 0.6, actual, sawUnknown)
+			f.Triage, f.TriageReason = model.TriageNeedsReview, "the handler reads a credential and makes a network call, but the scanner did not trace the credential to a request with a settled address (it may go into a client object, or the address is built at run time); where it is sent decides between authentication to the server's own service and a leak"
+			findings = append(findings, f)
+		default:
+			findings = append(findings, mkFinding(cap, rule,
+				"handler reaches a credential source and makes an outbound network call; neither is fully declared",
+				model.SeverityCritical, 0.9, actual, sawUnknown))
+		}
 	} else {
 		switch {
-		case actual.Network && contradicted.Network:
+		case actual.Network && contradicted.Network && callerData():
+			// the denial is still read from a negator near a network word, so a question for
+			// review: a misread negation looks the same
 			findings = append(findings, mkFinding(cap, "behavioral.contradicted_network",
-				"description explicitly says the handler does not use the network, but it does",
+				"description explicitly says the handler does not use the network, but it sends the caller's data over it (a tool argument or a file's content reaches the address or body of a network call)",
 				model.SeverityHigh, 0.85, actual, sawUnknown))
-		case undeclaredNetwork && local:
+		case actual.Network && contradicted.Network:
+			findings = append(findings, contextOnly(mkFinding(cap, "behavioral.contradicted_network",
+				"description explicitly says the handler does not use the network, but it does",
+				model.SeverityLow, 0.5, actual, sawUnknown),
+				"the description seems to deny network use, but the handler's network calls carry nothing from the caller: no tool argument and no file content reaches their address or body; a request to a fixed address is a privacy question, not a broken promise about the caller's data"))
+		case undeclaredNetwork && local && callerData():
 			findings = append(findings, mkFinding(cap, "behavioral.undeclared_network",
-				"description implies local-only behavior, but the handler reaches the network",
+				"description implies local-only behavior, but the handler sends the caller's data over the network",
 				model.SeverityHigh, 0.75, actual, sawUnknown))
+		case undeclaredNetwork && local:
+			findings = append(findings, contextOnly(mkFinding(cap, "behavioral.undeclared_network",
+				"description implies local-only behavior, but the handler reaches the network",
+				model.SeverityLow, 0.5, actual, sawUnknown),
+				"the description reads as local-only only because of a scope word (local, project, workspace, metadata), and the handler's network calls carry nothing from the caller: no tool argument and no file content reaches their address or body"))
 		}
 		switch {
 		case actual.Credentials && contradicted.Credentials:
@@ -265,6 +332,12 @@ func mismatches(cap graph.Capability, actual capSet, sawUnknown bool) []model.Fi
 			model.SeverityLow, 0.5, actual, sawUnknown))
 	}
 	return reviewWordBased(findings)
+}
+
+// contextOnly marks a finding as context with its reason
+func contextOnly(f model.Finding, reason string) model.Finding {
+	f.Triage, f.TriageReason = model.TriageContext, reason
+	return f
 }
 
 func mkFinding(cap graph.Capability, ruleID, why string, severity model.Severity, confidence float64, actual capSet, sawUnknown bool) model.Finding {
@@ -340,7 +413,7 @@ var wordBasedReasons = map[string]string{
 
 func reviewWordBased(fs []model.Finding) []model.Finding {
 	for i := range fs {
-		if !fs[i].Severity.AtLeast(model.SeverityHigh) {
+		if !fs[i].Severity.AtLeast(model.SeverityHigh) || fs[i].Triage != "" {
 			continue
 		}
 		reason, ok := wordBasedReasons[fs[i].RuleID]

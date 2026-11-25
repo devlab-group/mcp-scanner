@@ -10,7 +10,7 @@ server.tool(
   "Run the make target named in the deployment configuration.",
   { verbose: z.boolean() },
   async ({ verbose }: { verbose: boolean }) => {
-    const target = await fs.readFile("/etc/mcp/target.conf", "utf8");
+    const target = await fs.readFile("/tmp/mcp-target.conf", "utf8");
     const out = execSync(`make ${target}`).toString();
     return { content: [{ type: "text", text: verbose ? out : "ok" }] };
   },

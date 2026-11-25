@@ -283,12 +283,27 @@ func classify(g *graph.Graph, fs []model.Finding) ([]model.Finding, int) {
 			f.Severity = capSeverity(f.Severity, model.SeverityLow)
 			f.Triage, f.TriageReason = model.TriageContext,
 				fmt.Sprintf("the value comes from an environment variable the operator sets, not from MCP input; severity lowered from %s", original)
+		case f.Reachability == reachUnknown && !guards.mcpSurface(src.File):
+			// a command-line tool or a library: no import, dependency or package name says MCP, so
+			// no MCP caller reaches the path; the missing registrations are reported once, as a
+			// coverage limit, not as a finding per path
+			f.Severity = capSeverity(f.Severity, model.SeverityLow)
+			f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+				"no MCP handler was resolved in this tree, and nothing in it - an import, a dependency, a package name - says it is an MCP server, so no MCP caller reaches this path; the missing registrations are reported once, as a coverage limit; severity lowered from %s", original)
 		case f.Reachability == reachUnknown:
 			if original.AtLeast(model.SeverityHigh) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
-					"no MCP handler was resolved in this tree, so whether this path is reachable from MCP input is unknown"
+					"no MCP handler was resolved in this tree, though it shows signs of an MCP server (an MCP import or dependency), so its registrations may take a form this build does not read; whether this path is reachable from MCP input is unknown"
 			}
 		default: // external content, reachable or possibly reachable
+			if where, ok := guards.constantLocator(src); ok {
+				// the server's own file or its own fixed host, by what the code names: not a page or
+				// a repository the caller chose
+				f.Severity = capSeverity(f.Severity, model.SeverityLow)
+				f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+					"%s comes from a location the code fixes (%s, line %d) - a literal path of the server's own files or a literal URL of its fixed host, not an address the caller chooses or a folder the server writes for the caller; severity lowered from %s", src.Detail, where, src.Line, original)
+				break
+			}
 			if original.AtLeast(model.SeverityHigh) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
 					fmt.Sprintf("%s reaches a %s sink; whether an attacker can write that content - a fetched page, a cloned repository - or it is the server's own configuration decides between a real issue and noise", src.Detail, f.Category)

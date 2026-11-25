@@ -38,6 +38,10 @@ type guardIndex struct {
 	hit guardHit
 	// elsewhere, manifests and dirs cache what the not-shipped rule read (notshipped.go)
 	elsewhere *string
+	// surfaceImports caches whether any import names MCP (mcpsurface.go)
+	surfaceImports *bool
+	// callIndex lists the graph's calls by file and line (locator.go)
+	callIndex map[string][]graph.Call
 	manifests map[string]manifestRead
 	dirs      map[string]dirRead
 }
