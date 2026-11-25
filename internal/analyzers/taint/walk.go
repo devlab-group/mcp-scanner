@@ -2388,6 +2388,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		// Python's builtin exec(code) runs Python source, not a process: code execution
 		sink = sinkPattern{text: "exec", category: "eval", severity: model.SeverityHigh, argIndex: 0}
 	}
+	if sinkFound && sink.text == "exec" && asWritten && regexNamedReceiver(sinkText) {
+		// META_TAG_RE.exec(html), blockRegex.exec(text): a receiver named for a pattern, including
+		// one imported from another module, which the tree check below cannot see
+		sinkFound = false
+	}
 	if sinkFound && sink.text == "exec" && asWritten && c.regExpReceiver(pf, file, n) {
 		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
 		sinkFound = false
@@ -2471,7 +2476,14 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// query() on an object not named like a database handle, or a generic client with no
 				// SQL text on the path, is probably not SQL - a tool class, a job runner, a search API
 				// - but a name cannot prove it. The finding stays, for a person to decide.
-				if found && needsSQLEvidence && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+				// what the receiver is built from settles what its name cannot: a database or graph
+				// database handle is a sink whatever it is called, a tool or agent object is not one
+				origin := ""
+				if byMethodName && sink.category == "sql_injection" {
+					origin = receiverOrigin(pf.src, n, sinkText)
+				}
+				dbHandle := origin != "" && dbOrigin.MatchString(origin)
+				if found && needsSQLEvidence && !dbHandle && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver may be a database client, but no SQL text was seen on the path", sinkText)
 				}
 				if found && sink.category == "sql_injection" && byMethodName && pf.adapter.ID == language.Python && keywordOnlyNonSQL(args) && info.review == "" {
@@ -2485,7 +2497,13 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 					// driver reads SQL from (sql, text, query, statement) is a command, not a query
 					found = false
 				}
-				if found && byMethodName && sink.category == "sql_injection" && !sqlReceiver(sinkText, a.Text) {
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlReceiver(sinkText, a.Text) && !chainHasSQLText(info) && toolOrigin.MatchString(origin) {
+					// tool = SearchTool(...); tool.execute(args): the receiver is built as a tool, an
+					// agent or a connector, nothing on the path is SQL, and the method name is all that
+					// matched. A receiver only named so (tool, graph, service) goes to review below.
+					found = false
+				}
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlReceiver(sinkText, a.Text) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is not named like a database handle and the argument shows no SQL text, so it is probably another API's %s", sinkText, parser.LastSegment(sinkText))
 				}
 				if found && byMethodName && !strings.ContainsAny(strings.TrimSpace(sinkText), ".:") && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
@@ -2582,7 +2600,16 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// JavaScript functions from !!js/function tags. The version installed decides.
 				info.review = fmt.Sprintf("%s is js-yaml's load, which is safe from version 4 on and builds JavaScript functions from !!js/function tags in version 3; the installed version decides between a real issue and noise", sinkText)
 			}
-			if sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" && info.review == "" && !httpLikeReceiver(sinkText) {
+			getOrigin := ""
+			if found && sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" {
+				getOrigin = receiverOrigin(pf.src, n, sinkText)
+				if getOrigin != "" && lookupOrigin.MatchString(getOrigin) && !httpClientOrigin.MatchString(getOrigin) {
+					// values, _ := url.ParseQuery(s); values.Get(name), r.URL.Query().Get(k), a gin
+					// context or a cache: by what it is built from a lookup, never an HTTP request
+					return
+				}
+			}
+			if sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" && info.review == "" && !httpLikeReceiver(sinkText) && !httpClientOrigin.MatchString(getOrigin) {
 				// taskrunInformer.Lister().TaskRuns(ns).Get(name), cache.Get(key): a Get method on a
 				// lister, a cache or a map is a lookup, not an HTTP request; matched by name alone
 				info.review = fmt.Sprintf("%s was matched as an HTTP request by its method name only: its receiver does not look like an HTTP client, so it is probably a lookup in a cache, a lister or a map", sinkText)
@@ -4142,6 +4169,17 @@ func httpLikeReceiver(sinkText string) bool {
 	}
 	low := strings.ToLower(recv)
 	return httpReceiverName.MatchString(low) || strings.HasSuffix(low, ".r()")
+}
+
+// regexNamedReceiver is a receiver named for a regular expression: TAG_RE, nameRegex, idPattern
+var regexNamedReceiverName = regexp.MustCompile(`(^|[._])([A-Z0-9_]*_(RE|REGEX|REGEXP|PATTERN)|[a-z]\w*(Re|Regex|RegExp|Regexp|Pattern|Rx)|re|rx|regex|regexp|pattern)$`)
+
+func regexNamedReceiver(sinkText string) bool {
+	t := strings.TrimSpace(sinkText)
+	if !strings.HasSuffix(t, ".exec") {
+		return false
+	}
+	return regexNamedReceiverName.MatchString(strings.TrimSuffix(t, ".exec"))
 }
 
 var httpReceiverName = regexp.MustCompile(`(^|[._])(http|https|client|httpclient|resty|req|request|requests|session|api|rest|web)\w*$`)

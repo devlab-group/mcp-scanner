@@ -263,6 +263,11 @@ type endpointGroup struct {
 	jsonrpc  bool
 	dispatch string
 	built    bool
+	// originChecks are Origin allowlist tests in the files that guard the endpoint
+	originChecks []site
+	// stateful is a Streamable HTTP endpoint with session ids; sessionExposed is set when the
+	// server names Mcp-Session-Id, as an exposed CORS header must be
+	stateful, sessionExposed bool
 }
 
 // groups assembles one group per file that serves MCP over HTTP
@@ -309,8 +314,11 @@ func (a *analysis) groups() []endpointGroup {
 		for _, q := range a.guardFiles(p, dispatch) {
 			if fq, ok := a.facts[q]; ok && !testPath.MatchString(q) {
 				grp.auth = append(grp.auth, fq.auth...)
+				grp.originChecks = append(grp.originChecks, fq.originChecks...)
+				grp.sessionExposed = grp.sessionExposed || fq.sessionHeaderNamed
 			}
 		}
+		grp.stateful = fx.statefulHTTP
 		out = append(out, grp)
 	}
 	// a compiled copy (dist/, build/) of a server whose source is also here is the same endpoint
@@ -455,6 +463,10 @@ func (a *analysis) dispatchModule(p string) string {
 // launched reports whether the package's manifest starts the endpoint file (a bin entry or a
 // start script naming it), which makes code under examples/ the shipped server, not an example
 func (a *analysis) launched(scope, file string) bool {
+	if examplePath.MatchString(scope + "/") {
+		// an example's own manifest starts the example, not the shipped server
+		return false
+	}
 	stem := strings.TrimSuffix(path.Base(file), path.Ext(file))
 	if stem == "index" || stem == "main" || stem == "server" || len(stem) < 3 {
 		return false
@@ -506,6 +518,10 @@ func (a *analysis) findings() []model.Finding {
 			}
 		}
 		for _, c := range grp.cors {
+			if len(grp.originChecks) > 0 {
+				// an Origin allowlist in front of the route refuses other sites whatever CORS says
+				break
+			}
 			key := RuleBrowserReachable + "|" + c.File + fmt.Sprint(c.Line)
 			if !seen[key] {
 				seen[key] = true
@@ -596,7 +612,12 @@ func (a *analysis) exposedFinding(grp endpointGroup, l listenSite, pw power, con
 
 func (a *analysis) browserFinding(grp endpointGroup, c corsSite, pw power, conditional []authSite) model.Finding {
 	sev, conf, triage, reason := weigh(pw, conditional, c.File, a.launched(grp.scope, grp.file))
-	if !c.Preflight && !grp.jsonrpc && triage == model.TriagePotential {
+	if grp.stateful && !grp.sessionExposed && !grp.jsonrpc && triage == model.TriagePotential {
+		// every request after initialize must carry Mcp-Session-Id, and a page cannot read a
+		// response header CORS does not expose
+		sev, triage = model.SeverityMedium, model.TriageNeedsReview
+		reason = "every origin is allowed, but the transport keeps sessions and the CORS layer does not expose Mcp-Session-Id, so a page cannot continue past initialize unless the session id reaches it another way"
+	} else if !c.Preflight && !grp.jsonrpc && triage == model.TriagePotential {
 		// a bare Access-Control-Allow-Origin: * without an answer to preflights lets a page send
 		// only simple requests, which an SDK transport rejects for their content type
 		sev, triage = model.SeverityMedium, model.TriageNeedsReview

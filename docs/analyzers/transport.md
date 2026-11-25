@@ -36,7 +36,11 @@ request is sent.
   - Starlette `CORSMiddleware(allow_origins=["*"])`;
   - Go `cors.AllowAll()` and `AllowedOrigins: []string{"*"}`.
 - **Authentication.** These count as authentication:
-  - a read of the `Authorization` or an API-key request header;
+  - a read of the `Authorization`, an API-key or a token request header
+    (`x-api-key`, `x-mcp-api-key`, `x-<name>-token`), when the code around
+    the read refuses the request (a 401 or 403, "unauthorized", a
+    constant-time comparison); a header that only chooses whose token to use
+    authenticates nobody;
   - SDK or framework auth: `requireBearerAuth`, FastMCP `auth=`,
     `token_verifier=`, FastAPI `HTTPBearer`, go-sdk `RequireBearerToken`, and
     similar.
@@ -81,7 +85,14 @@ dispatching `tools/call` counts as an endpoint.
 | `transport.network_exposed` | The endpoint listens on every interface, or on a named address reachable from its network, and the server's package has no authentication check. |
 | `transport.browser_reachable` | The endpoint allows every origin and the package has no authentication check. This counts even on localhost, because the page runs in the user's own browser. |
 
-A `browser_reachable` finding goes to needs_review when two things are true:
+No `browser_reachable` finding is reported when the server tests the request's
+Origin and refuses other sites, or when Starlette `allow_origin_regex` only
+admits localhost. The finding goes to needs_review when the transport keeps
+sessions (Streamable HTTP with a session id generator, FastMCP without
+`stateless_http`) and the server never names `Mcp-Session-Id` for CORS: a
+page cannot read that header and so cannot go past `initialize`.
+
+A `browser_reachable` finding also goes to needs_review when two things are true:
 
 - the CORS header is set without an answer to preflight requests;
 - the endpoint is an SDK transport.

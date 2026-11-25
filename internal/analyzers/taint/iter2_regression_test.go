@@ -62,8 +62,9 @@ def fetch(url: str) -> str:
 		{"concatenated path after a base is not SSRF", "server.ts", ts + "server.tool(\"get\", \"Gets an item\", async ({ id }: { id: string }) => {\n  await fetch(base + \"/items/\" + id);\n  return { content: [] };\n});\n", "ssrf", 0, false},
 
 		// The tool class comes from another package, so the call does not resolve in the tree and
-		// only the method name matched, as in a jobs tool's jobsTool.execute(params)
-		{"execute on an imported tool object goes to review, not away", "server.py", `from mcp.server.fastmcp import FastMCP
+		// only the method name matched, as in a jobs tool's jobsTool.execute(params). A receiver
+		// named for a tool with no SQL text on the path drops the match
+		{"execute on an imported tool object is not SQL", "server.py", `from mcp.server.fastmcp import FastMCP
 from hf_tools import JobsTool
 
 mcp = FastMCP("x")
@@ -74,7 +75,7 @@ def run_job(params: str) -> str:
     """Runs a job"""
     jobs_tool = JobsTool()
     return jobs_tool.execute(params)
-`, "sql_injection", 1, true},
+`, "sql_injection", 0, false},
 		// The same file defines JobsTool.execute: resolution by method name used to send
 		// cursor.execute there and drop the SQL check
 		{"execute on a cursor is still SQL beside an in-repo execute method", "server.py", py + `

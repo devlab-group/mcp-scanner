@@ -32,12 +32,36 @@ type guardIndex struct {
 	shell bool
 	// calleeShell caches inCallee's answer per symbol for shell mode
 	calleeShell map[graph.SymbolID]calleeGuardResult
+	// hit is where the last check before() found sits and which value it tests, so the check's
+	// own pattern can be read (regexguard.go)
+	hit guardHit
+	// elsewhere, manifests and dirs cache what the not-shipped rule read (notshipped.go)
+	elsewhere *string
+	manifests map[string]manifestRead
+	dirs      map[string][]string
+}
+
+// guardHit locates one check: the file and line of the test and the name of the value it tests
+type guardHit struct {
+	file  string
+	line  int
+	value string
+	// fn is the first line of the function the check is in; own is set when that function is the
+	// handler the path starts in, and roots are the names the search started from there (the
+	// argument, or the function's parameters), as opposed to a value derived from them
+	fn    int
+	own   bool
+	roots []string
 }
 
 type calleeGuardResult struct {
-	text string
-	line int
-	ok   bool
+	text  string
+	line  int
+	ok    bool
+	file  string
+	value string
+	fn    int
+	roots []string
 }
 
 // guardWindow is how many lines after a check its early exit may appear
@@ -69,6 +93,7 @@ func (gi *guardIndex) lines(file string) []string {
 // before returns the check's text and line when the path's source value is checked in the source's
 // file before the next step of the path in that file
 func (gi *guardIndex) before(path []model.FlowStep) (string, int, bool) {
+	gi.hit = guardHit{}
 	if g, n, ok := gi.inSource(path); ok {
 		return g, n, ok
 	}
@@ -149,6 +174,9 @@ func (gi *guardIndex) calleeGuard(sym *graph.Symbol, depth int) (string, int, bo
 		cache[sym.ID] = own
 	}
 	if own.ok || depth >= 1 {
+		if own.ok {
+			gi.hit = guardHit{file: own.file, line: own.line, value: own.value, fn: own.fn, roots: own.roots}
+		}
 		return own.text, own.line, own.ok
 	}
 	// a project function this body hands one of its parameters to, if the path allows it
@@ -184,7 +212,7 @@ func (gi *guardIndex) ownBodyGuard(sym *graph.Symbol) calleeGuardResult {
 	if sym.EndLine <= sym.Line || len(ls) < sym.EndLine {
 		return calleeGuardResult{}
 	}
-	var text string
+	var text, value string
 	var n int
 	var ok bool
 	if gi.shell {
@@ -193,15 +221,15 @@ func (gi *guardIndex) ownBodyGuard(sym *graph.Symbol) calleeGuardResult {
 		// the function's own name is masked there
 		region := append([]string(nil), ls[sym.Line-1:sym.EndLine]...)
 		region[0] = declName(sym.Name).ReplaceAllString(region[0], "${1}_")
-		text, n, ok = scanRegion(region, 1, len(region)+1, guardParams(sym), gi.blind())
+		text, n, value, ok = scanRegionValue(region, 1, len(region)+1, guardParams(sym), gi.blind())
 		n += sym.Line - 1
 	} else {
-		text, n, ok = scanRegion(ls, sym.Line, sym.EndLine+1, guardParams(sym), gi.blind())
+		text, n, value, ok = scanRegionValue(ls, sym.Line, sym.EndLine+1, guardParams(sym), gi.blind())
 	}
 	if ok {
 		text += " in " + sym.Name
 	}
-	return calleeGuardResult{text: text, line: n, ok: ok}
+	return calleeGuardResult{text: text, line: n, ok: ok, file: sym.File, value: value, fn: sym.Line, roots: guardParams(sym)}
 }
 
 func guardParams(sym *graph.Symbol) []string {
@@ -230,7 +258,11 @@ func (gi *guardIndex) inSource(path []model.FlowStep) (string, int, bool) {
 	if stop == 0 || stop > len(ls) || stop-src.Line > 400 {
 		return "", 0, false
 	}
-	return scanRegion(ls, src.Line, stop, []string{src.Symbol}, gi.blind())
+	text, n, value, ok := scanRegionValue(ls, src.Line, stop, []string{src.Symbol}, gi.blind())
+	if ok {
+		gi.hit = guardHit{file: src.File, line: n, value: value, fn: src.Line, own: true, roots: []string{src.Symbol}}
+	}
+	return text, n, ok
 }
 
 // checks reports whether line tests v: validate(v), isSafe(v), v.match(/^https:\/\/x\//),
@@ -241,7 +273,9 @@ var checkPatterns = []string{
 	// the same with the value after simple leading arguments: validateDir(ctx, p), check(root, p)
 	`(?i)\b_*(validate|sanitize|sanitise|ensure|verify|is_?safe|is_?valid|is_?allowed)\w*\s*\((?:\s*[\w.]+\s*,){1,2}\s*%[1]s\s*\)`,
 	`\b%[1]s\s*\.\s*(match|test|startsWith|startswith|endsWith|endswith|fullmatch|matches|HasPrefix|is_relative_to|relative_to)\s*\(`,
-	`\.(test|match|fullmatch|search|MatchString)\s*\(\s*(?:[^,()]+,\s*)?%[1]s\b`,
+	// a predicate of the project named for what it tests: isSlug(v), is_hex_id(v), hasSafeName(v)
+	`(?:!\s*|\bnot\s+)(?:is|has)_?[A-Za-z]\w*\s*\(\s*%[1]s\s*\)`,
+	`\.(test|match|fullmatch|search|MatchString)\s*\(\s*(?:(?:r|R|b|rb|br)?(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|` + "`[^`]*`" + `|[^,()]+)\s*,\s*)?%[1]s\b`,
 	`\bstrings\.HasPrefix\s*\(\s*%[1]s\b`,
 	`\b%[1]s\s+not\s+in\s+\w+|\b%[1]s\s+in\s+[A-Z_]{3,}\b`,
 	`\.(includes|has|contains)\s*\(\s*%[1]s\s*\)`,
@@ -340,8 +374,14 @@ func guardIfHigh(gi *guardIndex, sev model.Severity, path []model.FlowStep) (str
 // by assignment, followed within guardWindow lines by an exit. A check whose exit rejects (throws,
 // raises, returns an error) wins over one followed only by a plain return.
 func scanRegion(ls []string, from, to int, vars []string, blind func(line, v string) bool) (string, int, bool) {
+	text, n, _, ok := scanRegionValue(ls, from, to, vars, blind)
+	return text, n, ok
+}
+
+// scanRegionValue is scanRegion that also names the value the check tests
+func scanRegionValue(ls []string, from, to int, vars []string, blind func(line, v string) bool) (string, int, string, bool) {
 	vars = append([]string(nil), vars...)
-	weakText, weakLine := "", 0
+	weakText, weakLine, weakValue := "", 0, ""
 	for n := from; n < to && n <= len(ls); n++ {
 		line := ls[n-1]
 		if m := assignFrom.FindStringSubmatch(line); m != nil && mentionsVar(line[len(m[0])-1:], vars) && !hasString(vars, m[1]) {
@@ -354,18 +394,18 @@ func scanRegion(ls []string, from, to int, vars []string, blind func(line, v str
 			end := min(n+guardWindow, to-1, len(ls))
 			for k := n; k <= end; k++ {
 				if errorExit.MatchString(ls[k-1]) {
-					return strings.TrimSpace(clipText(line, 100)), n, true
+					return strings.TrimSpace(clipText(line, 100)), n, v, true
 				}
 				if weakLine == 0 && earlyExit.MatchString(ls[k-1]) {
-					weakText, weakLine = strings.TrimSpace(clipText(line, 100)), n
+					weakText, weakLine, weakValue = strings.TrimSpace(clipText(line, 100)), n, v
 				}
 			}
 		}
 	}
 	if weakLine > 0 {
-		return weakText, weakLine, true
+		return weakText, weakLine, weakValue, true
 	}
-	return "", 0, false
+	return "", 0, "", false
 }
 
 // assignTargets matches the left side of an assignment, one name or several: p = ..., full, err := ...

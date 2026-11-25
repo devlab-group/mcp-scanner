@@ -69,6 +69,13 @@ type facts struct {
 	pyHostSetting *listenSite
 	// allowHeaders is set when the file sends Access-Control-Allow-Headers itself
 	allowHeaders bool
+	// originChecks are tests of the request's Origin header, an allowlist in front of the route
+	originChecks []site
+	// statefulHTTP is set for a Streamable HTTP transport with session ids, which a page can only
+	// continue when the CORS layer exposes the Mcp-Session-Id header
+	statefulHTTP bool
+	// sessionHeaderNamed is set when the file names Mcp-Session-Id (an exposed-headers list)
+	sessionHeaderNamed bool
 }
 
 // file is one re-parsed source file

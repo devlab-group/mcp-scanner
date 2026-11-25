@@ -298,7 +298,7 @@ from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 mcp = FastMCP("t")` + pyTool + `
 app = mcp.streamable_http_app()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], expose_headers=["Mcp-Session-Id"])
 uvicorn.run(app, port=9000)
 `,
 	})
@@ -306,6 +306,76 @@ uvicorn.run(app, port=9000)
 	if f.Triage != model.TriagePotential {
 		t.Fatalf("triage = %s, want potential", f.Triage)
 	}
+}
+
+func TestStatefulSessionWithoutExposedHeaderGoesToReview(t *testing.T) {
+	res := run(t, map[string]string{
+		"server.py": pyHead + `import uvicorn
+from starlette.middleware.cors import CORSMiddleware
+mcp = FastMCP("t")` + pyTool + `
+app = mcp.streamable_http_app()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"])
+uvicorn.run(app, port=9000)
+`,
+	})
+	if f := only(t, res, RuleBrowserReachable); f.Triage != model.TriageNeedsReview {
+		t.Fatalf("triage = %s, want needs_review: a page cannot read the session id", f.Triage)
+	}
+	ts := tsServer(`app.use(cors());
+app.post("/mcp", (req, res) => transport.handleRequest(req, res, req.body));
+app.listen(8123, "127.0.0.1");
+`)
+	ts["src/index.ts"] = "import cors from \"cors\";\n" + strings.Replace(ts["src/index.ts"], "sessionIdGenerator: undefined", "sessionIdGenerator: () => crypto.randomUUID()", 1)
+	if f := only(t, run(t, ts), RuleBrowserReachable); f.Triage != model.TriageNeedsReview {
+		t.Fatalf("TS stateful transport: triage = %s, want needs_review", f.Triage)
+	}
+}
+
+func TestOriginAllowlistRefusesOtherSites(t *testing.T) {
+	files := tsServer(`app.use((req, res, next) => {
+  if (req.headers.origin && !["http://localhost:5173"].includes(req.headers.origin)) return res.status(403).end();
+  next();
+});
+app.use(cors({ origin: true }));
+app.post("/mcp", (req, res) => transport.handleRequest(req, res, req.body));
+app.listen(8123, "127.0.0.1");
+`)
+	files["src/index.ts"] = "import cors from \"cors\";\n" + files["src/index.ts"]
+	none(t, run(t, files))
+}
+
+func TestProjectNamedKeyHeaderAndBytesHeaderAreAuthentication(t *testing.T) {
+	none(t, run(t, tsServer(`app.use((req, res, next) => (req.headers["x-mcp-api-key"] === process.env.MCP_KEY ? next() : res.status(401).end()));
+app.post("/mcp", (req, res) => transport.handleRequest(req, res, req.body));
+app.listen(8123, "0.0.0.0");
+`)))
+	none(t, run(t, map[string]string{"server.py": pyHead + `import hmac
+import uvicorn
+mcp = FastMCP("t")` + pyTool + `
+
+
+class Guard:
+    def __init__(self, app, token):
+        self.app, self.token = app, token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not hmac.compare_digest(dict(scope["headers"]).get(b"authorization", b""), self.token):
+            return
+        await self.app(scope, receive, send)
+
+
+uvicorn.run(Guard(mcp.streamable_http_app(), b"Bearer x"), host="0.0.0.0")
+`}))
+}
+
+func TestLocalhostOriginRegexIsNotEveryOrigin(t *testing.T) {
+	none(t, run(t, map[string]string{"server.py": pyHead + `import uvicorn
+from starlette.middleware.cors import CORSMiddleware
+mcp = FastMCP("t")` + pyTool + `
+app = mcp.streamable_http_app()
+app.add_middleware(CORSMiddleware, allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", allow_headers=["*"])
+uvicorn.run(app, port=9000)
+`}))
 }
 
 const goHead = `package main
@@ -584,5 +654,18 @@ export function describe() { spawnSync("rm", ["-rf", "/tmp/x"]); }`
 	f := only(t, run(t, files), RuleNetworkExposed)
 	if f.Severity == model.SeverityHigh {
 		t.Fatalf("a same-named function in another package does not run in this server: %s", f.Description)
+	}
+}
+
+func TestExampleWithItsOwnManifestIsStillAnExample(t *testing.T) {
+	tool := `server.tool("run", "Runs the build", {}, async () => { execFile("make", []); return { content: [] }; });`
+	src := strings.Replace(jsServer(tool)["index.ts"], `import fs from "node:fs";`, `import { execFile } from "node:child_process";`, 1)
+	res := run(t, map[string]string{
+		"package.json":                       `{"name":"mesh"}`,
+		"examples/reviewer/package.json":     `{"name":"reviewer","scripts":{"start":"node review_server.mjs"}}`,
+		"examples/reviewer/review_server.ts": src,
+	})
+	if f := only(t, res, RuleNetworkExposed); f.Triage != model.TriageNeedsReview {
+		t.Fatalf("an example started by its own manifest is still an example: triage %s", f.Triage)
 	}
 }

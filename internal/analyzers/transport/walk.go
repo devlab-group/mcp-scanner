@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -16,7 +17,14 @@ var authHeaders = map[string]bool{
 	"apikey": true, "x-api-token": true,
 }
 
-func authHeader(name string) bool { return authHeaders[strings.ToLower(strings.TrimSpace(name))] }
+// authHeaderName matches header names that carry a caller credential under a project's own name:
+// x-mcp-api-key, x-myservice-token, x-auth
+var authHeaderName = regexp.MustCompile(`(?i)^x-[a-z0-9-]*(api-?key|token|auth)[a-z0-9-]*$`)
+
+func authHeader(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return authHeaders[n] || authHeaderName.MatchString(n)
+}
 
 // jsAuthCallees are authentication middlewares and verifiers by their last name segment
 var jsAuthCallees = map[string]bool{
@@ -54,6 +62,9 @@ func (s *scan) js(f *file, fx *facts, n *sitter.Node) {
 		switch ctor {
 		case "StreamableHTTPServerTransport", "SSEServerTransport", "WebStandardStreamableHTTPServerTransport":
 			fx.endpoints = append(fx.endpoints, f.site(n, "new "+ctor))
+			if ctor != "SSEServerTransport" && jsStateful(f, n) {
+				fx.statefulHTTP = true
+			}
 		case "Hono", "Koa", "Elysia":
 			fx.servers = append(fx.servers, f.site(n, "new "+ctor))
 		}
@@ -61,14 +72,17 @@ func (s *scan) js(f *file, fx *facts, n *sitter.Node) {
 		s.jsCall(f, fx, n)
 	case "member_expression":
 		obj := n.ChildByFieldName("object")
+		if obj != nil && strings.HasSuffix(strings.ToLower(f.text(obj)), "headers") && strings.EqualFold(f.text(n.ChildByFieldName("property")), "origin") && (inCondition(n) || f.rejectsNear(n)) && !inCORSHeaderSet(f, n) {
+			fx.originChecks = append(fx.originChecks, f.site(n, "tests the request's Origin header"))
+		}
 		if obj != nil && strings.HasSuffix(strings.ToLower(f.text(obj)), "headers") && authHeader(f.text(n.ChildByFieldName("property"))) && !assignedTo(n) {
-			fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+f.text(n.ChildByFieldName("property"))+" request header"), f.conditional(n)})
+			f.headerAuth(fx, n, f.text(n.ChildByFieldName("property")))
 		}
 	case "subscript_expression":
 		obj := n.ChildByFieldName("object")
 		if obj != nil && strings.HasSuffix(strings.ToLower(f.text(obj)), "headers") && !assignedTo(n) {
 			if v, ok := f.lit(n.ChildByFieldName("index")); ok && authHeader(v) {
-				fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+v+" request header"), f.conditional(n)})
+				f.headerAuth(fx, n, v)
 			}
 		}
 	case "pair":
@@ -99,6 +113,8 @@ func (s *scan) markerString(f *file, fx *facts, n *sitter.Node) {
 		fx.jsonrpc = true
 	case "access-control-allow-headers":
 		fx.allowHeaders = true
+	case "mcp-session-id":
+		fx.sessionHeaderNamed = true
 	}
 }
 
@@ -175,7 +191,7 @@ func (s *scan) jsCall(f *file, fx *facts, n *sitter.Node) {
 		if v, ok := f.lit(args[0]); ok && authHeader(v) {
 			recv := strings.ToLower(strings.TrimSuffix(callee, last))
 			if strings.Contains(recv, "header") || strings.Contains(recv, "req") {
-				fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+v+" request header"), f.conditional(n)})
+				f.headerAuth(fx, n, v)
 			}
 		}
 	}
@@ -277,7 +293,7 @@ func (s *scan) py(f *file, fx *facts, n *sitter.Node) {
 	case "subscript":
 		if strings.HasSuffix(strings.ToLower(f.text(n.ChildByFieldName("value"))), "headers") {
 			if v, ok := f.lit(n.ChildByFieldName("subscript")); ok && authHeader(v) {
-				fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+v+" request header"), f.conditional(n)})
+				f.headerAuth(fx, n, v)
 			}
 		}
 	case "string":
@@ -314,6 +330,9 @@ func (s *scan) pyCall(f *file, fx *facts, n *sitter.Node) {
 		s.pyHost(f, fx, n, callee, kw["host"])
 	case last == "sse_app" || last == "streamable_http_app" || last == "http_app":
 		fx.endpoints = append(fx.endpoints, f.site(n, callee+"()"))
+		if last != "sse_app" && !f.pyStateless(n, kw) {
+			fx.statefulHTTP = true
+		}
 	case last == "run_sse_async" || last == "run_streamable_http_async" || last == "run_http_async":
 		fx.endpoints = append(fx.endpoints, f.site(n, callee+"()"))
 		s.pyHost(f, fx, n, callee, kw["host"])
@@ -333,13 +352,25 @@ func (s *scan) pyCall(f *file, fx *facts, n *sitter.Node) {
 		}
 	case last == "CORSMiddleware" || (last == "Middleware" || last == "add_middleware") && len(pos) > 0 && parser.LastSegment(f.text(pos[0])) == "CORSMiddleware":
 		origins, regex := kw["allow_origins"], kw["allow_origin_regex"]
-		if origins != nil && (strings.Contains(f.text(origins), `"*"`) || strings.Contains(f.text(origins), `'*'`)) || regex != nil {
+		broadRegex := false
+		if rv, ok := f.lit(regex); ok {
+			// a pattern for the user's own machine (localhost, 127.0.0.1) is not every origin
+			broadRegex = !strings.Contains(rv, "localhost") && !strings.Contains(rv, "127")
+		}
+		if origins != nil && (strings.Contains(f.text(origins), `"*"`) || strings.Contains(f.text(origins), `'*'`)) || broadRegex {
 			hdrs := strings.ToLower(f.text(kw["allow_headers"]))
 			fx.cors = append(fx.cors, corsSite{site: f.site(n, "CORSMiddleware allows every origin"), Preflight: strings.Contains(hdrs, "*") || strings.Contains(hdrs, "content-type")})
 		}
-	case last == "get" && len(pos) >= 1 && strings.HasSuffix(strings.ToLower(strings.TrimSuffix(callee, ".get")), "headers"):
-		if v, ok := f.lit(pos[0]); ok && authHeader(v) {
-			fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+v+" request header"), f.conditional(n)})
+	case last == "get" && len(pos) >= 1 && strings.Contains(strings.ToLower(strings.TrimSuffix(callee, ".get")), "headers"):
+		v, ok := f.lit(pos[0])
+		if !ok {
+			v, ok = pyBytes(f.text(pos[0]))
+		}
+		if ok && authHeader(v) {
+			f.headerAuth(fx, n, v)
+		}
+		if ok && strings.EqualFold(v, "origin") && (inCondition(n) || f.rejectsNear(n)) {
+			fx.originChecks = append(fx.originChecks, f.site(n, "tests the request's Origin header"))
 		}
 	case pyAuthNames[last]:
 		fx.auth = append(fx.auth, authSite{f.site(n, callee+"()"), f.conditional(n)})
@@ -412,7 +443,9 @@ func (s *scan) goCall(f *file, fx *facts, n *sitter.Node) {
 		fx.cors = append(fx.cors, corsSite{site: f.site(n, "cors.AllowAll()"), Preflight: true})
 	case last == "Get" && len(args) == 1 && strings.Contains(callee, "Header"):
 		if v, ok := f.lit(args[0]); ok && authHeader(v) {
-			fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+v+" request header"), f.conditional(n)})
+			f.headerAuth(fx, n, v)
+		} else if ok && strings.EqualFold(v, "origin") && inCondition(n) {
+			fx.originChecks = append(fx.originChecks, f.site(n, "tests the request's Origin header"))
 		}
 	case strings.Contains(last, "RequireBearerToken") || last == "BearerAuth" || last == "JWTAuth" || last == "BasicAuth" && strings.Contains(callee, "."):
 		fx.auth = append(fx.auth, authSite{f.site(n, callee+"()"), f.conditional(n)})
@@ -495,4 +528,99 @@ func quoteHost(v string) string {
 		return `""`
 	}
 	return v
+}
+
+// inCondition reports whether n sits in the condition of an if (or a ternary), directly or
+// through a comparison or a call such as allowed.includes(origin)
+func inCondition(n *sitter.Node) bool {
+	for p, child := n.Parent(), n; p != nil; p, child = p.Parent(), p {
+		switch p.Kind() {
+		case "if_statement", "ternary_expression", "conditional_expression":
+			c := p.ChildByFieldName("condition")
+			return c != nil && c.StartByte() <= child.StartByte() && child.EndByte() <= c.EndByte()
+		case "statement_block", "block", "function_definition", "arrow_function", "function_declaration", "method_definition", "func_literal":
+			return false
+		}
+	}
+	return false
+}
+
+// jsStateful reports whether a Streamable HTTP transport is created with session ids: its
+// sessionIdGenerator option is anything but undefined
+func jsStateful(f *file, n *sitter.Node) bool {
+	args := namedArgs(n.ChildByFieldName("arguments"))
+	if len(args) == 0 || args[0].Kind() != "object" {
+		return false
+	}
+	g := f.objectField(args[0], "sessionIdGenerator")
+	return g != nil && strings.TrimSpace(f.text(g)) != "undefined"
+}
+
+// pyStateless reports whether a FastMCP HTTP app runs without sessions: stateless_http=True on
+// the call or the FastMCP constructor of the file
+func (f *file) pyStateless(n *sitter.Node, kw map[string]*sitter.Node) bool {
+	if v := kw["stateless_http"]; v != nil {
+		return f.text(v) == "True"
+	}
+	return strings.Contains(string(f.src), "stateless_http=True")
+}
+
+// pyBytes decodes a Python bytes literal b"..." or b'...'
+func pyBytes(text string) (string, bool) {
+	t := strings.TrimSpace(text)
+	if len(t) >= 3 && (t[0] == 'b' || t[0] == 'B') && (t[1] == '"' || t[1] == '\'') && t[len(t)-1] == t[1] {
+		return t[2 : len(t)-1], true
+	}
+	return "", false
+}
+
+// rejection marks a refused request: a 401/403 status, its name, or an auth error message
+var rejection = regexp.MustCompile(`(?i)\b40[13]\b|unauthori[sz]ed|forbidden|compare_digest|timingSafeEqual|ConstantTimeCompare|Status(Unauthorized|Forbidden)|invalid (api[ _-]?)?(key|token|credentials)|missing (api[ _-]?)?(key|token|credentials)|wrong (api[ _-]?)?(key|token)`)
+
+// headerAuth records a read of a credential header as authentication only when the request is
+// refused nearby without it: a header that only picks whose token to use (the caller's, else the
+// server's own) authenticates nobody
+func (f *file) headerAuth(fx *facts, n *sitter.Node, header string) {
+	if !f.rejectsNear(n) {
+		return
+	}
+	fx.auth = append(fx.auth, authSite{f.site(n, "reads the "+header+" request header and refuses the request without it"), f.conditional(n)})
+}
+
+// rejectsNear reports whether the code around n refuses a request (rejection): the function that
+// holds n when it is a middleware-sized one, else the lines around n
+func (f *file) rejectsNear(n *sitter.Node) bool {
+	funcs := functionKinds[f.lang]
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		if funcs[p.Kind()] {
+			if p.EndPosition().Row-p.StartPosition().Row <= 80 {
+				return rejection.MatchString(f.text(p))
+			}
+			break
+		}
+	}
+	from := int(n.StartPosition().Row) - 3
+	to := int(n.StartPosition().Row) + 12
+	lines := strings.Split(string(f.src), "\n")
+	if from < 0 {
+		from = 0
+	}
+	if to > len(lines) {
+		to = len(lines)
+	}
+	return rejection.MatchString(strings.Join(lines[from:to], "\n"))
+}
+
+// inCORSHeaderSet reports whether n is the value of an Access-Control-Allow-Origin header being
+// set: echoing the Origin back is the opposite of checking it
+func inCORSHeaderSet(f *file, n *sitter.Node) bool {
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "call_expression", "pair":
+			return strings.Contains(strings.ToLower(f.text(p)), "access-control-allow-origin")
+		case "statement_block", "program":
+			return false
+		}
+	}
+	return false
 }
