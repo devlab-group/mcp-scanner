@@ -41,7 +41,9 @@ type Dossier struct {
 	Capabilities   []Capability `json:"capabilities"`
 	// ReviewHints are places static analysis could not settle, for a later reviewer to revisit;
 	// see docs/review-hints.md
-	ReviewHints []Hint         `json:"review_hints"`
+	ReviewHints []Hint `json:"review_hints"`
+	// Combination is what the server's capabilities together can do; nil when none shows
+	Combination *Combination   `json:"combination,omitempty"`
 	Coverage    model.Coverage `json:"coverage"`
 }
 
@@ -72,6 +74,8 @@ type Server struct {
 	Call    string `json:"call"`
 	Name    string `json:"name,omitempty"`
 	Version string `json:"version,omitempty"`
+	// Transports the server starts, by the SDK calls the code makes: stdio, sse, http
+	Transports []string `json:"transports,omitempty"`
 }
 
 // Capability is one tool, prompt or resource with its handler and reachable behavior
@@ -89,6 +93,12 @@ type Capability struct {
 	HandlerText         string                      `json:"handler_text,omitempty"`
 	Behavior            *behavioral.HandlerBehavior `json:"behavior,omitempty"`
 	Declares            map[string]bool             `json:"declares,omitempty"`
+	// Annotations are the hints the registration spells, Effects what the code it reaches changes
+	// or sends, AnnotationConflicts where the two disagree, NotTraced where the path leaves the code
+	Annotations         map[string]bool     `json:"annotations,omitempty"`
+	Effects             *behavioral.Effects `json:"effects,omitempty"`
+	AnnotationConflicts []string            `json:"annotation_conflicts,omitempty"`
+	NotTraced           []string            `json:"not_traced,omitempty"`
 }
 
 // Handler is the function that serves a capability
@@ -119,6 +129,7 @@ func Build(ctx context.Context, root, scannerVersion string) (*Dossier, error) {
 	d.Repository.Manifests = manifests(root)
 	d.Repository.Readme = readme(root)
 	d.Servers = append(servers(g), jsServers(root, g)...)
+	setTransports(g, d.Servers)
 	d.MCPImports = mcpImports(g)
 	for _, c := range g.Capabilities {
 		d.Capabilities = append(d.Capabilities, capability(root, g, c))
@@ -130,6 +141,7 @@ func Build(ctx context.Context, root, scannerVersion string) (*Dossier, error) {
 		}
 		return a.Line < b.Line
 	})
+	d.Combination = combination(d.Capabilities)
 	d.ReviewHints = hints(d, g, cov)
 	if d.ReviewHints == nil {
 		d.ReviewHints = []Hint{}
@@ -156,6 +168,16 @@ func capability(root string, g *graph.Graph, c graph.Capability) Capability {
 		out.Handler = h
 	}
 	b := behavioral.Behavior(g, c.Handler)
+	if b.Network || b.Credentials {
+		b.Egress = behavioral.EgressOf(g, c.Handler, b.EnvVars)
+	}
+	e := behavioral.EffectsOf(g, c.Handler)
+	if !e.Empty() {
+		out.Effects = &e
+	}
+	out.Annotations = annotations(g, c)
+	out.AnnotationConflicts = annotationConflicts(out.Annotations, e)
+	out.NotTraced = notTraced(&b)
 	out.Behavior = &b
 	return out
 }

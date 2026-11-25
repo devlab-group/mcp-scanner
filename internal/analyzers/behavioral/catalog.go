@@ -402,6 +402,9 @@ type HandlerBehavior struct {
 	URLs              []string `json:"urls,omitempty"`
 	ReachedFunctions  int      `json:"reached_functions"`
 	ReachesUnresolved bool     `json:"reaches_unresolved_calls"`
+	// Egress is where the handler's network calls and credentials go; nil when it reaches none.
+	// Only the inventory fills it (EgressOf): the analyzers do not read it.
+	Egress *Egress `json:"egress,omitempty"`
 }
 
 // Behavior summarizes what handler can reach, with the same reachability and catalogue the
