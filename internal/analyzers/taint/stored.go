@@ -1,13 +1,12 @@
 package taint
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -35,7 +34,7 @@ func (c *ctx) moduleContainers(file string) map[string]bool {
 		return m
 	}
 	m := map[string]bool{}
-	if data, err := os.ReadFile(filepath.Join(c.g.Root, file)); err == nil {
+	if data, err := targetfs.ReadGraphFile(c.g, file); err == nil {
 		for _, sm := range moduleContainerDecl.FindAllStringSubmatch(string(data), -1) {
 			m[sm[1]] = true
 		}

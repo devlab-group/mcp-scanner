@@ -117,9 +117,13 @@ func TestConfiguredRulesDirProducesSameFindingsCLIAndAPI(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/scans", strings.NewReader(`{"target": {"kind": "static", "path": "snap.json"}}`))
 	req.Header.Set("Authorization", "Bearer sekret")
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("api submit: status %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 	var sub struct {
 		ID string `json:"id"`

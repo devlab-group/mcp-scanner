@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/devlab-group/mcp-scanner/internal/source/bundle"
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/inventory"
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
@@ -82,7 +83,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 	}
 	cov := inv.Coverage
 
-	var timedOut, overText, tooDeep, syntaxErrs int
+	var timedOut, overText, tooDeep, syntaxErrs, changedBundles int
 	for i, f := range inv.Files {
 		if ctx.Err() != nil {
 			// The scanner deadline leaves files unread, so record a limit rather than explaining
@@ -93,7 +94,18 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 		}
 
 		adapter := language.ByID(f.Lang)
-		src, err := readFile(f.Abs, f.MaxBytes)
+		var src []byte
+		var bundled []string
+		var err error
+		if f.Bundle {
+			var whole bool
+			src, bundled, whole, err = readBundle(f.Abs)
+			if err == nil && !whole {
+				changedBundles++
+			}
+		} else {
+			src, err = readFile(f.Abs, f.MaxBytes)
+		}
 		if err != nil {
 			cov.FilesFailed++
 			continue
@@ -127,8 +139,12 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 			}
 			g.Symbols[s.ID] = s
 		}
-		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Constants: res.Constants, ObjectConstants: res.ObjectConstants, TemplateConstants: res.TemplateConstants}
+		g.Files[f.Path] = &graph.File{Path: f.Path, Language: string(f.Lang), Imports: res.Imports, MaxBytes: f.MaxBytes, Bundle: f.Bundle, BundledPackages: bundled, Constants: res.Constants, ObjectConstants: res.ObjectConstants, TemplateConstants: res.TemplateConstants}
 		g.Calls = append(g.Calls, res.Calls...)
+	}
+	if changedBundles > 0 {
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"%d bundle file(s) changed during the scan and were parsed only up to the %d byte size limit", changedBundles, inventory.DefaultLimits().MaxFileSize))
 	}
 	if timedOut > 0 {
 		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
@@ -153,6 +169,7 @@ func Build(ctx context.Context, root string) (*graph.Graph, model.Coverage, erro
 
 	parser.Resolve(g)
 	registration.Discover(g)
+	g.IndexCalls()
 	cov.CapabilitiesDiscovered = len(g.Capabilities)
 	cov.CapabilitiesAnalyzed = len(g.Capabilities) // every discovered one was inspected for name/handler
 	if len(g.Capabilities) == 0 {
@@ -187,6 +204,17 @@ func noRegistrationReason(g *graph.Graph) string {
 	}
 	return "no MCP tool, prompt or resource registration was resolved in this tree: " +
 		"either the server registers them in a form this build does not recognize, or there is no MCP server here"
+}
+
+// readBundle reads a file the inventory accepted as a bundle, with its node_modules modules
+// blanked; whole is false when it no longer reads as one and only its first bytes were read
+func readBundle(path string) (src []byte, packages []string, whole bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer f.Close()
+	return bundle.Read(f, inventory.DefaultLimits().MaxFileSize)
 }
 
 // readFile reads a whole file, or - when maxBytes is set, meaning inventory found it over

@@ -209,7 +209,9 @@ def stats(site_url: str) -> str:
 	}
 }
 
-// The input check can sit two calls down: readJob(id) -> jobPath(id), which throws unless id is a uuid
+// The input check can sit two calls down: readJob(id) -> jobPath(id), which throws unless id is a
+// uuid. The check is found there, and its anchored [a-f0-9-] pattern cannot spell a path, so it
+// closes the path (regexguard.go): context
 func TestGuardTwoCallsDown(t *testing.T) {
 	src := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "fs";
@@ -228,8 +230,8 @@ server.tool("job_status", "Shows the status of a job", async ({ id }: { id: stri
 `
 	res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": src}))
 	fs := categoryFindings(res, "path_traversal")
-	if len(fs) == 0 || fs[0].Triage != "needs_review" {
-		t.Fatalf("want path_traversal in review, got %+v", fs)
+	if len(fs) == 0 || fs[0].Triage != "context" {
+		t.Fatalf("want path_traversal closed by the uuid pattern (context), got %+v", fs)
 	}
 }
 
@@ -299,6 +301,8 @@ func TestFixedResourceURIIsNotInput(t *testing.T) {
 const server = new McpServer({ name: "x", version: "1" });
 const BASE = process.env.DOCS_BASE || "https://docs.example.com";
 const docURI = process.argv[2];
+const FIXED_URI = "https://docs.example.com/llms.txt";
+const PAGE_URI = "https://docs.example.com/{page}";
 server.registerResource("doc", %s, { description: "A document" }, async (uri: URL) => {
   const r = await fetch(uri.href);
   return { contents: [{ uri: uri.href, text: await r.text() }] };
@@ -313,6 +317,8 @@ server.registerResource("doc", %s, { description: "A document" }, async (uri: UR
 		{"template literal with the server's base", "`${BASE}/llms.txt`", false},
 		{"template literal with a template variable", "`${BASE}/{page}`", true},
 		{"variable, unknown", "docURI", true},
+		{"same-file constant, fixed", "FIXED_URI", false},
+		{"same-file constant, template", "PAGE_URI", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := analyze(t, mustWriteDir(t, map[string]string{"server.ts": fmt.Sprintf(tmpl, tc.uri)}))
@@ -775,8 +781,9 @@ func TestJavaExecOnAnotherObjectGoesToReview(t *testing.T) {
 	}
 }
 
-// A tool registered in a test file is test code by its path: its findings go to review. The same
-// tool in the server's source stays potential.
+// A tool registered in a test file is test code by its path. Its findings go to context when the
+// sink is in test code too and no manifest starts the file. The same tool in the server's source
+// stays potential.
 func TestHandlerInATestFileGoesToReview(t *testing.T) {
 	src := `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -790,7 +797,7 @@ server.tool("get", { url: z.string() }, async ({ url }) => {
 		file string
 		want model.Triage
 	}{
-		{"document-processing.test.ts", model.TriageNeedsReview},
+		{"document-processing.test.ts", model.TriageContext},
 		{"server.ts", ""},
 	} {
 		t.Run(tc.file, func(t *testing.T) {

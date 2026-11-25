@@ -6,6 +6,7 @@ package app
 import (
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/auth"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/behavioral"
+	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/iac"
 	// _ "github.com/devlab-group/mcp-scanner/internal/analyzers/cisco"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/llm"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/promptdefense"
@@ -14,6 +15,7 @@ import (
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/runtime"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/supplychain"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/taint"
+	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/transport"
 	// _ "github.com/devlab-group/mcp-scanner/internal/analyzers/virustotal"
 	_ "github.com/devlab-group/mcp-scanner/internal/analyzers/yara"
 )

@@ -132,7 +132,9 @@ func (f *Finding) EnsureID(scope string) {
 func FingerprintScope(t Target) string {
 	switch t.Kind {
 	case TargetRemote:
-		return string(t.Kind) + "|" + t.RedactedURL()
+		// the key in a URL path stays part of the scope (it is hashed, never printed), so two
+		// endpoints that differ only by it keep distinct IDs
+		return string(t.Kind) + "|" + redactURL(t.URL, false)
 	case TargetStdio:
 		return string(t.Kind) + "|" + strings.Join(append([]string{t.Command}, t.Args...), " ")
 	case TargetStatic:

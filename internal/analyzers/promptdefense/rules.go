@@ -64,6 +64,13 @@ type Rule struct {
 	// zero means the current sentence is the whole window.
 	Proximity int `yaml:"proximity,omitempty"`
 
+	// OwnToolHint is a regex with a group named tool. A match of this rule that it also covers,
+	// naming a tool the same server registers, with no other pattern of the rule matching in the
+	// same sentence, is a call-order hint between the server's own tools ("call the list_notes
+	// tool first"): it stays reported, as context at LOW. A tool of another server, or a demand to
+	// keep it from the user, keeps the finding.
+	OwnToolHint string `yaml:"own_tool_hint,omitempty"`
+
 	// PromoteIfStructural names a structural detector; when it also
 	// fires on the same unit, a pattern match is reported as STATIC
 	// evidence instead of whatever evidence_level says
@@ -101,6 +108,7 @@ type compiledRule struct {
 	negate         []*regexp.Regexp
 	negateBefore   []*regexp.Regexp
 	excludeMatch   []*regexp.Regexp
+	ownToolHint    *regexp.Regexp
 }
 
 func compileRule(r Rule) (*compiledRule, error) {
@@ -120,6 +128,16 @@ func compileRule(r Rule) (*compiledRule, error) {
 	}
 	if cr.excludeMatch, err = compileAll(r.ExcludeMatch); err != nil {
 		return nil, fmt.Errorf("rule %s: exclude_match: %w", r.ID, err)
+	}
+	if r.OwnToolHint != "" {
+		hint, err := compileAll([]string{r.OwnToolHint})
+		if err != nil {
+			return nil, fmt.Errorf("rule %s: own_tool_hint: %w", r.ID, err)
+		}
+		if hint[0].SubexpIndex("tool") < 0 {
+			return nil, fmt.Errorf("rule %s: own_tool_hint needs a group named tool", r.ID)
+		}
+		cr.ownToolHint = hint[0]
 	}
 	return cr, nil
 }

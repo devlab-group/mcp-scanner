@@ -65,6 +65,7 @@ func TestSourceScanNeverReturnsTheBaseDirectory(t *testing.T) {
 	defer ts.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/scans", strings.NewReader(`{"target": {"kind": "source", "path": "project"}}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sekret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

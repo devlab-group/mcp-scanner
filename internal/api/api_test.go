@@ -333,6 +333,7 @@ func TestStdioRequiresValidToken(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		req.Header.Set("Content-Type", "application/json")
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -457,6 +458,7 @@ func TestSourcePathMustStayWithinBaseDir(t *testing.T) {
 	post := func(path string) *http.Response {
 		body := `{"target": {"kind": "source", "path": "` + path + `"}}`
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/scans", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer sekret")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -559,6 +561,7 @@ func TestStaticPathMustStayWithinBaseDir(t *testing.T) {
 	post := func(path string) *http.Response {
 		body := `{"target": {"kind": "static", "path": "` + path + `"}}`
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/scans", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer sekret")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -623,6 +626,7 @@ func TestStaticReadErrorIsRedactedNotLeaked(t *testing.T) {
 	defer ts.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/scans", strings.NewReader(`{"target": {"kind": "static", "path": "target.json"}}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sekret")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

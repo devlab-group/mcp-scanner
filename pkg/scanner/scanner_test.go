@@ -449,3 +449,31 @@ func TestBestEffortAnalyzerErrorDoesNotBlockTheVerdict(t *testing.T) {
 		t.Fatalf("got %s/%s, want the best-effort error not to decide the scan (%v)", res.Status, res.Verdict, res.VerdictReasons)
 	}
 }
+
+type resolvingPreparer struct{ version string }
+
+func (p resolvingPreparer) Prepare(context.Context, model.Target) (*analyzer.AnalysisContext, func(), error) {
+	ac := &analyzer.AnalysisContext{Artifacts: analyzer.NewArtifacts()}
+	ac.Artifacts.Set(analyzer.ResolvedVersionKey, p.version)
+	return ac, nil, nil
+}
+
+// The report says which version was downloaded and scanned, beside what was asked for
+func TestPackageReportRecordsTheResolvedVersion(t *testing.T) {
+	reg := analyzer.NewRegistry()
+	reg.Register(fake{"proto", func(context.Context) model.AnalyzerResult {
+		return model.AnalyzerResult{Analyzer: "proto", Status: model.AnalyzerCompleted}
+	}})
+	s := New(reg, resolvingPreparer{"2.3.4"}, nil)
+	target := model.Target{Kind: model.TargetPackage, Ecosystem: "npm", Package: "demo", Version: "latest"}
+	res, err := s.Scan(context.Background(), target, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Target.ResolvedVersion != "2.3.4" || res.Target.Version != "latest" {
+		t.Fatalf("target %+v: want version as asked (latest) and resolved_version 2.3.4", res.Target)
+	}
+	if model.FingerprintScope(res.Target) != model.FingerprintScope(target) {
+		t.Fatal("recording the resolved version changed the fingerprint scope, and with it every baseline")
+	}
+}

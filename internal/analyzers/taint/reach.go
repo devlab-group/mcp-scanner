@@ -176,9 +176,12 @@ func sorted(ls []string) []string {
 // their severity and go to needs_review when it is high. Severity is lowered only where the MCP
 // threat model's attacker does not control the source: an environment variable the operator
 // sets, or code no MCP handler can reach (tests, build scripts, an unrelated CLI).
-func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
+//
+// It also returns how many package manifests a triage rule needed and could not read through the
+// scan root; the caller reports them as a coverage limit.
+func classify(g *graph.Graph, fs []model.Finding) ([]model.Finding, int) {
 	if len(fs) == 0 {
-		return fs
+		return fs, 0
 	}
 	r := newReachIndex(g)
 	screen, screenKnown := "", false
@@ -193,6 +196,20 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 		f.Reachability, f.ReachableFrom = r.of(src.File, src.Line)
 		original := f.Severity
 
+		ship, shipWhy := guards.shippingOfPath(f.Evidence[0].Path)
+		if ship == testCode {
+			// a test suite, an evaluation harness or a fixture: by its path not part of the released
+			// server, nothing starts it, and it is a test or the server lives elsewhere
+			f.Severity = capSeverity(f.Severity, model.SeverityLow)
+			f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+				"the path runs in test or evaluation code (%s), which no package manifest or deployment file starts, and %s, so a released server does not run it; severity lowered from %s", src.File, shipWhy, original)
+			continue
+		}
+
+		if f.Triage == model.TriageContext {
+			// the walker settled it by what the code builds the sink's receiver from
+			continue
+		}
 		switch {
 		case f.SourceClass == sourceMCPInput:
 			// Seeded from a handler, so reachable by construction
@@ -216,7 +233,7 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			}
 			if f.Category == "path_traversal" && src.Detail == "resource handler argument" && original.AtLeast(model.SeverityHigh) {
 				if !screenKnown {
-					screen, screenKnown = templateScreening(g.Root), true
+					screen, screenKnown = templateScreening(g), true
 				}
 				if screen != "" {
 					f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
@@ -228,16 +245,31 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			guards.shell = f.Category == "command_injection"
 			if step, ok := validatorStep(f.Evidence[0].Path); ok && original.AtLeast(model.SeverityHigh) && !(guards.shell && guards.validatorShellBlind(step)) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
-					fmt.Sprintf("the argument passes through %s, the project's own validation function; whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
+					fmt.Sprintf("the argument passes through %s, a validation function (the project's own or a library's); whether it really rejects the dangerous input decides between a real issue and noise, and the scanner does not verify it", step)
 				break
 			}
 			// A check on the path comes first, also in a tool whose purpose is the sink: "fetch a
 			// Wikipedia page" that tests the URL against wikipedia.org is limited by that test, and a
 			// person decides whether it holds
 			if guard, line, ok := guardIfHigh(guards, original, f.Evidence[0].Path); ok {
-				f.Triage, f.TriageReason = model.TriageNeedsReview,
-					fmt.Sprintf("before the sink the handler checks the value (%s, line %d) and stops when the check fails; whether that check blocks every dangerous value decides between a real issue and noise, and the scanner does not verify it", guard, line)
-				break
+				rv := guards.regexVerdict(f.Category)
+				if guards.closes(rv, f.Evidence[0].Path) {
+					// the check's own pattern closes the path: an anchored allowlist that cannot
+					// spell what the sink would act on, tested by a plain if that rejects on every
+					// way to the sink, on the value the sink reads
+					f.Severity = capSeverity(f.Severity, model.SeverityLow)
+					f.Triage, f.TriageReason = model.TriageContext,
+						fmt.Sprintf("before the sink the handler rejects every value that does not match %s (%s, line %d); a matching value cannot carry %s; severity lowered from %s", rv.pattern, guard, line, rv.why, original)
+					break
+				}
+				if !rv.ineffective {
+					f.Triage, f.TriageReason = model.TriageNeedsReview,
+						fmt.Sprintf("before the sink the handler checks the value (%s, line %d) and stops when the check fails; whether that check blocks every dangerous value decides between a real issue and noise, and the scanner does not verify it", guard, line)
+					break
+				}
+				// the pattern accepts a dangerous value, so the check does not limit the path; the
+				// finding stays as the path says
+				f.TriageReason = fmt.Sprintf("the check before the sink (%s, line %d) tests the value against %s, but %s, so it does not stop the path", guard, line, rv.pattern, rv.why)
 			}
 			_, unresolved := unresolvedStep(f.Evidence[0].Path)
 			if !unresolved && asCapability(g, f) {
@@ -255,19 +287,40 @@ func classify(g *graph.Graph, fs []model.Finding) []model.Finding {
 			f.Severity = capSeverity(f.Severity, model.SeverityLow)
 			f.Triage, f.TriageReason = model.TriageContext,
 				fmt.Sprintf("the value comes from an environment variable the operator sets, not from MCP input; severity lowered from %s", original)
+		case f.Reachability == reachUnknown && !guards.mcpSurface(src.File):
+			// a command-line tool or a library: no import, dependency or package name says MCP, so
+			// no MCP caller reaches the path; the missing registrations are reported once, as a
+			// coverage limit, not as a finding per path
+			f.Severity = capSeverity(f.Severity, model.SeverityLow)
+			f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+				"no MCP handler was resolved in this tree, and nothing in it - an import, a dependency, a package name - says it is an MCP server, so no MCP caller reaches this path; the missing registrations are reported once, as a coverage limit; severity lowered from %s", original)
 		case f.Reachability == reachUnknown:
 			if original.AtLeast(model.SeverityHigh) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
-					"no MCP handler was resolved in this tree, so whether this path is reachable from MCP input is unknown"
+					"no MCP handler was resolved in this tree, though it shows signs of an MCP server (an MCP import or dependency), so its registrations may take a form this build does not read; whether this path is reachable from MCP input is unknown"
 			}
 		default: // external content, reachable or possibly reachable
+			if where, ok := guards.constantLocator(src); ok {
+				// the server's own file or its own fixed host, by what the code names: not a page or
+				// a repository the caller chose
+				f.Severity = capSeverity(f.Severity, model.SeverityLow)
+				f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf(
+					"%s comes from a location the code fixes (%s, line %d) - a literal path of the server's own files or a literal URL of its fixed host, not an address the caller chooses or a folder the server writes for the caller; severity lowered from %s", src.Detail, where, src.Line, original)
+				break
+			}
 			if original.AtLeast(model.SeverityHigh) {
 				f.Triage, f.TriageReason = model.TriageNeedsReview,
 					fmt.Sprintf("%s reaches a %s sink; whether an attacker can write that content - a fetched page, a cloned repository - or it is the server's own configuration decides between a real issue and noise", src.Detail, f.Category)
 			}
 		}
+		if ship == unsureShip && original.AtLeast(model.SeverityHigh) && (f.Triage == "" || f.Triage == model.TriagePotential) {
+			// test or evaluation code by its folder, but nothing proves the released server does
+			// not run it: a person decides, and the severity stays
+			f.Triage, f.TriageReason = model.TriageNeedsReview, fmt.Sprintf(
+				"the path runs in %s, which by its folder is test or evaluation code, but %s; whether a released server runs it decides between a real issue and noise", src.File, shipWhy)
+		}
 	}
-	return fs
+	return fs, len(guards.refused)
 }
 
 // validatorStep returns the project validator a path passed through, if any
@@ -301,4 +354,23 @@ func capSeverity(s, max model.Severity) model.Severity {
 		return max
 	}
 	return s
+}
+
+// shippingOfPath weighs a path's source and sink files: shipped when either is, test code when
+// both are, unsure otherwise
+func (gi *guardIndex) shippingOfPath(path []model.FlowStep) (shipState, string) {
+	if len(path) == 0 {
+		return shipped, ""
+	}
+	a, whyA := gi.shipping(path[0].File)
+	b, whyB := gi.shipping(path[len(path)-1].File)
+	switch {
+	case a == shipped || b == shipped:
+		return shipped, ""
+	case a == testCode && b == testCode:
+		return testCode, whyA
+	case a == unsureShip:
+		return unsureShip, whyA
+	}
+	return unsureShip, whyB
 }

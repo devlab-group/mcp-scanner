@@ -358,7 +358,7 @@ func (r *RedirectAttempts) record(note string) {
 // a scanned server its own environment, which may hold unrelated secrets.
 var stdioEnvAllowlist = []string{"PATH"}
 
-func stdioTransport(target model.Target) *mcp.CommandTransport {
+func stdioTransport(target model.Target) mcp.Transport {
 	cmd := exec.Command(target.Command, target.Args...)
 	env := make([]string, 0, len(stdioEnvAllowlist)+len(target.Env))
 	for _, k := range stdioEnvAllowlist {
@@ -370,5 +370,37 @@ func stdioTransport(target model.Target) *mcp.CommandTransport {
 		env = append(env, k+"="+v)
 	}
 	cmd.Env = env
-	return &mcp.CommandTransport{Command: cmd}
+	setProcessGroup(cmd)
+	return &stdioGroupTransport{inner: &mcp.CommandTransport{Command: cmd}}
+}
+
+// stdioGroupTransport runs a stdio target in a process group of its own and, once the SDK has
+// closed the session and the target process itself has exited, ends whatever is left in that
+// group. A server started through npx or uvx runs as a child of the wrapper the SDK started,
+// and a hostile target can start helpers of its own: none of them may outlive the scan.
+type stdioGroupTransport struct {
+	inner *mcp.CommandTransport
+}
+
+func (t *stdioGroupTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, err := t.inner.Connect(ctx)
+	if err != nil {
+		killProcessGroup(t.inner.Command)
+		return nil, err
+	}
+	return &stdioGroupConn{Connection: conn, cmd: t.inner.Command}, nil
+}
+
+type stdioGroupConn struct {
+	mcp.Connection
+	cmd  *exec.Cmd
+	once sync.Once
+}
+
+// Close closes the session the SDK's way (stdin, then SIGTERM, then SIGKILL to the target
+// process), then kills the rest of its process group
+func (c *stdioGroupConn) Close() error {
+	err := c.Connection.Close()
+	c.once.Do(func() { killProcessGroup(c.cmd) })
+	return err
 }

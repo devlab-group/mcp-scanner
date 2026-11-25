@@ -132,6 +132,12 @@ type File struct {
 	// MaxBytes is nonzero when the walk that produced this file found it over the per-file size
 	// limit: only the first MaxBytes bytes were read and parsed
 	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// Bundle is set for a JavaScript bundle read with its node_modules modules blanked (package
+	// bundle); every reader that parses the file blanks them the same way
+	Bundle bool `json:"bundle,omitempty"`
+	// BundledPackages are the npm packages whose modules were blanked, so a tree that bundles the
+	// MCP SDK counts as importing it
+	BundledPackages []string `json:"bundled_packages,omitempty"`
 	// Constants maps unambiguous same-file string constants to their values:
 	// Python module assignments, Java string fields, Rust const or static items,
 	// JavaScript/TypeScript top-level const declarations and Go package-level consts
@@ -154,6 +160,10 @@ type Graph struct {
 	// SkippedRegistrations are calls shaped like a registration that registration discovery set
 	// aside, with the reason, so a reviewer can check that none of them was a real capability
 	SkippedRegistrations []SkippedRegistration `json:"skipped_registrations,omitempty"`
+
+	// callIndex is the positions in Calls of each caller's calls, for a graph that is complete
+	callIndex    map[SymbolID][]int
+	indexedCalls int
 }
 
 // SkippedRegistration is a call that matched a registration name but was not counted as one
@@ -169,9 +179,25 @@ func New(root string) *Graph {
 	return &Graph{Root: root, Files: map[string]*File{}, Symbols: map[SymbolID]*Symbol{}}
 }
 
+// IndexCalls groups the calls by their caller, so CallsFrom need not read all of them. Build calls
+// it once the graph is complete; a graph that grows after it is read in full again.
+func (g *Graph) IndexCalls() {
+	idx := make(map[SymbolID][]int, len(g.Symbols))
+	for i := range g.Calls {
+		idx[g.Calls[i].Caller] = append(idx[g.Calls[i].Caller], i)
+	}
+	g.callIndex, g.indexedCalls = idx, len(g.Calls)
+}
+
 // CallsFrom returns every call made directly by id ("" for top-level calls)
 func (g *Graph) CallsFrom(id SymbolID) []Call {
 	var out []Call
+	if g.callIndex != nil && g.indexedCalls == len(g.Calls) {
+		for _, i := range g.callIndex[id] {
+			out = append(out, g.Calls[i])
+		}
+		return out
+	}
 	for _, c := range g.Calls {
 		if c.Caller == id {
 			out = append(out, c)

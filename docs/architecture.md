@@ -58,7 +58,7 @@ results and applies, in order:
 3. a required analyzer did not complete -> `PARTIAL` + `UNKNOWN`
 4. required coverage does not add up -> `PARTIAL` + `UNKNOWN`
 5. every analyzer that ran failed and none was required -> `SKIPPED` + `UNKNOWN`
-6. a finding at or above the blocking severity -> `COMPLETED` + `UNSAFE`
+6. a finding at or above the blocking severity (`MEDIUM` by default) -> `COMPLETED` + `UNSAFE`
 7. otherwise -> `COMPLETED` + `SAFE`
 
 Explicitly named analyzers are required unless marked best-effort. A

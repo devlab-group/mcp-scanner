@@ -1,13 +1,12 @@
 package taint
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 )
 
 // zodParseDetail marks a zod schema's parse: it returns the values it was given
@@ -197,7 +196,7 @@ func zodSchemaNames(g *graph.Graph) map[string]bool {
 		if gf.Language != "typescript" && gf.Language != "javascript" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(g.Root, f))
+		data, err := targetfs.ReadGraphFile(g, f)
 		if err != nil || !strings.Contains(string(data), "object") {
 			continue
 		}

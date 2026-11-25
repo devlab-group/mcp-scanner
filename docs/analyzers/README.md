@@ -14,6 +14,8 @@ missing analyzers.
 | `source` | Where are the MCP capabilities in this code, and did we see all of them? | STATIC | no | a source tree |
 | `taint` | Does caller-controlled input reach something dangerous? | DATAFLOW | no | a source tree |
 | `behavioral` | Does the implementation do what the description claims? | STATIC | no | a source tree |
+| `transport` | Can other machines or web pages call the server's HTTP endpoint without credentials? | STATIC | no | a source tree |
+| `iac` | Do the shipped deployment templates fix a database or admin password? | STATIC | no | Bicep, ARM or Terraform files |
 | `runtime` | Can a static suspicion be confirmed by running it? | CONFIRMED | yes, sandboxed | Docker |
 | `supplychain` | Are the dependencies or the package itself known-bad? | STATIC | no | network for OSV |
 | `llm` | Does a model read the surface as hostile? | HEURISTIC | no | a provider key |
@@ -27,6 +29,8 @@ Per-analyzer detail:
 - [readiness and yara](readiness-and-yara.md)
 - [source and behavioral](source-and-behavioral.md)
 - [taint](taint.md)
+- [transport](transport.md)
+- [iac](iac.md)
 - [runtime](runtime.md), and the [sandbox it runs in](runtime-sandbox.md)
 
 ## Required, best-effort, and excused

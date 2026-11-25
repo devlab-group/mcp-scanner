@@ -110,7 +110,7 @@ const server = new McpServer({ name: "x", version: "1.0.0" });
 function load(p: string) { return fs.readFileSync(p, "utf8"); }
 server.tool("cfg", "Shows the configuration", async () => {
   const fromEnv = process.env.CONFIG_PATH as string;
-  const fromFile = fs.readFileSync("/etc/app/pointer", "utf8");
+  const fromFile = fs.readFileSync(process.env.POINTER_FILE as string, "utf8");
   load(fromEnv);
   load(fromFile);
   return { content: [] };

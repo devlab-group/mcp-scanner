@@ -19,6 +19,7 @@ import (
 	"github.com/devlab-group/mcp-scanner/internal/source"
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
 )
 
@@ -40,7 +41,9 @@ type Dossier struct {
 	Capabilities   []Capability `json:"capabilities"`
 	// ReviewHints are places static analysis could not settle, for a later reviewer to revisit;
 	// see docs/review-hints.md
-	ReviewHints []Hint         `json:"review_hints"`
+	ReviewHints []Hint `json:"review_hints"`
+	// Combination is what the server's capabilities together can do; nil when none shows
+	Combination *Combination   `json:"combination,omitempty"`
 	Coverage    model.Coverage `json:"coverage"`
 }
 
@@ -71,6 +74,8 @@ type Server struct {
 	Call    string `json:"call"`
 	Name    string `json:"name,omitempty"`
 	Version string `json:"version,omitempty"`
+	// Transports the server starts, by the SDK calls the code makes: stdio, sse, http
+	Transports []string `json:"transports,omitempty"`
 }
 
 // Capability is one tool, prompt or resource with its handler and reachable behavior
@@ -88,6 +93,12 @@ type Capability struct {
 	HandlerText         string                      `json:"handler_text,omitempty"`
 	Behavior            *behavioral.HandlerBehavior `json:"behavior,omitempty"`
 	Declares            map[string]bool             `json:"declares,omitempty"`
+	// Annotations are the hints the registration spells, Effects what the code it reaches changes
+	// or sends, AnnotationConflicts where the two disagree, NotTraced where the path leaves the code
+	Annotations         map[string]bool     `json:"annotations,omitempty"`
+	Effects             *behavioral.Effects `json:"effects,omitempty"`
+	AnnotationConflicts []string            `json:"annotation_conflicts,omitempty"`
+	NotTraced           []string            `json:"not_traced,omitempty"`
 }
 
 // Handler is the function that serves a capability
@@ -118,6 +129,7 @@ func Build(ctx context.Context, root, scannerVersion string) (*Dossier, error) {
 	d.Repository.Manifests = manifests(root)
 	d.Repository.Readme = readme(root)
 	d.Servers = append(servers(g), jsServers(root, g)...)
+	setTransports(g, d.Servers)
 	d.MCPImports = mcpImports(g)
 	for _, c := range g.Capabilities {
 		d.Capabilities = append(d.Capabilities, capability(root, g, c))
@@ -129,6 +141,7 @@ func Build(ctx context.Context, root, scannerVersion string) (*Dossier, error) {
 		}
 		return a.Line < b.Line
 	})
+	d.Combination = combination(d.Capabilities)
 	d.ReviewHints = hints(d, g, cov)
 	if d.ReviewHints == nil {
 		d.ReviewHints = []Hint{}
@@ -151,16 +164,26 @@ func capability(root string, g *graph.Graph, c graph.Capability) Capability {
 	}
 	if s := g.Symbols[c.Handler]; s != nil {
 		h := &Handler{Symbol: string(s.ID), File: s.File, StartLine: s.Line, EndLine: s.EndLine, Params: s.Params}
-		h.Source, h.Truncated = sourceLines(root, s.File, s.Line, s.EndLine)
+		h.Source, h.Truncated = sourceLines(root, g, s.File, s.Line, s.EndLine)
 		out.Handler = h
 	}
 	b := behavioral.Behavior(g, c.Handler)
+	if b.Network || b.Credentials {
+		b.Egress = behavioral.EgressOf(g, c.Handler, b.EnvVars)
+	}
+	e := behavioral.EffectsOf(g, c.Handler)
+	if !e.Empty() {
+		out.Effects = &e
+	}
+	out.Annotations = annotations(g, c)
+	out.AnnotationConflicts = annotationConflicts(out.Annotations, e)
+	out.NotTraced = notTraced(&b)
 	out.Behavior = &b
 	return out
 }
 
-func sourceLines(root, file string, start, end int) (string, bool) {
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(file)))
+func sourceLines(root string, g *graph.Graph, file string, start, end int) (string, bool) {
+	data, _, err := targetfs.Read(root, file, targetfs.Cap(g, file))
 	if err != nil || start <= 0 {
 		return "", false
 	}
@@ -265,17 +288,17 @@ func manifests(root string) []Manifest {
 		var m *Manifest
 		switch e.Name() {
 		case "package.json":
-			m = npmManifest(p)
+			m = npmManifest(readSmall(root, rel))
 		case "pyproject.toml":
-			m = pyprojectManifest(p)
+			m = pyprojectManifest(readSmall(root, rel))
 		case "requirements.txt":
-			m = requirementsManifest(p)
+			m = requirementsManifest(readSmall(root, rel))
 		case "go.mod":
-			m = goModManifest(p)
+			m = goModManifest(readSmall(root, rel))
 		case "Cargo.toml":
-			m = cargoManifest(p)
+			m = cargoManifest(readSmall(root, rel))
 		case "pom.xml":
-			m = pomManifest(p)
+			m = pomManifest(readSmall(root, rel))
 		}
 		if m != nil {
 			m.Path = filepath.ToSlash(rel)
@@ -297,26 +320,25 @@ func manifests(root string) []Manifest {
 	return out
 }
 
-func readSmall(p string) string {
-	info, err := os.Stat(p)
-	if err != nil || info.Size() > 1<<20 {
-		return ""
-	}
-	data, err := os.ReadFile(p)
+// readSmall returns a file of the tree whole when it is at most 1 MiB, and "" otherwise. It reads
+// through the scan root (targetfs): a README or manifest that is a link out of the tree, or to a
+// device, is not read, so the dossier never carries a file of the scanning machine
+func readSmall(root, rel string) string {
+	data, err := targetfs.ReadWhole(root, rel, 1<<20)
 	if err != nil {
 		return ""
 	}
 	return string(data)
 }
 
-func npmManifest(p string) *Manifest {
+func npmManifest(text string) *Manifest {
 	var pkg struct {
 		Name            string            `json:"name"`
 		Version         string            `json:"version"`
 		Dependencies    map[string]string `json:"dependencies"`
 		DevDependencies map[string]string `json:"devDependencies"`
 	}
-	if json.Unmarshal([]byte(readSmall(p)), &pkg) != nil {
+	if json.Unmarshal([]byte(text), &pkg) != nil {
 		return nil
 	}
 	m := &Manifest{Ecosystem: "npm", Name: pkg.Name, Version: pkg.Version, Dependencies: map[string]string{}}
@@ -342,8 +364,7 @@ var (
 	pomGroup    = regexp.MustCompile(`<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>\s*(?:<version>([^<]+)</version>)?`)
 )
 
-func pyprojectManifest(p string) *Manifest {
-	text := readSmall(p)
+func pyprojectManifest(text string) *Manifest {
 	if text == "" {
 		return nil
 	}
@@ -374,8 +395,7 @@ func pyprojectManifest(p string) *Manifest {
 	return m
 }
 
-func requirementsManifest(p string) *Manifest {
-	text := readSmall(p)
+func requirementsManifest(text string) *Manifest {
 	if text == "" {
 		return nil
 	}
@@ -388,8 +408,7 @@ func requirementsManifest(p string) *Manifest {
 	return m
 }
 
-func goModManifest(p string) *Manifest {
-	text := readSmall(p)
+func goModManifest(text string) *Manifest {
 	if text == "" {
 		return nil
 	}
@@ -405,8 +424,7 @@ func goModManifest(p string) *Manifest {
 	return m
 }
 
-func cargoManifest(p string) *Manifest {
-	text := readSmall(p)
+func cargoManifest(text string) *Manifest {
 	if text == "" {
 		return nil
 	}
@@ -442,8 +460,7 @@ func cargoManifest(p string) *Manifest {
 	return m
 }
 
-func pomManifest(p string) *Manifest {
-	text := readSmall(p)
+func pomManifest(text string) *Manifest {
 	if text == "" {
 		return nil
 	}
@@ -469,7 +486,7 @@ func readme(root string) string {
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasPrefix(strings.ToLower(e.Name()), "readme") {
-			text := readSmall(filepath.Join(root, e.Name()))
+			text := readSmall(root, e.Name())
 			if len(text) > maxReadme {
 				text = text[:maxReadme]
 			}
@@ -489,7 +506,7 @@ func jsServers(root string, g *graph.Graph) []Server {
 		if f.Language != "javascript" && f.Language != "typescript" {
 			continue
 		}
-		text := readSmall(filepath.Join(root, filepath.FromSlash(path)))
+		text := readSmall(root, path)
 		for _, m := range jsNewServer.FindAllStringSubmatchIndex(text, 3) {
 			body := text[m[4]:m[5]]
 			s := Server{File: path, Line: strings.Count(text[:m[0]], "\n") + 1, Call: "new " + text[m[2]:m[3]]}

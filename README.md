@@ -166,6 +166,7 @@ its sandbox.
 - [Release notes for v1.1.0](docs/release-notes/v1.1.0.md)
 - [Release notes for v1.1.1](docs/release-notes/v1.1.1.md)
 - [Release notes for v1.2.0](docs/release-notes/v1.2.0.md)
+- [Release notes for v1.3.0](docs/release-notes/v1.3.0.md)
 
 ## Development
 

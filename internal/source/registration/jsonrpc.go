@@ -1,13 +1,13 @@
 package registration
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 )
 
 // jsonrpc.go recognizes a server written without an MCP SDK: the project reads JSON-RPC messages
@@ -48,7 +48,7 @@ func discoverJSONRPC(g *graph.Graph, idx index, callsByFile map[string][]int) {
 		if jsonrpcTestPath.MatchString(filepath.ToSlash(path)) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(g.Root, path))
+		data, err := targetfs.ReadGraphFile(g, path)
 		if err != nil || !strings.Contains(string(data), "tools/call") {
 			continue
 		}

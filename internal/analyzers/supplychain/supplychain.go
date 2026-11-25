@@ -208,12 +208,11 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 	if target.Kind == model.TargetPackage && target.Ecosystem != "" && target.Package != "" {
 		res.Coverage.FilesDiscovered++
 		version := target.Version
-		if version == "" {
-			// The preparer publishes what the registry actually resolved
-			// "latest" to
-			if v, ok := analyzer.Get[string](ac.Artifacts, supplychain.ResolvedVersionKey); ok {
-				version = v
-			}
+		// The preparer publishes the version the registry actually served. It wins over the
+		// request: "latest" or a dist-tag is not a version OSV can match, and even a concrete
+		// request names the same bytes
+		if v, ok := analyzer.Get[string](ac.Artifacts, supplychain.ResolvedVersionKey); ok && v != "" {
+			version = v
 		}
 		if version == "" {
 			// An unversioned OSV query answers about every release the
@@ -274,21 +273,24 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 					fmt.Sprintf("%s: could not be read, anything under it was not examined for lockfiles", p))
 			}
 			// A lockfile symlink is refused and counted as both discovered and skipped. Its reason goes
-			// in LimitsHit, not SkipReasons, so balanced counters cannot turn this protective refusal
-			// into complete coverage.
+			// in LimitsHit as well as SkipReasons: a skip reason alone would let balanced counters
+			// turn this protective refusal into complete coverage, and a limit alone would leave the
+			// report saying the file was skipped without a reason.
 			for _, p := range symlinks {
 				res.Coverage.FilesDiscovered++
 				res.Coverage.FilesSkipped++
-				res.Coverage.LimitsHit = append(res.Coverage.LimitsHit,
-					fmt.Sprintf("%s: a symlink, not followed, dependencies were not checked", p))
+				reason := fmt.Sprintf("%s: a symlink, not followed, dependencies were not checked", p)
+				res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, reason)
+				res.Coverage.SkipReasons = append(res.Coverage.SkipReasons, reason)
 			}
 			for _, lf := range found {
 				res.Coverage.FilesDiscovered++
 
 				if lf.parser.parse == nil {
 					// This is an unsupported lockfile or a manifest with no resolving lockfile. It is counted as
-					// skipped but recorded in LimitsHit, because SkipReasons plus balanced counters would
-					// otherwise treat unchecked dependencies as complete coverage.
+					// skipped and recorded in LimitsHit, because SkipReasons plus balanced counters would
+					// otherwise treat unchecked dependencies as complete coverage; the same text goes in
+					// SkipReasons so the skip is not reported as one without a reason.
 					if lf.isManifest {
 						// A manifest that declares nothing has nothing
 						// unresolved, and a bare {"name":..,"type":"module"}
@@ -307,13 +309,15 @@ func (a *Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyze
 							continue
 						}
 						res.Coverage.FilesSkipped++
-						res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, fmt.Sprintf(
-							"%s: dependency ranges declared here were not resolved against a lockfile and were not checked", lf.rel))
+						reason := fmt.Sprintf("%s: dependency ranges declared here were not resolved against a lockfile and were not checked", lf.rel)
+						res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, reason)
+						res.Coverage.SkipReasons = append(res.Coverage.SkipReasons, reason)
 						continue
 					}
 					res.Coverage.FilesSkipped++
-					res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, fmt.Sprintf(
-						"%s: lockfile format is not supported by this analyzer, dependencies were not checked", lf.rel))
+					reason := fmt.Sprintf("%s: lockfile format is not supported by this analyzer, dependencies were not checked", lf.rel)
+					res.Coverage.LimitsHit = append(res.Coverage.LimitsHit, reason)
+					res.Coverage.SkipReasons = append(res.Coverage.SkipReasons, reason)
 					continue
 				}
 

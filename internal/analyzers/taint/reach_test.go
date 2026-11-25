@@ -41,15 +41,37 @@ export function releaseScript() {
   execSync("git tag " + version);
 }
 `, model.SeverityInfo, model.TriageContext, sourceEnvironment, reachNo, ""},
-		{"a config file in a handler needs review", header + `
+		// a config file at a literal path of the server's own: content from a location the code
+		// fixes, not one the caller chooses
+		{"a config file at a fixed path in a handler is context", header + `
 server.tool("build", "Builds the configured target", async () => {
   const target = fs.readFileSync("/etc/mcp/target.conf", "utf8");
   execSync("make " + target);
   return { content: [] };
 });
+`, model.SeverityLow, model.TriageContext, sourceExternalContent, reachYes, "tool build"},
+		// the same read in a shared temporary folder, which any local user can write
+		{"a file in a shared temporary folder needs review", header + `
+server.tool("build", "Builds the configured target", async () => {
+  const target = fs.readFileSync("/tmp/mcp-target.conf", "utf8");
+  execSync("make " + target);
+  return { content: [] };
+});
 `, model.SeverityHigh, model.TriageNeedsReview, sourceExternalContent, reachYes, "tool build"},
+		// no handler and no sign of an MCP server: a command-line tool, which no MCP caller reaches
 		{"no handler in the tree leaves reachability unknown", `import { execSync } from "child_process";
 import * as fs from "fs";
+export function build() {
+  const target = fs.readFileSync("/etc/mcp/target.conf", "utf8");
+  execSync("make " + target);
+}
+`, model.SeverityLow, model.TriageContext, sourceExternalContent, reachUnknown, ""},
+		// no handler resolved, but the tree imports an MCP SDK: a registration this build does not
+		// read may hide the handler, so the finding stays a question
+		{"no handler resolved in a tree that imports an MCP SDK", `import { execSync } from "child_process";
+import * as fs from "fs";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+export const server = new McpServer({ name: "t", version: "1" });
 export function build() {
   const target = fs.readFileSync("/etc/mcp/target.conf", "utf8");
   execSync("make " + target);

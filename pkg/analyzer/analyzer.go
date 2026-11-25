@@ -172,6 +172,11 @@ type Artifacts struct {
 
 func NewArtifacts() *Artifacts { return &Artifacts{m: map[string]any{}} }
 
+// ResolvedVersionKey is the artifact a package preparer publishes with the version the registry
+// served, as a string. The scanner copies it into the report's target, and the supply-chain
+// analyzer looks the package up at exactly that version.
+const ResolvedVersionKey = "supplychain.resolved_version"
+
 func (a *Artifacts) Set(key string, v any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

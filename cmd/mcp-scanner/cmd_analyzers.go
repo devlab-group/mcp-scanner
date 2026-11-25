@@ -16,7 +16,7 @@ import (
 // Deliberately unregistered integrations are not part of this vocabulary.
 var knownAnalyzerNames = []string{
 	"protocol", "auth", "yara", "promptdefense", "readiness", "source",
-	"taint", "behavioral", "runtime", "supplychain", "llm",
+	"taint", "behavioral", "transport", "iac", "runtime", "supplychain", "llm",
 }
 
 // wrapWidth keeps detailed output readable without a terminal-width dependency

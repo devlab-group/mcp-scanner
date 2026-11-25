@@ -160,6 +160,27 @@ func (c *ctx) classifyArgv(file string, kind argvKind, chain string, args []grap
 		}
 	}
 
+	if program.Literal && programBasename(program.Value) == "osascript" {
+		// osascript -e <script>: each -e argument is one line of an AppleScript (or JXA) program,
+		// and AppleScript runs shell commands with `do shell script`, so caller text inside it is
+		// code, not an argument. A script file's own arguments (osascript f.scpt a b) stay
+		// arguments and fall through.
+		for i, a := range rest {
+			if a.Literal && a.Value == "-e" && i+1 < len(rest) {
+				if _, info, found := taintedArgIndex(rest[i+1:i+2], tainted, ""); found {
+					// AppleScript text is usually built with its own string escaping (\ and ")
+					// or JSON.stringify, which the scanner does not read as quoting for
+					// AppleScript, so the finding goes to review rather than to potential
+					if info.review == "" {
+						info.review = "the caller's text is part of an AppleScript program run by osascript -e; whether it stays inside a correctly escaped AppleScript string literal (\\ and \" escaped) decides between code execution and a safe value"
+					}
+					return "command_injection", model.SeverityHigh, 1,
+						"osascript -e runs its argument as AppleScript, which can run shell commands (do shell script)", info, true
+				}
+			}
+		}
+	}
+
 	if program.Literal && programBasename(program.Value) == "ssh" {
 		// ssh joins every argument after the destination into one string and hands it to a shell
 		// on the remote host: those arguments are shell text there, whatever they look like here

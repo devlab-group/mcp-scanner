@@ -36,8 +36,9 @@ rules:
       This text imitates a trusted system or assistant chat turn.
     remediation: >
       Remove the fake role label or quote it as example dialogue.
+    # system://status is a URI scheme, not a chat turn: "//" right after the colon does not count
     patterns:
-      - "(?m)^\\s*(system|assistant)\\s*:\\s*\\S"
+      - "(?m)^\\s*(system|assistant)\\s*:(?:[^/\\s]|/[^/]|\\s+\\S)"
     negate:
       - "\\b(windows|linux|macos|android|ios|requirements?|architecture|design|prompt)\\b"
     proximity: 20

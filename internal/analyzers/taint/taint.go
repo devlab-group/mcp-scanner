@@ -76,8 +76,16 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		warnings = append(warnings, "the published source graph carried no walk coverage; file-level coverage cannot be reported for this scan")
 	}
 
+	findings, refusedManifests := classify(g, tc.findings)
 	cov := baseCov
 	cov.Add(taintCoverage(g, tc))
+	if refusedManifests > 0 {
+		// a rule that lowers a finding by what a manifest says (test code no manifest starts) met a
+		// manifest it could not read, kept the finding as it was, and says so
+		cov.LimitsHit = append(cov.LimitsHit, fmt.Sprintf(
+			"%d package manifest(s) a triage rule needed could not be read through the scan root (a link out of the tree, not a regular file, or over 1 MiB); the findings they would have decided keep their triage",
+			refusedManifests))
+	}
 	var arts *analyzer.Artifacts
 	if ac != nil {
 		arts = ac.Artifacts
@@ -89,7 +97,7 @@ func (*Analyzer) Analyze(ctx context.Context, target model.Target, ac *analyzer.
 		Status:    status,
 		Required:  true,
 		Coverage:  cov,
-		Findings:  dedupeFindings(classify(g, tc.findings)),
+		Findings:  dedupeFindings(findings),
 		Warnings:  warnings,
 		StartedAt: started,
 	}
@@ -207,6 +215,9 @@ func titleCallee(text string) string {
 // rather than replacing it
 func (c *ctx) emit(category string, severity model.Severity, calleeText string, info taintInfo, file string, line int, note string) {
 	if c.summaryDepth > 0 {
+		if c.sinkHits != nil {
+			*c.sinkHits = append(*c.sinkHits, sinkHit{category: category, severity: severity, callee: calleeText, info: info, file: file, line: line})
+		}
 		return
 	}
 	desc := describePath(info.chain)
@@ -238,6 +249,21 @@ func (c *ctx) emit(category string, severity model.Severity, calleeText string, 
 		f := &c.findings[len(c.findings)-1]
 		f.Triage, f.TriageReason = model.TriageNeedsReview, info.review
 	}
+}
+
+// emitContext emits a finding the walker itself settled as context: what the code builds the
+// sink's receiver from says the call is no sink of its kind. Severity drops to LOW and the
+// triage pass keeps the decision.
+func (c *ctx) emitContext(category string, severity model.Severity, calleeText string, info taintInfo, file string, line int, reason string) {
+	n := len(c.findings)
+	c.emit(category, severity, calleeText, info, file, line, "")
+	if len(c.findings) == n {
+		return
+	}
+	f := &c.findings[n]
+	original := f.Severity
+	f.Severity = capSeverity(f.Severity, model.SeverityLow)
+	f.Triage, f.TriageReason = model.TriageContext, fmt.Sprintf("%s; severity lowered from %s", reason, original)
 }
 
 func describePath(chain []model.FlowStep) string {

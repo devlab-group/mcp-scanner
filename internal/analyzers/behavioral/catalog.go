@@ -1,13 +1,12 @@
 package behavioral
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/targetfs"
 )
 
 // category is one of the deterministic signals a handler's reachable calls
@@ -94,7 +93,7 @@ func sourceEnvReads(g *graph.Graph, reached map[graph.SymbolID]bool) []string {
 		}
 		lines, ok := files[sym.File]
 		if !ok {
-			b, err := os.ReadFile(filepath.Join(g.Root, sym.File))
+			b, err := targetfs.ReadGraphFile(g, sym.File)
 			if err == nil {
 				lines = strings.Split(string(b), "\n")
 			}
@@ -130,6 +129,10 @@ func isEnvRead(calleeText string) bool {
 // credentialWords is the vocabulary a variable name is checked against to
 // decide whether reading it counts as touching a credential
 var credentialWords = []string{"key", "secret", "token", "password", "credential", "auth", "apikey"}
+
+// CredentialLikeName reports whether an environment variable or setting name looks like it holds
+// a credential (KEY, SECRET, TOKEN, PASSWORD, ...), by the vocabulary the credential checks use
+func CredentialLikeName(name string) bool { return credentialLikeName(name) }
 
 func credentialLikeName(name string) bool {
 	lower := strings.ToLower(name)
@@ -399,6 +402,9 @@ type HandlerBehavior struct {
 	URLs              []string `json:"urls,omitempty"`
 	ReachedFunctions  int      `json:"reached_functions"`
 	ReachesUnresolved bool     `json:"reaches_unresolved_calls"`
+	// Egress is where the handler's network calls and credentials go; nil when it reaches none.
+	// Only the inventory fills it (EgressOf): the analyzers do not read it.
+	Egress *Egress `json:"egress,omitempty"`
 }
 
 // Behavior summarizes what handler can reach, with the same reachability and catalogue the

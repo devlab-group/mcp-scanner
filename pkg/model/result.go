@@ -132,8 +132,10 @@ type ScanResult struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// DefaultBlockingSeverity is the lowest severity that makes a completed scan UNSAFE
-const DefaultBlockingSeverity = SeverityLow
+// DefaultBlockingSeverity is the lowest severity that makes a completed scan UNSAFE. LOW is below
+// it: a LOW finding is background - a path the scanner closed, a description it could not read -
+// and a scan with nothing worse has found no issue.
+const DefaultBlockingSeverity = SeverityMedium
 
 // Aggregate is the only place that decides a verdict. In order: no analyzer ran ->
 // SKIPPED/UNKNOWN; a required error -> ERROR/UNKNOWN; a required incomplete result or coverage

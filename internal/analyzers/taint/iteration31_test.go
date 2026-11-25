@@ -71,7 +71,9 @@ def show(name: str) -> str:
 `
 	for _, c := range []struct{ name, cond, use, category, want string }{
 		{"dotdot before shell", `".." in name`, `return subprocess.run(f"cat /srv/{name}", shell=True, capture_output=True, text=True).stdout`, "command_injection", "potential"},
-		{"fullmatch before shell", `not re.fullmatch(r"[A-Za-z0-9_.-]+", name)`, `return subprocess.run(f"cat /srv/{name}", shell=True, capture_output=True, text=True).stdout`, "command_injection", "needs_review"},
+		// the full-match class has no shell syntax and no whitespace, so the pattern itself closes the
+		// path (regexguard.go): context, not review
+		{"fullmatch before shell", `not re.fullmatch(r"[A-Za-z0-9_.-]+", name)`, `return subprocess.run(f"cat /srv/{name}", shell=True, capture_output=True, text=True).stdout`, "command_injection", "context"},
 		{"dotdot before open", `".." in name`, `return open("/srv/" + name).read()`, "path_traversal", "needs_review"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

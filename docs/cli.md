@@ -246,7 +246,9 @@ A usage failure is exit 1. An inconclusive scan is exit 3. Internal scanner
 failure is exit 4.
 
 A completed `UNSAFE` scan can exit 0 when every finding is below `--fail-on`.
-Read the verdict when low-severity findings matter.
+Read the verdict when medium-severity findings matter. `LOW` findings do not
+decide the verdict by default; set `blocking_severity: low` in the config file
+to make them.
 
 ## CI examples
 

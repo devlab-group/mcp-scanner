@@ -32,7 +32,13 @@ func Synthesize(g *graph.Graph) (*model.Snapshot, model.Coverage) {
 			// not Name - a resource registered by URI (@mcp.resource("docs://a", ...)) needs that
 			// identifier carried across, or two poisoned resources in one file report as textually
 			// identical, unlocatable findings
-			snap.Resources = append(snap.Resources, model.ResourceInfo{URI: name, Name: name, Description: c.Description})
+			// registerResource("graph", "memory://graph", ...) names it apart from its URI: the URI is
+			// what resources/list reports and what a live scan locates findings by
+			uri := name
+			if c.URI != "" {
+				uri = c.URI
+			}
+			snap.Resources = append(snap.Resources, model.ResourceInfo{URI: uri, Name: name, Description: c.Description})
 		}
 
 		// A capability included with an empty or partial description would read, to an analyzer

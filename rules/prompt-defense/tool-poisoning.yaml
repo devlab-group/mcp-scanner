@@ -37,6 +37,9 @@ rules:
     # not retroactively excuse an earlier concealment instruction.
     negate_before:
       - "\\b(such as|for example|e\\.g\\.)\\s*[:,]?\\s*$"
+    # "call the list_notes tool first" naming a tool this same server registers, with no demand
+    # for secrecy in the sentence, orders the server's own calls: reported as context
+    own_tool_hint: "(?:call|invoke|use|run) (?:the|any|another|any other) [\"'`]?(?P<tool>[\\w.\\-]{2,40})[\"'`]? tool (?:first|before|instead)\\b"
 
   - id: promptdefense.tool-poisoning-cross-tool-harvesting
     title: Description hooks the tool onto other tools' calls or asks for their data

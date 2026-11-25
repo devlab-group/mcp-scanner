@@ -69,11 +69,15 @@ func (r *compiledRule) appliesTo(u unit) bool {
 // sentence, and negateBefore looks only before the match.
 func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 	var out []model.Finding
+	var tools map[string]bool
+	if r.ownToolHint != nil {
+		tools = serverTools(units)
+	}
 	for _, u := range units {
 		if !r.appliesTo(u) {
 			continue
 		}
-		var downgraded *model.Finding
+		var downgraded, hint *model.Finding
 		var spans [][2]int // earlier patterns' matches in this unit
 		for _, p := range r.patterns {
 			loc := r.firstMatch(p, u.text)
@@ -97,6 +101,15 @@ func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 			lo, hi := r.windowBounds(u.text, start, end)
 			window := u.text[lo:hi]
 			before := u.text[lo:start]
+			if name, ok := r.ownTool(u.text[start:end], tools); ok && !r.otherPatternIn(p, u.text[sentenceFloor(u.text, 0, start):sentenceCeil(u.text, end, len(u.text))]) {
+				// a call-order hint between the server's own tools; a finding of another pattern
+				// in the unit still outranks it
+				if hint == nil {
+					f := r.ownToolFinding(u, start, end, name)
+					hint = &f
+				}
+				continue
+			}
 
 			level := model.EvidenceLevel(strings.ToUpper(r.Evidence))
 			kind := "pattern_match"
@@ -133,14 +146,63 @@ func (r *compiledRule) matchPattern(units []unit) []model.Finding {
 				f = r.quotedFinding(f, u, start, end)
 			}
 			out = append(out, f)
-			downgraded = nil
+			downgraded, hint = nil, nil
 			break // one finding per rule per unit is enough signal, and a clean match outranks a downgraded one
 		}
 		if downgraded != nil {
 			out = append(out, *downgraded)
+		} else if hint != nil {
+			out = append(out, *hint)
 		}
 	}
 	return out
+}
+
+// serverTools are the names of the tools the scanned server registers
+func serverTools(units []unit) map[string]bool {
+	tools := map[string]bool{}
+	for _, u := range units {
+		if u.capKind == "tool" && u.field == "name" && u.text != "" {
+			tools[strings.ToLower(u.text)] = true
+		}
+	}
+	return tools
+}
+
+// ownTool reports whether a match is the rule's call-order form naming a tool of this server
+func (r *compiledRule) ownTool(match string, tools map[string]bool) (string, bool) {
+	if r.ownToolHint == nil || len(tools) == 0 {
+		return "", false
+	}
+	m := r.ownToolHint.FindStringSubmatch(match)
+	if m == nil {
+		return "", false
+	}
+	name := strings.Trim(m[r.ownToolHint.SubexpIndex("tool")], "\"'`")
+	return name, tools[strings.ToLower(name)]
+}
+
+// otherPatternIn reports whether a pattern of the rule other than p matches in text
+func (r *compiledRule) otherPatternIn(p *regexp.Regexp, text string) bool {
+	for _, q := range r.patterns {
+		if q != p && q.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownToolFinding reports a call-order hint between the server's own tools as context at LOW
+func (r *compiledRule) ownToolFinding(u unit, start, end int, name string) model.Finding {
+	f := r.finding(u, start, end, model.EvidenceLevel(strings.ToUpper(r.Evidence)))
+	f.Title = "Call-order hint to a tool of the same server: " + r.Title
+	f.Severity = model.SeverityLow
+	f.Triage = model.TriageContext
+	f.TriageReason = fmt.Sprintf("the text points the model to %s, a tool this same server registers, and asks for nothing to be kept from the user: a call-order hint between the server's own tools", name)
+	f.Description = r.Description + " Here the tool named is registered by this same server and nothing asks to keep the call from the user, so it reads as a hint on the order of calls; it is reported as context."
+	f.Evidence[0].Kind = "pattern_match_own_tool"
+	f.Evidence[0].Description = fmt.Sprintf("%s matched in %s and names %s, a tool of the same server: %q", r.ID, u.locator(), name, snippet(u.text, start, end))
+	return f
 }
 
 // firstMatch returns the first match of p in text that no exclude_match expression covers. The

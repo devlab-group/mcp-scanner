@@ -15,7 +15,9 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/devlab-group/mcp-scanner/internal/source/bundle"
 	"github.com/devlab-group/mcp-scanner/internal/source/graph"
+	"github.com/devlab-group/mcp-scanner/internal/source/inventory"
 	"github.com/devlab-group/mcp-scanner/internal/source/language"
 	"github.com/devlab-group/mcp-scanner/internal/source/parser"
 	"github.com/devlab-group/mcp-scanner/pkg/model"
@@ -49,6 +51,12 @@ type taintInfo struct {
 	// but concatenation, recognized decoders, and worstTaint clear it because the resulting path is
 	// no longer known to be normalized.
 	normalized bool
+
+	// freshName, when set, is the random call the value's last path component is named around:
+	// path.join(dirname(out), `.${basename(out)}.${randomUUID()}.tmp`) can only name the file the
+	// server creates now (see freshname.go). Only a plain copy of the value keeps it: extend drops
+	// it, since any further step may change the name.
+	freshName string
 }
 
 func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo {
@@ -66,7 +74,7 @@ func (t taintInfo) extend(step model.FlowStep, confidenceMult float64) taintInfo
 // value was computed changed here, only what later control flow proves
 // about it
 func (t taintInfo) clearFor(categories ...string) taintInfo {
-	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized, review: t.review}
+	return taintInfo{confidence: t.confidence, chain: t.chain, clearedFor: mergeClearedFor(t.clearedFor, categories), normalized: t.normalized, review: t.review, freshName: t.freshName}
 }
 
 // withoutCategory returns existing minus category, as a new map for the
@@ -131,6 +139,9 @@ func worstTaint(a, b taintInfo) taintInfo {
 	}
 	out.clearedFor = intersectClearedFor(a.clearedFor, b.clearedFor)
 	out.normalized = a.normalized && b.normalized
+	if a.freshName == "" || b.freshName == "" {
+		out.freshName = ""
+	}
 	return out
 }
 
@@ -218,6 +229,10 @@ type ctx struct {
 	// per file, receiver and callee (see binding.go)
 	containerRecv map[receiverKey]bool
 	instanceRecv  map[receiverKey]*graph.Symbol
+	factoryRecv   map[receiverKey][]*graph.Symbol
+	// sinkHits collects, during a sink summary walk (sinkSummary), the sinks the walk reached
+	sinkHits      *[]sinkHit
+	sinkSummaries map[string]*sinkHit
 
 	// These counters describe taint's own capped, timed-out, or unreadable
 	// reparses. They become limits, not capability skips.
@@ -369,6 +384,27 @@ func (c *ctx) readSource(path string, maxBytes int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, maxBytes))
 }
 
+// readBundle reads a bundle through the same root as readSource, blanked the way the source walk
+// parsed it; whole is false when the file no longer reads as one and only its first bytes came back
+func (c *ctx) readBundle(path string) ([]byte, bool, error) {
+	var f *os.File
+	var err error
+	switch {
+	case c.root != nil:
+		f, err = c.root.Open(path)
+	case c.g.Root == "":
+		f, err = os.Open(path)
+	default:
+		return nil, false, fmt.Errorf("taint: scan root %q could not be opened", c.g.Root)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	src, _, whole, err := bundle.Read(f, inventory.DefaultLimits().MaxFileSize)
+	return src, whole, err
+}
+
 func (c *ctx) fileFor(path string) *parsedFile {
 	if pf, ok := c.files[path]; ok {
 		return pf
@@ -385,7 +421,19 @@ func (c *ctx) fileFor(path string) *parsedFile {
 		c.files[path] = nil
 		return nil
 	}
-	src, err := c.readSource(path, f.MaxBytes)
+	var src []byte
+	var err error
+	if f.Bundle {
+		// the same blanking the source walk parsed: positions in the graph are positions here
+		var whole bool
+		src, whole, err = c.readBundle(path)
+		if err == nil && !whole {
+			c.sizeCapped++
+			c.sizeCap = max(c.sizeCap, inventory.DefaultLimits().MaxFileSize)
+		}
+	} else {
+		src, err = c.readSource(path, f.MaxBytes)
+	}
 	if err != nil {
 		c.unreadable++
 		c.files[path] = nil
@@ -1328,6 +1376,9 @@ func atLeastAsTainted(old, next taintInfo) bool {
 	if next.confidence < old.confidence {
 		return false
 	}
+	if next.freshName != "" && old.freshName == "" {
+		return false
+	}
 	for cat := range next.clearedFor {
 		if !old.clearedFor[cat] {
 			return false
@@ -1914,6 +1965,13 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 					Kind: "transform", Symbol: titleCallee(calleeText), File: file, Line: line, Detail: compositionDetail, Resolved: true,
 				}, 1)
 			}
+			if name, ok := c.freshJoin(file, calleeText, args, tainted); ok {
+				// temp = path.join(path.dirname(out), `.${path.basename(out)}.${randomUUID()}.tmp`)
+				info = info.extend(model.FlowStep{
+					Kind: "transform", Symbol: name, File: file, Line: line, Detail: freshNameDetail, Resolved: true,
+				}, 1)
+				info.freshName = name
+			}
 			setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 			return
 		}
@@ -2039,6 +2097,10 @@ func (c *ctx) handleAssign(pf *parsedFile, file string, tainted map[string]taint
 				Kind: "transform", Symbol: titleCallee(text), File: file, Line: line, Detail: compositionDetail, Resolved: true,
 			}, 1)
 		}
+		if !isPlainIdent(strings.TrimSpace(text)) {
+			// t = cond ? temp : out: only a copy of one fresh path is still that path
+			info.freshName = ""
+		}
 		setTaint(tainted, targets, ssrfCleared(info, fixedHost), conditional)
 		return
 	}
@@ -2050,6 +2112,24 @@ const validatorDetail = "checked by a project validator the scanner does not ver
 
 // projectValidatorName matches the names projects give their own input checks
 var projectValidatorName = regexp.MustCompile(`(?i)^_*(validate|sanitize|sanitise|check|ensure|verify|assert|safe|clean|normalize)[a-z0-9_]*$`)
+
+// libraryValidatorName matches library checks that reject bad input: validate_filename,
+// sanitize_path, check_url, verify_hostname, ensure_safe. Narrower than projectValidatorName:
+// "safe", "clean" and "normalize" name library functions that return a value rather than reject
+// The verb must end where a word does: checkpoint, checksum, checkoutBranch start with check and
+// check nothing.
+var libraryValidatorName = regexp.MustCompile(`^_*([Vv]alidate|[Ss]anitize|[Ss]anitise|[Cc]heck|[Vv]erify|[Ee]nsure)(?:$|[A-Z0-9_]\w*$)`)
+
+// libraryNotValidator are library functions with a validator's name that run or fetch something
+var libraryNotValidator = map[string]bool{
+	"check_output": true, "check_call": true, "check_returncode": true,
+}
+
+// libraryAction matches library functions that act under a checking verb: ensureDir and
+// ensure_file create what is missing, ensure_future schedules a coroutine, verifyToken and
+// verify_signature check a credential. None of them rejects a value that is dangerous in a path,
+// a command or a query.
+var libraryAction = regexp.MustCompile(`(?i)^_*(ensure_?(dir|director|file|folder|link|symlink|exists|future|loop|connect|login|session|table|index|schema|bucket|queue|topic|database)|verify_?(token|jwt|signature|password|session|credential|auth))`)
 
 // isProjectValidator reports whether an in-repo function looks like an input check: a validator's
 // name and a body that can reject its input by raising or throwing
@@ -2256,10 +2336,19 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 		sym, resolvedInRepo = nil, false
 	}
 	instanceMethod := false
+	var factoryMethods []*graph.Symbol
 	if m, ok := c.instanceMethodCached(pf, file, receiver.Text, calleeText); ok {
 		// SESSION = TclSession(); SESSION.execute(cmd): the receiver is an instance of a project
 		// class that defines execute, so the call is that method, whatever its name matches
 		sym, resolvedInRepo, instanceMethod = m, true, true
+	} else if ms := c.factoryCandidatesCached(pf, file, receiver.Text, calleeText); len(ms) > 0 {
+		// backend = get_backend(); backend.write_text(key, text), where get_backend returns only
+		// LocalBackend(...): the call is LocalBackend.write_text. A factory of several classes
+		// leaves the call unresolved; their methods are only read for a sink below.
+		factoryMethods = ms
+		if len(ms) == 1 {
+			sym, resolvedInRepo, instanceMethod = ms[0], true, true
+		}
 	}
 	if resolvedInRepo && c.isProjectValidator(sym) {
 		// validate_table_name(table_name) as a statement: later uses of the argument went through
@@ -2277,6 +2366,20 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	}
 
 	sink, sinkFound := matchSink(sinkText)
+	if name := parser.LastSegment(calleeText); !resolvedInRepo && !sinkFound && libraryValidatorName.MatchString(name) && !libraryNotValidator[name] && !libraryAction.MatchString(name) {
+		// pathvalidate.validate_filename(doc), validators.url(u) style checks from a library: the
+		// scanner cannot read them, so - as for a project's own validator - taint stays and the
+		// step sends a later finding on the same value to review instead of clearing it
+		line := int(n.StartPosition().Row) + 1
+		for _, a := range args {
+			name := strings.TrimSpace(a.Text)
+			if info, ok := tainted[name]; ok && isPlainIdent(name) && !hasValidatorStep(info) {
+				tainted[name] = info.extend(model.FlowStep{
+					Kind: "sanitizer", Symbol: calleeText, File: file, Line: line, Detail: validatorDetail, Resolved: false,
+				}, 1)
+			}
+		}
+	}
 	if sinkFound && dockerSinks[sink.text] && !c.fileImportsDocker(file) {
 		// tagmanager.accounts.containers.create(...) is a Google API, not docker-py: the Docker SDK
 		// names count only in a file that imports the SDK
@@ -2305,6 +2408,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if sinkFound && sink.text == "exec" && sink.category == "command_injection" && pf.adapter.ID == language.Python && strings.TrimSpace(sinkText) == "exec" {
 		// Python's builtin exec(code) runs Python source, not a process: code execution
 		sink = sinkPattern{text: "exec", category: "eval", severity: model.SeverityHigh, argIndex: 0}
+	}
+	if sinkFound && sink.text == "exec" && asWritten && regexNamedReceiver(sinkText) {
+		// META_TAG_RE.exec(html), blockRegex.exec(text): a receiver named for a pattern, including
+		// one imported from another module, which the tree check below cannot see
+		sinkFound = false
 	}
 	if sinkFound && sink.text == "exec" && asWritten && c.regExpReceiver(pf, file, n) {
 		// RegExp.prototype.exec matches a string against a pattern; it runs nothing
@@ -2346,6 +2454,42 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if sinkFound && containerCall {
 		sinkFound = false
 	}
+	if len(factoryMethods) > 0 {
+		// the call's name is a library sink's (write_text, execute), and it is the project's own
+		// method: when the method - of any class the factory builds - hands the argument to a sink
+		// of that kind, the finding stays at this call, with the inner sink on its path. Otherwise
+		// one method is followed below like any other call, and several leave the call as before.
+		lib, isLib := sink, sinkFound
+		if !isLib {
+			lib, isLib = matchMethodSink(sinkText)
+		}
+		line := int(n.StartPosition().Row) + 1
+		step := model.FlowStep{
+			Kind: "transform", Symbol: calleeText, File: file, Line: line, Resolved: true,
+			Detail: "passes tainted input into another function",
+		}
+		for _, m := range factoryMethods {
+			if !isLib {
+				break
+			}
+			sym := m
+			if hit, ok := c.sinkSummary(sym, c.seedArgs(sym, args, tainted, step, 0.9), lib.category); ok {
+				// the inner sink is a step of this path, and this call its sink
+				inner := hit.info
+				inner.chain = append([]model.FlowStep(nil), hit.info.chain...)
+				if k := len(inner.chain) - 1; k >= 0 && inner.chain[k].Kind == "sink" {
+					inner.chain[k].Kind = "transform"
+					inner.chain[k].Detail = "the project's own " + sym.Name + " hands it to " + titleCallee(hit.callee)
+				}
+				final := inner.extend(model.FlowStep{
+					Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: lib.category, Resolved: true,
+				}, 1)
+				c.emit(lib.category, hit.severity, calleeText, final, file, line, fmt.Sprintf(
+					"%s is the project's own %s, which hands the value to %s (%s:%d)", strings.TrimSpace(calleeText), sym.Name, titleCallee(hit.callee), hit.file, hit.line))
+				return
+			}
+		}
+	}
 	if sinkFound && instanceMethod {
 		// the project class's own method, followed below
 		sinkFound = false
@@ -2359,6 +2503,9 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 	if sinkFound {
 		var info taintInfo
 		var found bool
+		// set when what the receiver is built from settles that the call is no sink of its kind;
+		// the finding stays, as context
+		contextReason := ""
 		if sink.argIndex >= 0 {
 			if a, ok := sinkArg(args, sink.argIndex, sink.category); ok && !(byMethodName && isFunctionLiteralText(a.Text)) {
 				// A sink matched by method name alone whose checked argument is a function
@@ -2389,7 +2536,22 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// query() on an object not named like a database handle, or a generic client with no
 				// SQL text on the path, is probably not SQL - a tool class, a job runner, a search API
 				// - but a name cannot prove it. The finding stays, for a person to decide.
-				if found && needsSQLEvidence && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+				// what the receiver is built from settles what its name cannot: a database or graph
+				// database handle is a sink whatever it is called, a tool or agent object is not one
+				origin := ""
+				if byMethodName && sink.category == "sql_injection" {
+					origin = receiverOrigin(pf.src, n, sinkText)
+				}
+				dbHandle := origin != "" && dbOrigin.MatchString(origin)
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
+					// client = DefaultClient() from a payments SDK; client.execute(request): the
+					// receiver is another library's object, and nothing on the path is SQL
+					// boto3.client("timestream-query"): what the factory is asked for counts as well
+					if mod, lib := c.libraryOf(pf.src, origin); mod != "" && vendorLibrary.MatchString(mod) && !dbLibrary.MatchString(lib) && !dbLibrary.MatchString(origin) {
+						contextReason = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is built from %s, a client of another service's API and not a database driver, query engine or data store, and no SQL text was seen on the path", sinkText, lib)
+					}
+				}
+				if found && needsSQLEvidence && !dbHandle && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver may be a database client, but no SQL text was seen on the path", sinkText)
 				}
 				if found && sink.category == "sql_injection" && byMethodName && pf.adapter.ID == language.Python && keywordOnlyNonSQL(args) && info.review == "" {
@@ -2403,7 +2565,13 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 					// driver reads SQL from (sql, text, query, statement) is a command, not a query
 					found = false
 				}
-				if found && byMethodName && sink.category == "sql_injection" && !sqlReceiver(sinkText, a.Text) {
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlReceiver(sinkText, a.Text) && !chainHasSQLText(info) && toolOrigin.MatchString(origin) {
+					// tool = SearchTool(...); tool.execute(args): the receiver is built as a tool, an
+					// agent or a connector, nothing on the path is SQL, and the method name is all that
+					// matched. A receiver only named so (tool, graph, service) goes to review below.
+					found = false
+				}
+				if found && byMethodName && sink.category == "sql_injection" && !dbHandle && !sqlReceiver(sinkText, a.Text) {
 					info.review = fmt.Sprintf("%s was matched as SQL by its method name only: the receiver is not named like a database handle and the argument shows no SQL text, so it is probably another API's %s", sinkText, parser.LastSegment(sinkText))
 				}
 				if found && byMethodName && !strings.ContainsAny(strings.TrimSpace(sinkText), ".:") && !sqlKeywords.MatchString(a.Text) && !chainHasSQLText(info) {
@@ -2473,6 +2641,18 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				info.review = fmt.Sprintf("%s is a parameter of the enclosing function, not the library function of that name: the call runs whatever function the callers pass in, which the scanner did not follow", p)
 			}
 		}
+		if found && !info.clearedFor[sink.category] && sink.category == "path_traversal" {
+			if name, ok := c.freshSinkPath(pf, file, n, sink, receiver, args, tainted); ok {
+				if deleteSink(calleeText) {
+					// unlink(temp) where temp is dirname(out)/.<basename(out)>.<randomUUID()>.tmp:
+					// the only file it can remove is the one the server created for this call
+					return
+				}
+				if info.review == "" {
+					info.review = freshPathReview(titleCallee(calleeText), name)
+				}
+			}
+		}
 		if found && !info.clearedFor[sink.category] {
 			line := int(n.StartPosition().Row) + 1
 			if sink.argIndex >= 0 {
@@ -2488,7 +2668,16 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 				// JavaScript functions from !!js/function tags. The version installed decides.
 				info.review = fmt.Sprintf("%s is js-yaml's load, which is safe from version 4 on and builds JavaScript functions from !!js/function tags in version 3; the installed version decides between a real issue and noise", sinkText)
 			}
-			if sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" && info.review == "" && !httpLikeReceiver(sinkText) {
+			getOrigin := ""
+			if found && sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" {
+				getOrigin = receiverOrigin(pf.src, n, sinkText)
+				if getOrigin != "" && lookupOrigin.MatchString(getOrigin) && !httpClientOrigin.MatchString(getOrigin) {
+					// values, _ := url.ParseQuery(s); values.Get(name), r.URL.Query().Get(k), a gin
+					// context or a cache: by what it is built from a lookup, never an HTTP request
+					return
+				}
+			}
+			if sink.category == "ssrf" && byMethodName && parser.LastSegment(sinkText) == "Get" && info.review == "" && !httpLikeReceiver(sinkText) && !httpClientOrigin.MatchString(getOrigin) {
 				// taskrunInformer.Lister().TaskRuns(ns).Get(name), cache.Get(key): a Get method on a
 				// lister, a cache or a map is a lookup, not an HTTP request; matched by name alone
 				info.review = fmt.Sprintf("%s was matched as an HTTP request by its method name only: its receiver does not look like an HTTP client, so it is probably a lookup in a cache, a lister or a map", sinkText)
@@ -2516,7 +2705,11 @@ func (c *ctx) handleCall(pf *parsedFile, file string, tainted map[string]taintIn
 			final := info.extend(model.FlowStep{
 				Kind: "sink", Symbol: calleeText, File: file, Line: line, Detail: sink.category, Resolved: true,
 			}, 1)
-			c.emit(sink.category, sink.severity, calleeText, final, file, line, "")
+			if contextReason != "" {
+				c.emitContext(sink.category, sink.severity, calleeText, final, file, line, contextReason)
+			} else {
+				c.emit(sink.category, sink.severity, calleeText, final, file, line, "")
+			}
 		}
 		return
 	}
@@ -3061,6 +3254,8 @@ func propagatedTaint(text string, tainted map[string]taintInfo) (taintInfo, bool
 		// something larger - a concatenation, an index, a member access
 		if strings.TrimSpace(text) != name {
 			candidate.normalized = false
+			// likewise a fresh last component: temp + "/..", temp += suffix name another path
+			candidate.freshName = ""
 		}
 		if !mentionsTaintedVar(fullyMasked, name) {
 			candidate.confidence *= 0.6
@@ -4046,6 +4241,17 @@ func httpLikeReceiver(sinkText string) bool {
 	}
 	low := strings.ToLower(recv)
 	return httpReceiverName.MatchString(low) || strings.HasSuffix(low, ".r()")
+}
+
+// regexNamedReceiver is a receiver named for a regular expression: TAG_RE, nameRegex, idPattern
+var regexNamedReceiverName = regexp.MustCompile(`(^|[._])([A-Z0-9_]*_(RE|REGEX|REGEXP|PATTERN)|[a-z]\w*(Re|Regex|RegExp|Regexp|Pattern|Rx)|re|rx|regex|regexp|pattern)$`)
+
+func regexNamedReceiver(sinkText string) bool {
+	t := strings.TrimSpace(sinkText)
+	if !strings.HasSuffix(t, ".exec") {
+		return false
+	}
+	return regexNamedReceiverName.MatchString(strings.TrimSuffix(t, ".exec"))
 }
 
 var httpReceiverName = regexp.MustCompile(`(^|[._])(http|https|client|httpclient|resty|req|request|requests|session|api|rest|web)\w*$`)

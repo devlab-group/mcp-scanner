@@ -148,6 +148,19 @@ func TestBlockingSeverityThreshold(t *testing.T) {
 	}
 }
 
+func TestLowFindingDoesNotDecideTheDefaultVerdict(t *testing.T) {
+	for sev, want := range map[Severity]Verdict{SeverityLow: VerdictSafe, SeverityMedium: VerdictUnsafe, SeverityHigh: VerdictUnsafe} {
+		r := ScanResult{Analyzers: []AnalyzerResult{completed("a", finding(sev))}}
+		r.Aggregate("")
+		if r.Verdict != want {
+			t.Errorf("%s finding: verdict = %s, want %s", sev, r.Verdict, want)
+		}
+		if len(r.Findings) != 1 {
+			t.Errorf("%s finding must stay in the report", sev)
+		}
+	}
+}
+
 func TestSuppressedFindingDoesNotBlock(t *testing.T) {
 	f := finding(SeverityCritical)
 	f.Suppressed = true
